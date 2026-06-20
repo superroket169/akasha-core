@@ -1,4 +1,5 @@
-mod tokenizer;
+pub mod nn;
+pub mod tokenizer;
 use tokenizer::Tokenizer;
 
 fn main() {
