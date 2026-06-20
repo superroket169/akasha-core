@@ -1,0 +1,58 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+// readonly means its on L2 constantly
+layout(set = 0, binding = 0) buffer readonly MatA  { float A[]; };
+layout(set = 0, binding = 1) buffer readonly MatB  { float B[]; };
+layout(set = 0, binding = 2) buffer writeonly MatC { float C[]; };
+
+layout(set = 0, binding = 3) uniform Meta {
+    uint M;
+    uint K;
+    uint N;
+};
+
+// these are at L1
+shared float subA[16][16];
+shared float subB[16][16];
+
+void main() {
+    uint row = gl_GlobalInvocationID.y;
+    uint col = gl_GlobalInvocationID.x;
+
+    uint tx = gl_LocalInvocationID.x;
+    uint ty = gl_LocalInvocationID.y;
+
+    float acc = 0.0;
+
+    uint numTiles = (K + 15) / 16;
+
+    for (uint t = 0; t < numTiles; t++) {
+        // copy A and B matrises to L1 chace
+        uint tiledColA = t * 16 + tx;
+        uint tiledRowB = t * 16 + ty;
+
+        if (row < M && tiledColA < K) {
+            subA[ty][tx] = A[row * K + tiledColA];
+        } else {
+            subA[ty][tx] = 0.0;
+        }
+
+        if (tiledRowB < K && col < N) {
+            subB[ty][tx] = B[tiledRowB * N + col];
+        } else {
+            subB[ty][tx] = 0.0;
+        }
+
+        // L1 chache operation
+        barrier();
+        for (uint k = 0; k < 16; k++) {
+            acc += subA[ty][k] * subB[k][tx];
+        }
+        barrier();
+    }
+
+    if (row < M && col < N) {
+        C[row * N + col] = acc;
+    }
+}
