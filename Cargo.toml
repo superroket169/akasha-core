@@ -1,0 +1,7 @@
+[package]
+name = "akasha-core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+filuplex = { path = "../filuplex/" } # { git = "https://github.com/superroket169/filuplex" }
