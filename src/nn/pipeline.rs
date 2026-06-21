@@ -44,6 +44,7 @@ impl TransformerBlock {
         let norm_1 = RMSNorm::new(
             ctx.clone(),
             dim,
+            1,
             &dummy_norm_w,
             input_buffer,
             &dummy_grad_dim,
@@ -112,6 +113,7 @@ impl TransformerBlock {
         let norm_2 = RMSNorm::new(
             ctx.clone(),
             dim,
+            1,
             &dummy_norm_w,
             &add_1.in_out_buffer,
             &dummy_grad_dim,

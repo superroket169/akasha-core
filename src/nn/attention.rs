@@ -1,5 +1,7 @@
 use super::traits::Layer;
 use crate::Real;
+use crate::nn::shader_paths::SOFTMAX;
+use crate::nn::shader_paths::{CAUSAL_MASK, MATMUL, MATMUL_TRP, SOFTMAX_BWD};
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -46,13 +48,10 @@ impl SelfAttention {
             GpuBuffer::from_cpu(&vec![seq_len as Real, seq_len as Real, dim as Real], &ctx);
 
         // load shaders
-        let shader_qkt =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/matmul_trp.spv").load(&ctx);
-        let shader_mask =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/causal_mask.spv").load(&ctx);
-        let shader_softmax =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/softmax.spv").load(&ctx);
-        let shader_out = BuiltInShader::load_from_file(&ctx, "src/shaders/matmul.spv").load(&ctx);
+        let shader_qkt = BuiltInShader::load_from_file(&ctx, MATMUL_TRP).load(&ctx);
+        let shader_mask = BuiltInShader::load_from_file(&ctx, CAUSAL_MASK).load(&ctx);
+        let shader_softmax = BuiltInShader::load_from_file(&ctx, SOFTMAX).load(&ctx);
+        let shader_out = BuiltInShader::load_from_file(&ctx, MATMUL).load(&ctx);
 
         // build
         let mut builder = ComputeGraphBuilder::new(ctx.clone());
@@ -87,12 +86,9 @@ impl SelfAttention {
         // ----- BACKWARD -----
 
         // shaders
-        let shader_matmul_bwd =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/matmul.spv").load(&ctx);
-        let shader_matmul_bwd_trp =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/matmul_trp.spv").load(&ctx);
-        let shader_softmax_bwd =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/softmax_bwd.spv").load(&ctx);
+        let shader_matmul_bwd = BuiltInShader::load_from_file(&ctx, MATMUL).load(&ctx);
+        let shader_matmul_bwd_trp = BuiltInShader::load_from_file(&ctx, MATMUL_TRP).load(&ctx);
+        let shader_softmax_bwd = BuiltInShader::load_from_file(&ctx, SOFTMAX_BWD).load(&ctx);
 
         let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
 

@@ -1,0 +1,47 @@
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer InOutScores { float scores[]; };
+layout(set = 0, binding = 1) uniform Meta { uint seq_len; };
+
+shared float s_max[256];
+shared float s_sum[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint offset = row * seq_len;
+
+    float local_max = -1e20;
+    for (uint i = tid; i < seq_len; i += 256) {
+        local_max = max(local_max, scores[offset + i]);
+    }
+    s_max[tid] = local_max;
+    barrier();
+
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) s_max[tid] = max(s_max[tid], s_max[tid + s]);
+        barrier();
+    }
+    float row_max = s_max[0];
+    barrier();
+
+    float local_sum = 0.0;
+    for (uint i = tid; i < seq_len; i += 256) {
+        float val = exp(scores[offset + i] - row_max);
+        local_sum += val;
+    }
+    s_sum[tid] = local_sum;
+    barrier();
+
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) s_sum[tid] += s_sum[tid + s];
+        barrier();
+    }
+    float row_sum = s_sum[0];
+
+    for (uint i = tid; i < seq_len; i += 256) {
+        uint idx = offset + i;
+        scores[idx] = exp(scores[idx] - row_max) / row_sum;
+    }
+}

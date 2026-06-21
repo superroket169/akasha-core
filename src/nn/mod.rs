@@ -6,6 +6,7 @@ pub mod linear;
 pub mod pipeline;
 pub mod rmsnorm;
 pub mod rope;
+pub mod shader_paths;
 pub mod silu;
 pub mod traits;
 pub mod weights;

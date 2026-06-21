@@ -63,6 +63,7 @@ impl AkashaModel {
         let final_norm = RMSNorm::new(
             ctx.clone(),
             dim,
+            1,
             &dummy_norm_w,
             &last_block.add_2.in_out_buffer,
             &dummy_grad_dim,

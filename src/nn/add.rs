@@ -1,3 +1,5 @@
+use crate::nn::shader_paths::ADD_INPLACE;
+
 use super::traits::Layer;
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
@@ -23,8 +25,7 @@ impl Add {
         let meta_data = vec![length as f32];
         let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
 
-        let shader_fw =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/add_inplace.spv").load(&ctx);
+        let shader_fw = BuiltInShader::load_from_file(&ctx, ADD_INPLACE).load(&ctx);
         let mut fw_builder = ComputeGraphBuilder::new(ctx.clone());
         fw_builder.add_operation(
             shader_fw,
@@ -35,7 +36,7 @@ impl Add {
         let grad_a = GpuBuffer::from_cpu(&vec![0.0f32; length as usize], &ctx);
         let grad_b = GpuBuffer::from_cpu(&vec![0.0f32; length as usize], &ctx);
 
-        let shader_bwd = BuiltInShader::load_from_file(&ctx, "src/shaders/add.spv").load(&ctx);
+        let shader_bwd = BuiltInShader::load_from_file(&ctx, ADD_INPLACE).load(&ctx);
         let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
 
         bw_builder.add_operation(

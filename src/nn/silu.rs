@@ -1,5 +1,6 @@
 use super::traits::Layer;
 use crate::Real;
+use crate::nn::shader_paths::{SILU, SILU_BWD};
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -22,7 +23,7 @@ impl SiLU {
         let meta_data = vec![length as Real];
         let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
 
-        let shader = BuiltInShader::load_from_file(&ctx, "src/shaders/silu.spv").load(&ctx);
+        let shader = BuiltInShader::load_from_file(&ctx, SILU).load(&ctx);
         let mut builder = ComputeGraphBuilder::new(ctx.clone());
         builder.add_operation(
             shader,
@@ -33,7 +34,7 @@ impl SiLU {
         // --- BACKWARD ---
         let grad_input = GpuBuffer::from_cpu(&vec![0.0 as Real; length as usize], &ctx);
         let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
-        let shader_bwd = BuiltInShader::load_from_file(&ctx, "src/shaders/silu_bwd.spv").load(&ctx);
+        let shader_bwd = BuiltInShader::load_from_file(&ctx, SILU_BWD).load(&ctx);
 
         bw_builder.add_operation(
             shader_bwd,

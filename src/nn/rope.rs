@@ -1,5 +1,6 @@
 use super::traits::Layer;
 use crate::Real;
+use crate::nn::shader_paths::{ROPE, ROPE_BWD};
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -21,12 +22,12 @@ impl RoPE {
         grad_output: &GpuBuffer,
     ) -> Self {
         let pos = 0;
-        let inv_freq_buffer = inv_freq_init(dim, ctx.clone()); // kullanılacak
+        let inv_freq_buffer = inv_freq_init(dim, ctx.clone());
 
         let meta_data = vec![dim as Real, pos as Real];
         let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
 
-        let shader = BuiltInShader::load_from_file(&ctx, "src/shaders/rope.spv").load(&ctx);
+        let shader = BuiltInShader::load_from_file(&ctx, ROPE).load(&ctx);
         let mut builder = ComputeGraphBuilder::new(ctx.clone());
 
         // --- FORWARD ---
@@ -44,7 +45,7 @@ impl RoPE {
         // --- BACKWARD ---
         let grad_input = GpuBuffer::from_cpu(&vec![0.0 as Real; dim as usize], &ctx);
         let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
-        let shader_bwd = BuiltInShader::load_from_file(&ctx, "src/shaders/rope_bwd.spv").load(&ctx);
+        let shader_bwd = BuiltInShader::load_from_file(&ctx, ROPE_BWD).load(&ctx);
 
         bw_builder.add_operation(
             shader_bwd,

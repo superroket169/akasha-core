@@ -1,5 +1,6 @@
 use crate::Real;
 use crate::nn::Layer;
+use crate::nn::shader_paths::EMBEDDING;
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -39,7 +40,7 @@ impl Embedding {
         let dummy_out = vec![0.0 as Real; out_size];
         let out_buffer = GpuBuffer::from_cpu(&dummy_out, &ctx);
 
-        let shader = BuiltInShader::load_from_file(&ctx, "src/shaders/embedding.spv").load(&ctx);
+        let shader = BuiltInShader::load_from_file(&ctx, EMBEDDING).load(&ctx);
         let total_threads = seq_len * dim;
 
         let mut builder = ComputeGraphBuilder::new(ctx.clone());
@@ -56,8 +57,7 @@ impl Embedding {
 
         // Backward
 
-        let shader_bwd =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/embedding_bwd.spv").load(&ctx);
+        let shader_bwd = BuiltInShader::load_from_file(&ctx, EMBEDDING).load(&ctx);
         let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
         bw_builder.add_operation(
             shader_bwd,

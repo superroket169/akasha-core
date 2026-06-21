@@ -1,5 +1,6 @@
 use super::traits::Layer;
 use crate::Real;
+use crate::nn::shader_paths::{MATMUL, MATMUL_BWD_INPUT_TRP_B, MATMUL_BWD_WEIGHT_TRP_A};
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -37,7 +38,7 @@ impl Linear {
         let dummy_out = vec![0.0 as Real; (m * out_features) as usize];
         let out_buffer = GpuBuffer::from_cpu(&dummy_out, &ctx);
 
-        let shader = BuiltInShader::load_from_file(&ctx, "src/shaders/matmul.spv").load(&ctx);
+        let shader = BuiltInShader::load_from_file(&ctx, MATMUL).load(&ctx);
 
         let mut builder = ComputeGraphBuilder::new(ctx.clone());
         builder.add_operation(
@@ -59,12 +60,8 @@ impl Linear {
         let dummy_grad_in = vec![0.0 as Real; (m * in_features) as usize];
         let grad_input = GpuBuffer::from_cpu(&dummy_grad_in, &ctx);
 
-        let shader_bwd_w =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/matmul_bwd_weight_trp_a.spv")
-                .load(&ctx);
-        let shader_bwd_in =
-            BuiltInShader::load_from_file(&ctx, "src/shaders/matmul_bwd_input_trp_b.spv")
-                .load(&ctx);
+        let shader_bwd_w = BuiltInShader::load_from_file(&ctx, MATMUL_BWD_WEIGHT_TRP_A).load(&ctx);
+        let shader_bwd_in = BuiltInShader::load_from_file(&ctx, MATMUL_BWD_INPUT_TRP_B).load(&ctx);
 
         let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
 
