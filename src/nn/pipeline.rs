@@ -1,18 +1,36 @@
+use super::attention::SelfAttention;
 use super::linear::Linear;
+use super::rmsnorm::RMSNorm;
+use super::rope::RoPE;
 use super::traits::Layer;
 use filuplex::ops::GpuBuffer;
 
 pub struct TransformerBlock {
-    pub attention_qkv: Linear,
-    pub attention_out: Linear,
+    // Attention
+    pub norm_1: RMSNorm,
+    pub q_proj: Linear,
+    pub k_proj: Linear,
+    pub v_proj: Linear,
+    pub rope: RoPE,
+    pub attention: SelfAttention,
+    pub out_proj: Linear,
+
+    // Feed Forward
+    pub norm_2: RMSNorm,
     pub ffn_up: Linear,
     pub ffn_down: Linear,
 }
 
 impl Layer for TransformerBlock {
-    fn forward(&self, input: &GpuBuffer) -> GpuBuffer {
-        // MSNorm -> MatMul (QKV) -> RoPE -> Causal Mask -> Softmax -> MatMul (Out) -> sum
-        // RMSNorm -> MatMul (Up) -> SiLU -> MatMul (Down) -> sum
+    fn forward(&self, _input: &GpuBuffer) -> GpuBuffer {
+        // like this =>
+        // let x = self.norm_1.forward(input);
+        // let q = self.rope.forward(&self.q_proj.forward(&x));
+        // let k = self.rope.forward(&self.k_proj.forward(&x));
+        // let v = self.v_proj.forward(&x);
+        // let attn_out = self.attention.forward(&q, &k, &v);
+        // ... (ve FFN kısmı)
+
         todo!("pipeline")
     }
 }
