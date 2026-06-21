@@ -86,6 +86,7 @@ impl TransformerBlock {
             &q_proj.out_buffer,
             &k_proj.out_buffer,
             &v_proj.out_buffer,
+            &dummy_grad_dim,
         );
 
         let out_proj = Linear::new(
