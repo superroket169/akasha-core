@@ -12,7 +12,7 @@ fn main() {
     let vocab_size = 50304;
     let dim = 1024;
     let seq_len = 128;
-    let num_layers = 12;
+    let num_layers = 1;
 
     println!(
         "Model Config: {} Layer, {} Dim, {} SeqLen",

@@ -2,7 +2,7 @@ use super::traits::Layer;
 use crate::Real;
 use crate::nn::shader_paths::{CAUSAL_MASK, MATMUL, MATMUL_TRP, SOFTMAX, SOFTMAX_BWD};
 use filuplex::context::Context;
-use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
+use filuplex::graph::{ComputeGraphBuilder, ExecutableGraphQueue};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
 use std::sync::Arc;
 
@@ -17,16 +17,8 @@ pub struct SelfAttention {
     pub meta_seq: GpuBuffer,
     pub meta_out: GpuBuffer,
 
-    pub graph_qkt: ExecutableGraph,
-    pub graph_mask: ExecutableGraph,
-    pub graph_softmax: ExecutableGraph,
-    pub graph_out: ExecutableGraph,
-
-    pub bwd_graph_grad_v: ExecutableGraph,
-    pub bwd_graph_grad_scores: ExecutableGraph,
-    pub bwd_graph_softmax: ExecutableGraph,
-    pub bwd_graph_grad_q: ExecutableGraph,
-    pub bwd_graph_grad_k: ExecutableGraph,
+    pub forward_queue: ExecutableGraphQueue,
+    pub backward_queue: ExecutableGraphQueue,
 }
 
 impl SelfAttention {
@@ -63,12 +55,15 @@ impl SelfAttention {
         // ==========================================
         //                  FORWARD
         // ==========================================
+        let mut forward_queue = ExecutableGraphQueue::new();
+
         let mut b_qkt = ComputeGraphBuilder::new(ctx.clone());
         b_qkt.add_operation(
             shader_qkt,
             vec![(0, q_buf), (1, k_buf), (2, &scores_buf), (3, &meta_qkt)],
             [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
         );
+        forward_queue.push(b_qkt.build()); // Sıraya gir koçum!
 
         let mut b_mask = ComputeGraphBuilder::new(ctx.clone());
         b_mask.add_operation(
@@ -76,6 +71,7 @@ impl SelfAttention {
             vec![(0, &scores_buf), (1, &meta_seq)],
             [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
         );
+        forward_queue.push(b_mask.build()); // Arkasına geç!
 
         let mut b_softmax = ComputeGraphBuilder::new(ctx.clone());
         b_softmax.add_operation(
@@ -83,6 +79,7 @@ impl SelfAttention {
             vec![(0, &scores_buf), (1, &meta_seq)],
             [(seq_len + 255) / 256, 1, 1],
         );
+        forward_queue.push(b_softmax.build()); // Sen de geç!
 
         let mut b_out = ComputeGraphBuilder::new(ctx.clone());
         b_out.add_operation(
@@ -95,10 +92,13 @@ impl SelfAttention {
             ],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
+        forward_queue.push(b_out.build()); // Ve forward kapanışı!
 
         // ==========================================
         //                  BACKWARD
         // ==========================================
+        let mut backward_queue = ExecutableGraphQueue::new();
+
         let shader_matmul_bwd = BuiltInShader::load_from_file(&ctx, MATMUL).load(&ctx);
         let shader_matmul_bwd_trp = BuiltInShader::load_from_file(&ctx, MATMUL_TRP).load(&ctx);
         let shader_softmax_bwd = BuiltInShader::load_from_file(&ctx, SOFTMAX_BWD).load(&ctx);
@@ -114,6 +114,7 @@ impl SelfAttention {
             ],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
+        backward_queue.push(bb_grad_v.build());
 
         let mut bb_grad_scores = ComputeGraphBuilder::new(ctx.clone());
         bb_grad_scores.add_operation(
@@ -126,6 +127,7 @@ impl SelfAttention {
             ],
             [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
         );
+        backward_queue.push(bb_grad_scores.build());
 
         let mut bb_softmax = ComputeGraphBuilder::new(ctx.clone());
         bb_softmax.add_operation(
@@ -133,6 +135,7 @@ impl SelfAttention {
             vec![(0, &grad_scores), (1, &scores_buf), (2, &meta_seq)],
             [(seq_len + 255) / 256, 1, 1],
         );
+        backward_queue.push(bb_softmax.build());
 
         let mut bb_grad_q = ComputeGraphBuilder::new(ctx.clone());
         bb_grad_q.add_operation(
@@ -140,6 +143,7 @@ impl SelfAttention {
             vec![(0, &grad_scores), (1, k_buf), (2, &grad_q), (3, &meta_qkt)],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
+        backward_queue.push(bb_grad_q.build());
 
         let mut bb_grad_k = ComputeGraphBuilder::new(ctx.clone());
         bb_grad_k.add_operation(
@@ -147,6 +151,7 @@ impl SelfAttention {
             vec![(0, &grad_scores), (1, q_buf), (2, &grad_k), (3, &meta_qkt)],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
+        backward_queue.push(bb_grad_k.build());
 
         Self {
             ctx,
@@ -158,32 +163,17 @@ impl SelfAttention {
             meta_qkt,
             meta_seq,
             meta_out,
-            graph_qkt: b_qkt.build(),
-            graph_mask: b_mask.build(),
-            graph_softmax: b_softmax.build(),
-            graph_out: b_out.build(),
-            bwd_graph_grad_v: bb_grad_v.build(),
-            bwd_graph_grad_scores: bb_grad_scores.build(),
-            bwd_graph_softmax: bb_softmax.build(),
-            bwd_graph_grad_q: bb_grad_q.build(),
-            bwd_graph_grad_k: bb_grad_k.build(),
+            forward_queue,
+            backward_queue,
         }
     }
 }
 
 impl Layer for SelfAttention {
     fn forward(&self) {
-        self.graph_qkt.execute();
-        self.graph_mask.execute();
-        self.graph_softmax.execute();
-        self.graph_out.execute();
+        self.forward_queue.execute();
     }
-
     fn backward(&self) {
-        self.bwd_graph_grad_v.execute();
-        self.bwd_graph_grad_scores.execute();
-        self.bwd_graph_softmax.execute();
-        self.bwd_graph_grad_q.execute();
-        self.bwd_graph_grad_k.execute();
+        self.backward_queue.execute();
     }
 }
