@@ -37,18 +37,48 @@ impl TransformerBlock {
         let dummy_w_proj = vec![0.01f32; (dim * dim) as usize];
         let dummy_w_up = vec![0.01f32; (dim * (dim * 4)) as usize];
         let dummy_w_down = vec![0.01f32; ((dim * 4) * dim) as usize];
+        let m = seq_len;
 
+        let dummy_grad_dim = GpuBuffer::from_cpu(&vec![0.0f32; (m * dim) as usize], &ctx);
+        let dummy_grad_4dim = GpuBuffer::from_cpu(&vec![0.0f32; (m * dim * 4) as usize], &ctx);
         // ------ Attention --------
-        let norm_1 = RMSNorm::new(ctx.clone(), dim, &dummy_norm_w, input_buffer);
+        let norm_1 = RMSNorm::new(
+            ctx.clone(),
+            dim,
+            &dummy_norm_w,
+            input_buffer,
+            &dummy_grad_dim,
+        );
 
         // Q, K, V projs
-        let q_proj = Linear::new(ctx.clone(), dim, dim, &dummy_w_proj, &norm_1.out_buffer);
-        let k_proj = Linear::new(ctx.clone(), dim, dim, &dummy_w_proj, &norm_1.out_buffer);
-        let v_proj = Linear::new(ctx.clone(), dim, dim, &dummy_w_proj, &norm_1.out_buffer);
+        let q_proj = Linear::new(
+            ctx.clone(),
+            dim,
+            dim,
+            &dummy_w_proj,
+            &norm_1.out_buffer,
+            &dummy_grad_dim,
+        );
+        let k_proj = Linear::new(
+            ctx.clone(),
+            dim,
+            dim,
+            &dummy_w_proj,
+            &norm_1.out_buffer,
+            &dummy_grad_dim,
+        );
+        let v_proj = Linear::new(
+            ctx.clone(),
+            dim,
+            dim,
+            &dummy_w_proj,
+            &norm_1.out_buffer,
+            &dummy_grad_dim,
+        );
 
         // RoPE
-        let rope_q = RoPE::new(ctx.clone(), dim, &q_proj.out_buffer);
-        let rope_k = RoPE::new(ctx.clone(), dim, &k_proj.out_buffer);
+        let rope_q = RoPE::new(ctx.clone(), dim, &q_proj.out_buffer, &dummy_grad_dim);
+        let rope_k = RoPE::new(ctx.clone(), dim, &k_proj.out_buffer, &dummy_grad_dim);
 
         // Self Attention
         let attention = SelfAttention::new(
@@ -60,7 +90,14 @@ impl TransformerBlock {
             &v_proj.out_buffer,
         );
 
-        let out_proj = Linear::new(ctx.clone(), dim, dim, &dummy_w_proj, &attention.out_buffer);
+        let out_proj = Linear::new(
+            ctx.clone(),
+            dim,
+            dim,
+            &dummy_w_proj,
+            &attention.out_buffer,
+            &dummy_grad_dim,
+        );
 
         // Residual Add
         let add_1 = Add::new(
@@ -71,15 +108,40 @@ impl TransformerBlock {
         );
 
         // FNN
-        let norm_2 = RMSNorm::new(ctx.clone(), dim, &dummy_norm_w, input_buffer);
-        let ffn_up = Linear::new(ctx.clone(), dim, dim * 4, &dummy_w_up, &norm_2.out_buffer);
-        let silu = SiLU::new(ctx.clone(), dim * 4 * seq_len, &ffn_up.out_buffer);
-        let ffn_down = Linear::new(ctx.clone(), dim * 4, dim, &dummy_w_down, &ffn_up.out_buffer);
+        let norm_2 = RMSNorm::new(
+            ctx.clone(),
+            dim,
+            &dummy_norm_w,
+            &add_1.in_out_buffer,
+            &dummy_grad_dim,
+        );
+        let ffn_up = Linear::new(
+            ctx.clone(),
+            dim,
+            dim * 4,
+            &dummy_w_up,
+            &norm_2.out_buffer,
+            &dummy_grad_4dim,
+        );
+        let silu = SiLU::new(
+            ctx.clone(),
+            dim * 4 * seq_len,
+            &ffn_up.out_buffer,
+            &dummy_grad_4dim,
+        );
+        let ffn_down = Linear::new(
+            ctx.clone(),
+            dim * 4,
+            dim,
+            &dummy_w_down,
+            &silu.in_out_buffer,
+            &dummy_grad_dim,
+        );
 
         let add_2 = Add::new(
             ctx.clone(),
             dim * seq_len,
-            input_buffer,
+            &add_1.in_out_buffer,
             &ffn_down.out_buffer,
         );
 

@@ -7,7 +7,12 @@ use std::sync::Arc;
 pub struct Linear {
     pub weight: GpuBuffer,
     pub out_buffer: GpuBuffer,
-    pub graph: ExecutableGraph,
+
+    pub grad_weight: GpuBuffer,
+    pub grad_input: GpuBuffer,
+
+    pub forward_graph: ExecutableGraph,
+    pub backward_graph: ExecutableGraph,
 }
 
 impl Linear {
@@ -17,7 +22,9 @@ impl Linear {
         out_features: u32,
         weight_data: &[f32],
         input_buffer: &GpuBuffer,
+        grad_output: &GpuBuffer,
     ) -> Self {
+        // --- FORWARD ---
         let weight = GpuBuffer::from_cpu(weight_data, &ctx);
 
         let seq_len = 1;
@@ -42,20 +49,57 @@ impl Linear {
             ],
             [(out_features + 15) / 16, (m + 15) / 16, 1],
         );
-        let graph = builder.build();
+        let forward_graph = builder.build();
+
+        // --- BACKWARD ---
+        let dummy_grad_w = vec![0.0f32; (in_features * out_features) as usize];
+        let grad_weight = GpuBuffer::from_cpu(&dummy_grad_w, &ctx);
+
+        let dummy_grad_in = vec![0.0f32; (m * in_features) as usize];
+        let grad_input = GpuBuffer::from_cpu(&dummy_grad_in, &ctx);
+
+        let shader_bwd_w =
+            BuiltInShader::load_from_file(&ctx, "src/shaders/matmul_bwd_weight_trp_a.spv")
+                .load(&ctx);
+        let shader_bwd_in =
+            BuiltInShader::load_from_file(&ctx, "src/shaders/matmul_bwd_input_trp_b.spv")
+                .load(&ctx);
+
+        let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
+
+        bw_builder.add_operation(
+            shader_bwd_w,
+            vec![
+                (0, input_buffer),
+                (1, grad_output),
+                (2, &grad_weight),
+                (3, &meta),
+            ],
+            [(out_features + 15) / 16, (in_features + 15) / 16, 1],
+        );
+
+        bw_builder.add_operation(
+            shader_bwd_in,
+            vec![(0, grad_output), (1, &weight), (2, &grad_input), (3, &meta)],
+            [(in_features + 15) / 16, (m + 15) / 16, 1],
+        );
+
+        let backward_graph = bw_builder.build();
 
         Self {
             weight,
             out_buffer,
-            graph,
+            grad_weight,
+            grad_input,
+            forward_graph,
+            backward_graph,
         }
     }
 }
 
 impl Layer for Linear {
     fn forward(&self) {
-        self.graph.execute();
-        // self.out_buffer.clone()
+        self.forward_graph.execute();
     }
 
     fn backward(&self) {
