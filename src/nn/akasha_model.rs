@@ -122,23 +122,51 @@ impl AkashaModel {
 
         println!("Datas goes to Vram...");
 
-        self.embedding.table = GpuBuffer::from_cpu(&all_weights.embedding_table, &self.ctx);
+        self.embedding
+            .table
+            .write_from_cpu(&self.ctx, &all_weights.embedding_table);
 
-        for (i, block_weights) in all_weights.blocks.into_iter().enumerate() {
-            self.layers[i].norm_1.weight = GpuBuffer::from_cpu(&block_weights.norm_1, &self.ctx);
-            self.layers[i].q_proj.weight = GpuBuffer::from_cpu(&block_weights.q_proj, &self.ctx);
-            self.layers[i].k_proj.weight = GpuBuffer::from_cpu(&block_weights.k_proj, &self.ctx);
-            self.layers[i].v_proj.weight = GpuBuffer::from_cpu(&block_weights.v_proj, &self.ctx);
-            self.layers[i].out_proj.weight =
-                GpuBuffer::from_cpu(&block_weights.out_proj, &self.ctx);
-            self.layers[i].norm_2.weight = GpuBuffer::from_cpu(&block_weights.norm_2, &self.ctx);
-            self.layers[i].ffn_up.weight = GpuBuffer::from_cpu(&block_weights.ffn_up, &self.ctx);
-            self.layers[i].ffn_down.weight =
-                GpuBuffer::from_cpu(&block_weights.ffn_down, &self.ctx);
+        for (i, block_weights) in all_weights.blocks.iter().enumerate() {
+            self.layers[i]
+                .norm_1
+                .weight
+                .write_from_cpu(&self.ctx, &block_weights.norm_1);
+            self.layers[i]
+                .q_proj
+                .weight
+                .write_from_cpu(&self.ctx, &block_weights.q_proj);
+            self.layers[i]
+                .k_proj
+                .weight
+                .write_from_cpu(&self.ctx, &block_weights.k_proj);
+            self.layers[i]
+                .v_proj
+                .weight
+                .write_from_cpu(&self.ctx, &block_weights.v_proj);
+            self.layers[i]
+                .out_proj
+                .weight
+                .write_from_cpu(&self.ctx, &block_weights.out_proj);
+            self.layers[i]
+                .norm_2
+                .weight
+                .write_from_cpu(&self.ctx, &block_weights.norm_2);
+            self.layers[i]
+                .ffn_up
+                .weight
+                .write_from_cpu(&self.ctx, &block_weights.ffn_up);
+            self.layers[i]
+                .ffn_down
+                .weight
+                .write_from_cpu(&self.ctx, &block_weights.ffn_down);
         }
 
-        self.final_norm.weight = GpuBuffer::from_cpu(&all_weights.final_norm, &self.ctx);
-        self.lm_head.weight = GpuBuffer::from_cpu(&all_weights.lm_head, &self.ctx);
+        self.final_norm
+            .weight
+            .write_from_cpu(&self.ctx, &all_weights.final_norm);
+        self.lm_head
+            .weight
+            .write_from_cpu(&self.ctx, &all_weights.lm_head);
 
         println!("Loading is completed");
 
