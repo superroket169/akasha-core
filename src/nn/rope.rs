@@ -6,11 +6,18 @@ use std::sync::Arc;
 
 pub struct RoPE {
     pub in_out_buffer: GpuBuffer,
+    pub grad_input: GpuBuffer,
     pub graph: ExecutableGraph,
+    pub backward_graph: ExecutableGraph,
 }
 
 impl RoPE {
-    pub fn new(ctx: Arc<Context>, dim: u32, input_buffer: &GpuBuffer) -> Self {
+    pub fn new(
+        ctx: Arc<Context>,
+        dim: u32,
+        input_buffer: &GpuBuffer,
+        grad_output: &GpuBuffer,
+    ) -> Self {
         let pos = 0;
 
         let meta_data = vec![dim as f32, pos as f32];
@@ -25,9 +32,22 @@ impl RoPE {
             [(dim + 63) / 64, 1, 1],
         );
 
+        // --- BACKWARD ---
+        let grad_input = GpuBuffer::from_cpu(&vec![0.0f32; dim as usize], &ctx);
+        let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
+        let shader_bwd = BuiltInShader::load_from_file(&ctx, "src/shaders/rope_bwd.spv").load(&ctx);
+
+        bw_builder.add_operation(
+            shader_bwd,
+            vec![(0, grad_output), (1, &grad_input)],
+            [(dim + 63) / 64, 1, 1],
+        );
+
         Self {
             in_out_buffer: input_buffer.clone(),
+            grad_input,
             graph: builder.build(),
+            backward_graph: bw_builder.build(),
         }
     }
 }
@@ -35,10 +55,8 @@ impl RoPE {
 impl Layer for RoPE {
     fn forward(&self) {
         self.graph.execute();
-        // self.in_out_buffer.clone()
     }
-
     fn backward(&self) {
-        // TODO
+        self.backward_graph.execute();
     }
 }
