@@ -1,0 +1,21 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16) in;
+
+layout(set = 0, binding = 0) buffer readonly InDY { float dY[]; };
+layout(set = 0, binding = 1) buffer readonly InW { float W[]; };
+layout(set = 0, binding = 2) buffer writeonly OutDX { float dX[]; };
+layout(set = 0, binding = 3) uniform Meta { uint M; uint K; uint N; };
+
+void main() {
+    uint m = gl_GlobalInvocationID.x;
+    uint k = gl_GlobalInvocationID.y;
+
+    if (m >= M || k >= K) return;
+
+    float sum = 0.0;
+    for (uint n = 0; n < N; n++) {
+        sum += dY[m * N + n] * W[k * N + n];
+    }
+    
+    dX[m * K + k] = sum;
+}
