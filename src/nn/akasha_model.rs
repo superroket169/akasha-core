@@ -1,37 +1,46 @@
 use filuplex::context::Context;
 use filuplex::ops::GpuBuffer;
 use std::fs::File;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, BufWriter, Write};
 use std::sync::Arc;
 
+use super::embedding::Embedding;
 use super::linear::Linear;
 use super::pipeline::TransformerBlock;
 use super::rmsnorm::RMSNorm;
 use super::traits::Layer;
-// use super::embedding::Embedding;
 
 pub struct AkashaModel {
     pub ctx: Arc<Context>,
-    // pub embedding: Embedding,
+    pub embedding: Embedding,
     pub layers: Vec<TransformerBlock>,
     pub final_norm: RMSNorm,
     pub lm_head: Linear,
 }
 
 impl AkashaModel {
-    // dummy start
     pub fn new(
         ctx: Arc<Context>,
         vocab_size: u32,
         dim: u32,
         seq_len: u32,
         num_layers: usize,
+        input_tokens: &GpuBuffer,
     ) -> Self {
-        println!("Akasha {} katman ile VRAM'e inşa ediliyor...", num_layers);
+        let dummy_emb_w = vec![0.01f32; (vocab_size * dim) as usize];
 
-        let mut current_input = GpuBuffer::from_cpu(&vec![0.01f32; (seq_len * dim) as usize], &ctx);
+        let embedding = Embedding::new(
+            ctx.clone(),
+            vocab_size,
+            dim,
+            seq_len,
+            &dummy_emb_w,
+            input_tokens,
+        );
+
+        let mut current_input = embedding.out_buffer.clone();
+
         let mut layers = Vec::with_capacity(num_layers);
-
         for _ in 0..num_layers {
             let block = TransformerBlock::new(ctx.clone(), dim, seq_len, &current_input);
             current_input = block.add_2.in_out_buffer.clone();
@@ -52,6 +61,7 @@ impl AkashaModel {
 
         Self {
             ctx,
+            embedding,
             layers,
             final_norm,
             lm_head,
@@ -59,7 +69,7 @@ impl AkashaModel {
     }
 
     pub fn forward(&self) {
-        // self.embedding.forward();
+        self.embedding.forward();
 
         for layer in self.layers.iter() {
             layer.forward();
