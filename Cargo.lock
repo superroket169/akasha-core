@@ -6,7 +6,9 @@ version = 4
 name = "akasha-core"
 version = "0.1.0"
 dependencies = [
+ "bincode",
  "filuplex",
+ "serde",
 ]
 
 [[package]]
