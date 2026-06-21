@@ -29,6 +29,7 @@ impl AkashaModel {
         input_tokens: &GpuBuffer,
     ) -> Self {
         let dummy_emb_w = vec![0.01f32; (vocab_size * dim) as usize];
+        let dummy_grad_emb = GpuBuffer::from_cpu(&vec![0.0f32; (seq_len * dim) as usize], &ctx);
 
         let embedding = Embedding::new(
             ctx.clone(),
@@ -37,6 +38,7 @@ impl AkashaModel {
             seq_len,
             &dummy_emb_w,
             input_tokens,
+            &dummy_grad_emb,
         );
 
         let mut current_input = embedding.out_buffer.clone();
@@ -93,6 +95,17 @@ impl AkashaModel {
         self.lm_head.forward();
 
         // Sonuç lm_head.out_buffer içinde
+    }
+
+    pub fn backward(&self) {
+        self.lm_head.backward();
+        self.final_norm.backward();
+
+        for layer in self.layers.iter().rev() {
+            layer.backward();
+        }
+
+        self.embedding.backward();
     }
 
     pub fn save_to_file(&self, path: &str) -> bincode::Result<()> {
