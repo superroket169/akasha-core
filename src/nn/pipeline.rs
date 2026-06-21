@@ -103,26 +103,26 @@ impl TransformerBlock {
 }
 
 impl Layer for TransformerBlock {
-    fn forward(&self, _input: &GpuBuffer) -> GpuBuffer {
+    fn forward(&self) -> GpuBuffer {
         // Attention
-        self.norm_1.forward(&self.norm_1.out_buffer);
-        self.q_proj.forward(&self.q_proj.out_buffer);
-        self.k_proj.forward(&self.k_proj.out_buffer);
-        self.v_proj.forward(&self.v_proj.out_buffer);
+        self.norm_1.forward();
+        self.q_proj.forward();
+        self.k_proj.forward();
+        self.v_proj.forward();
 
-        self.rope_q.forward(&self.rope_q.in_out_buffer);
-        self.rope_k.forward(&self.rope_k.in_out_buffer);
+        self.rope_q.forward();
+        self.rope_k.forward();
 
         self.attention.forward();
-        self.out_proj.forward(&self.out_proj.out_buffer);
+        self.out_proj.forward();
 
         self.add_1.forward();
 
         // Feed Forward
-        self.norm_2.forward(&self.norm_2.out_buffer);
-        self.ffn_up.forward(&self.ffn_up.out_buffer);
-        self.silu.forward(&self.silu.in_out_buffer);
-        self.ffn_down.forward(&self.ffn_down.out_buffer);
+        self.norm_2.forward();
+        self.ffn_up.forward();
+        self.silu.forward();
+        self.ffn_down.forward();
 
         let final_output = self.add_2.forward();
 

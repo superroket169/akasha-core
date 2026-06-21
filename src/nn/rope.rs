@@ -33,7 +33,7 @@ impl RoPE {
 }
 
 impl Layer for RoPE {
-    fn forward(&self, _input: &GpuBuffer) -> GpuBuffer {
+    fn forward(&self) -> GpuBuffer {
         self.graph.execute();
         self.in_out_buffer.clone()
     }
