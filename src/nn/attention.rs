@@ -1,4 +1,5 @@
 use super::traits::Layer;
+use crate::Real;
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -28,19 +29,21 @@ impl SelfAttention {
         // side buffs
         let scores_size = (seq_len * seq_len) as usize;
         let out_size = (seq_len * dim) as usize;
-        let scores_buf = GpuBuffer::from_cpu(&vec![0.0f32; scores_size], &ctx);
-        let out_buffer = GpuBuffer::from_cpu(&vec![0.0f32; out_size], &ctx);
+        let scores_buf = GpuBuffer::from_cpu(&vec![0.0 as Real; scores_size], &ctx);
+        let out_buffer = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
 
         // grad buffs
-        let grad_q = GpuBuffer::from_cpu(&vec![0.0f32; out_size], &ctx);
-        let grad_k = GpuBuffer::from_cpu(&vec![0.0f32; out_size], &ctx);
-        let grad_v = GpuBuffer::from_cpu(&vec![0.0f32; out_size], &ctx);
-        let grad_scores = GpuBuffer::from_cpu(&vec![0.0f32; scores_size], &ctx);
+        let grad_q = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
+        let grad_k = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
+        let grad_v = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
+        let grad_scores = GpuBuffer::from_cpu(&vec![0.0 as Real; scores_size], &ctx);
 
         // meta
-        let meta_qkt = GpuBuffer::from_cpu(&vec![seq_len as f32, dim as f32, seq_len as f32], &ctx);
-        let meta_seq = GpuBuffer::from_cpu(&vec![seq_len as f32], &ctx);
-        let meta_out = GpuBuffer::from_cpu(&vec![seq_len as f32, seq_len as f32, dim as f32], &ctx);
+        let meta_qkt =
+            GpuBuffer::from_cpu(&vec![seq_len as Real, dim as Real, seq_len as Real], &ctx);
+        let meta_seq = GpuBuffer::from_cpu(&vec![seq_len as Real], &ctx);
+        let meta_out =
+            GpuBuffer::from_cpu(&vec![seq_len as Real, seq_len as Real, dim as Real], &ctx);
 
         // load shaders
         let shader_qkt =

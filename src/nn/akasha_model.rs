@@ -1,3 +1,4 @@
+use crate::Real;
 use filuplex::context::Context;
 use filuplex::ops::GpuBuffer;
 use std::fs::File;
@@ -28,8 +29,9 @@ impl AkashaModel {
         num_layers: usize,
         input_tokens: &GpuBuffer,
     ) -> Self {
-        let dummy_emb_w = vec![0.01f32; (vocab_size * dim) as usize];
-        let dummy_grad_emb = GpuBuffer::from_cpu(&vec![0.0f32; (seq_len * dim) as usize], &ctx);
+        let dummy_emb_w = vec![0.01 as Real; (vocab_size * dim) as usize];
+        let dummy_grad_emb =
+            GpuBuffer::from_cpu(&vec![0.0 as Real; (seq_len * dim) as usize], &ctx);
 
         let embedding = Embedding::new(
             ctx.clone(),
@@ -52,11 +54,12 @@ impl AkashaModel {
 
         let last_block = layers.last().expect("At least should be one layer!");
 
-        let dummy_grad_dim = GpuBuffer::from_cpu(&vec![0.0f32; (seq_len * dim) as usize], &ctx);
+        let dummy_grad_dim =
+            GpuBuffer::from_cpu(&vec![0.0 as Real; (seq_len * dim) as usize], &ctx);
         let dummy_grad_vocab =
-            GpuBuffer::from_cpu(&vec![0.0f32; (seq_len * vocab_size) as usize], &ctx);
+            GpuBuffer::from_cpu(&vec![0.0 as Real; (seq_len * vocab_size) as usize], &ctx);
 
-        let dummy_norm_w = vec![1.0f32; dim as usize];
+        let dummy_norm_w = vec![1.0 as Real; dim as usize];
         let final_norm = RMSNorm::new(
             ctx.clone(),
             dim,
@@ -65,7 +68,7 @@ impl AkashaModel {
             &dummy_grad_dim,
         );
 
-        let dummy_head_w = vec![0.01f32; (dim * vocab_size) as usize];
+        let dummy_head_w = vec![0.01 as Real; (dim * vocab_size) as usize];
         let lm_head = Linear::new(
             ctx.clone(),
             dim,

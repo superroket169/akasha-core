@@ -1,4 +1,5 @@
 use super::traits::Layer;
+use crate::Real;
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -17,19 +18,19 @@ impl RMSNorm {
     pub fn new(
         ctx: Arc<Context>,
         dim: u32,
-        weight_data: &[f32],
+        weight_data: &[Real],
         input_buffer: &GpuBuffer,
         grad_output: &GpuBuffer,
     ) -> Self {
         let weight = GpuBuffer::from_cpu(weight_data, &ctx);
-        let grad_weight = GpuBuffer::from_cpu(&vec![0.0f32; dim as usize], &ctx);
-        let grad_input = GpuBuffer::from_cpu(&vec![0.0f32; dim as usize], &ctx);
+        let grad_weight = GpuBuffer::from_cpu(&vec![0.0 as Real; dim as usize], &ctx);
+        let grad_input = GpuBuffer::from_cpu(&vec![0.0 as Real; dim as usize], &ctx);
         let seq_len = 1;
 
-        let meta_data = vec![dim as f32];
+        let meta_data = vec![dim as Real];
         let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
 
-        let out_buffer = GpuBuffer::from_cpu(&vec![0.0f32; (seq_len * dim) as usize], &ctx);
+        let out_buffer = GpuBuffer::from_cpu(&vec![0.0 as Real; (seq_len * dim) as usize], &ctx);
         let shader = BuiltInShader::load_from_file(&ctx, "src/shaders/rmsnorm.spv").load(&ctx);
         let mut builder = ComputeGraphBuilder::new(ctx.clone());
         builder.add_operation(
