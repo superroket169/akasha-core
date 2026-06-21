@@ -30,8 +30,6 @@ pub struct TransformerBlock {
 }
 
 impl TransformerBlock {
-    // NOTE ağırlıklar ileride weights.bin den okunacak. şimdilik otomatik dummy oluşturup onun
-    // üzerinden gidiyoruz
     pub fn new(ctx: Arc<Context>, dim: u32, seq_len: u32, input_buffer: &GpuBuffer) -> Self {
         let dummy_norm_w = vec![1.0f32; dim as usize];
         let dummy_w_proj = vec![0.01f32; (dim * dim) as usize];
@@ -105,6 +103,7 @@ impl TransformerBlock {
             dim * seq_len,
             input_buffer,
             &out_proj.out_buffer,
+            &dummy_grad_dim,
         );
 
         // FNN
@@ -143,6 +142,7 @@ impl TransformerBlock {
             dim * seq_len,
             &add_1.in_out_buffer,
             &ffn_down.out_buffer,
+            &dummy_grad_dim,
         );
 
         Self {
@@ -166,7 +166,6 @@ impl TransformerBlock {
 
 impl Layer for TransformerBlock {
     fn forward(&self) {
-        // Attention
         self.norm_1.forward();
         self.q_proj.forward();
         self.k_proj.forward();
@@ -174,24 +173,31 @@ impl Layer for TransformerBlock {
 
         self.rope_q.forward();
         self.rope_k.forward();
-
         self.attention.forward();
         self.out_proj.forward();
-
         self.add_1.forward();
 
-        // Feed Forward
         self.norm_2.forward();
         self.ffn_up.forward();
         self.silu.forward();
         self.ffn_down.forward();
-
-        // let final_output = self.add_2.forward();
-
-        // final_output;
     }
 
     fn backward(&self) {
-        // TODO
+        self.add_2.backward();
+        self.ffn_down.backward();
+        self.silu.backward();
+        self.ffn_up.backward();
+        self.norm_2.backward();
+
+        self.add_1.backward();
+        self.out_proj.backward();
+        self.attention.backward();
+        self.rope_k.backward();
+        self.rope_q.backward();
+        self.v_proj.backward();
+        self.k_proj.backward();
+        self.q_proj.backward();
+        self.norm_1.backward();
     }
 }
