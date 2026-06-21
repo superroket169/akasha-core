@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 filuplex = { path = "../filuplex/" } # { git = "https://github.com/superroket169/filuplex" }
+serde = { version = "1.0", features = ["derive"] }
+bincode = "1.3"
