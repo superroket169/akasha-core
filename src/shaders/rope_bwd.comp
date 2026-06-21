@@ -3,7 +3,7 @@ layout(local_size_x = 64) in;
 
 layout(set = 0, binding = 0) buffer InDY { float dY[]; };
 layout(set = 0, binding = 1) buffer OutDX { float dX[]; };
-layout(set = 2, binding = 2) buffer Inv_Freq { float inv_freq[]; };
+layout(set = 0, binding = 2) buffer Inv_Freq { float inv_freq[]; };
 
 layout(set = 0, binding = 3) uniform Meta { 
     uint d_model; 

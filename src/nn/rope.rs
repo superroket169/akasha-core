@@ -18,6 +18,7 @@ impl RoPE {
     pub fn new(
         ctx: Arc<Context>,
         dim: u32,
+        seq_len: u32,
         input_buffer: &GpuBuffer,
         grad_output: &GpuBuffer,
     ) -> Self {
@@ -49,8 +50,13 @@ impl RoPE {
 
         bw_builder.add_operation(
             shader_bwd,
-            vec![(0, grad_output), (1, &grad_input)],
-            [(dim + 63) / 64, 1, 1],
+            vec![
+                (0, grad_output),
+                (1, &grad_input),
+                (2, &inv_freq_buffer),
+                (3, &meta),
+            ],
+            [seq_len, 1, 1],
         );
 
         Self {

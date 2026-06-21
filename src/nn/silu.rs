@@ -7,8 +7,9 @@ use filuplex::ops::{BuiltInShader, GpuBuffer};
 use std::sync::Arc;
 
 pub struct SiLU {
-    pub in_out_buffer: GpuBuffer,
+    pub out_buffer: GpuBuffer,
     pub grad_input: GpuBuffer,
+    pub meta: GpuBuffer,
     pub graph: ExecutableGraph,
     pub backward_graph: ExecutableGraph,
 }
@@ -23,6 +24,7 @@ impl SiLU {
         let meta_data = vec![length as Real];
         let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
 
+        // --- FORWARD ---
         let shader = BuiltInShader::load_from_file(&ctx, SILU).load(&ctx);
         let mut builder = ComputeGraphBuilder::new(ctx.clone());
         builder.add_operation(
@@ -38,13 +40,19 @@ impl SiLU {
 
         bw_builder.add_operation(
             shader_bwd,
-            vec![(0, input_buffer), (1, grad_output), (2, &grad_input)],
+            vec![
+                (0, input_buffer),
+                (1, grad_output),
+                (2, &grad_input),
+                (3, &meta),
+            ],
             [(length + 255) / 256, 1, 1],
         );
 
         Self {
-            in_out_buffer: input_buffer.clone(),
+            out_buffer: input_buffer.clone(),
             grad_input,
+            meta,
             graph: builder.build(),
             backward_graph: bw_builder.build(),
         }
