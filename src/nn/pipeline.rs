@@ -103,7 +103,7 @@ impl TransformerBlock {
 }
 
 impl Layer for TransformerBlock {
-    fn forward(&self) -> GpuBuffer {
+    fn forward(&self) {
         // Attention
         self.norm_1.forward();
         self.q_proj.forward();
@@ -124,8 +124,12 @@ impl Layer for TransformerBlock {
         self.silu.forward();
         self.ffn_down.forward();
 
-        let final_output = self.add_2.forward();
+        // let final_output = self.add_2.forward();
 
-        final_output
+        // final_output;
+    }
+
+    fn backward(&self) {
+        // TODO
     }
 }

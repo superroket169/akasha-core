@@ -53,8 +53,12 @@ impl Linear {
 }
 
 impl Layer for Linear {
-    fn forward(&self) -> GpuBuffer {
+    fn forward(&self) {
         self.graph.execute();
-        self.out_buffer.clone()
+        // self.out_buffer.clone()
+    }
+
+    fn backward(&self) {
+        // TODO
     }
 }

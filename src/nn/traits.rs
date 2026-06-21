@@ -1,9 +1,8 @@
-use filuplex::ops::GpuBuffer;
 use std::path::Path;
 
 pub trait Layer {
-    fn forward(&self) -> GpuBuffer;
-    // fn backward(&self, grad_output: &GpuBuffer) -> GpuBuffer;
+    fn forward(&self); //  -> GpuBuffer;
+    fn backward(&self); // -> GpuBuffer;
 }
 
 pub trait Serializable {
