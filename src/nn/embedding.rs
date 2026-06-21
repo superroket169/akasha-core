@@ -19,6 +19,11 @@ impl Embedding {
         table_data: &[f32],
         tokens_buffer: &GpuBuffer,
     ) -> Self {
+        assert_eq!(
+            table_data.len(),
+            (vocab_size * dim) as usize,
+            "Dict size doesnt match!"
+        );
         let table = GpuBuffer::from_cpu(table_data, &ctx);
 
         let meta_data = vec![dim as f32, seq_len as f32];
