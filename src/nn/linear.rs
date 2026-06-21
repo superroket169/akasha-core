@@ -5,6 +5,7 @@ use filuplex::ops::{BuiltInShader, GpuBuffer};
 use std::sync::Arc;
 
 pub struct Linear {
+    pub weight: GpuBuffer,
     pub out_buffer: GpuBuffer,
     pub graph: ExecutableGraph,
 }
@@ -43,7 +44,11 @@ impl Linear {
         );
         let graph = builder.build();
 
-        Self { out_buffer, graph }
+        Self {
+            weight,
+            out_buffer,
+            graph,
+        }
     }
 }
 
