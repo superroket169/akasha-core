@@ -174,50 +174,16 @@ impl SelfAttention {
 impl Layer for SelfAttention {
     fn forward(&self) {
         self.graph_qkt.execute();
-        unsafe {
-            self.ctx.device.wait_idle().unwrap();
-        }
-
         self.graph_mask.execute();
-        unsafe {
-            self.ctx.device.wait_idle().unwrap();
-        }
-
         self.graph_softmax.execute();
-        unsafe {
-            self.ctx.device.wait_idle().unwrap();
-        }
-
         self.graph_out.execute();
-        unsafe {
-            self.ctx.device.wait_idle().unwrap();
-        }
     }
 
     fn backward(&self) {
         self.bwd_graph_grad_v.execute();
-        unsafe {
-            self.ctx.device.wait_idle().unwrap();
-        }
-
         self.bwd_graph_grad_scores.execute();
-        unsafe {
-            self.ctx.device.wait_idle().unwrap();
-        }
-
         self.bwd_graph_softmax.execute();
-        unsafe {
-            self.ctx.device.wait_idle().unwrap();
-        }
-
         self.bwd_graph_grad_q.execute();
-        unsafe {
-            self.ctx.device.wait_idle().unwrap();
-        }
-
         self.bwd_graph_grad_k.execute();
-        unsafe {
-            self.ctx.device.wait_idle().unwrap();
-        }
     }
 }
