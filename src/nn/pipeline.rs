@@ -44,7 +44,7 @@ impl TransformerBlock {
         let norm_1 = RMSNorm::new(
             ctx.clone(),
             dim,
-            1,
+            seq_len,
             &dummy_norm_w,
             input_buffer,
             &dummy_grad_dim,
@@ -77,8 +77,20 @@ impl TransformerBlock {
         );
 
         // RoPE
-        let rope_q = RoPE::new(ctx.clone(), dim, &q_proj.out_buffer, &dummy_grad_dim);
-        let rope_k = RoPE::new(ctx.clone(), dim, &k_proj.out_buffer, &dummy_grad_dim);
+        let rope_q = RoPE::new(
+            ctx.clone(),
+            dim,
+            seq_len,
+            &q_proj.out_buffer,
+            &dummy_grad_dim,
+        );
+        let rope_k = RoPE::new(
+            ctx.clone(),
+            dim,
+            seq_len,
+            &k_proj.out_buffer,
+            &dummy_grad_dim,
+        );
 
         // Self Attention
         let attention = SelfAttention::new(
@@ -113,7 +125,7 @@ impl TransformerBlock {
         let norm_2 = RMSNorm::new(
             ctx.clone(),
             dim,
-            1,
+            seq_len,
             &dummy_norm_w,
             &add_1.in_out_buffer,
             &dummy_grad_dim,
@@ -137,7 +149,7 @@ impl TransformerBlock {
             dim * 4,
             dim,
             &dummy_w_down,
-            &silu.in_out_buffer,
+            &silu.out_buffer,
             &dummy_grad_dim,
         );
 

@@ -13,6 +13,9 @@ pub struct SelfAttention {
     pub grad_k: GpuBuffer,
     pub grad_v: GpuBuffer,
     pub grad_scores: GpuBuffer,
+    pub meta_qkt: GpuBuffer,
+    pub meta_seq: GpuBuffer,
+    pub meta_out: GpuBuffer,
     pub graph: ExecutableGraph,
     pub backward_graph: ExecutableGraph,
 }
@@ -22,41 +25,34 @@ impl SelfAttention {
         ctx: Arc<Context>,
         seq_len: u32,
         dim: u32,
-        // heads: u32, // şimdilik bir kafa
         q_buf: &GpuBuffer,
         k_buf: &GpuBuffer,
         v_buf: &GpuBuffer,
         grad_output: &GpuBuffer,
     ) -> Self {
-        // side buffs
         let scores_size = (seq_len * seq_len) as usize;
         let out_size = (seq_len * dim) as usize;
         let scores_buf = GpuBuffer::from_cpu(&vec![0.0 as Real; scores_size], &ctx);
         let out_buffer = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
 
-        // grad buffs
         let grad_q = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
         let grad_k = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
         let grad_v = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
         let grad_scores = GpuBuffer::from_cpu(&vec![0.0 as Real; scores_size], &ctx);
 
-        // meta
         let meta_qkt =
             GpuBuffer::from_cpu(&vec![seq_len as Real, dim as Real, seq_len as Real], &ctx);
         let meta_seq = GpuBuffer::from_cpu(&vec![seq_len as Real], &ctx);
         let meta_out =
             GpuBuffer::from_cpu(&vec![seq_len as Real, seq_len as Real, dim as Real], &ctx);
 
-        // load shaders
         let shader_qkt = BuiltInShader::load_from_file(&ctx, MATMUL_TRP).load(&ctx);
         let shader_mask = BuiltInShader::load_from_file(&ctx, CAUSAL_MASK).load(&ctx);
         let shader_softmax = BuiltInShader::load_from_file(&ctx, SOFTMAX).load(&ctx);
         let shader_out = BuiltInShader::load_from_file(&ctx, MATMUL).load(&ctx);
 
-        // build
         let mut builder = ComputeGraphBuilder::new(ctx.clone());
 
-        // Operation Pipeline =>
         builder.add_operation(
             shader_qkt,
             vec![(0, q_buf), (1, k_buf), (2, &scores_buf), (3, &meta_qkt)],
@@ -84,8 +80,6 @@ impl SelfAttention {
         );
 
         // ----- BACKWARD -----
-
-        // shaders
         let shader_matmul_bwd = BuiltInShader::load_from_file(&ctx, MATMUL).load(&ctx);
         let shader_matmul_bwd_trp = BuiltInShader::load_from_file(&ctx, MATMUL_TRP).load(&ctx);
         let shader_softmax_bwd = BuiltInShader::load_from_file(&ctx, SOFTMAX_BWD).load(&ctx);
@@ -138,6 +132,9 @@ impl SelfAttention {
             grad_k,
             grad_v,
             grad_scores,
+            meta_qkt,
+            meta_seq,
+            meta_out,
             graph: builder.build(),
             backward_graph: bw_builder.build(),
         }
