@@ -1,1 +1,63 @@
-// TODO: guys, rmsnorm_bwd is SO HARD, i will do this some later
+#version 450
+layout(local_size_x = 256) in;
+
+layout(set = 0, binding = 0) buffer readonly InX { float x[]; };
+layout(set = 0, binding = 1) buffer readonly InDY { float dY[]; };
+layout(set = 0, binding = 2) buffer readonly InW { float w[]; };
+layout(set = 0, binding = 3) buffer writeonly OutDX { float dX[]; };
+layout(set = 0, binding = 4) buffer writeonly OutDW { float dW[]; };
+layout(set = 0, binding = 5) uniform Meta { uint dim; };
+
+shared float s_var[256];
+shared float s_mean_grad[256];
+
+void main() {
+    uint row = gl_WorkGroupID.x;
+    uint tid = gl_LocalInvocationID.x;
+    uint offset = row * dim;
+
+    float local_sq = 0.0;
+    for (uint i = tid; i < dim; i += 256) {
+        float val = x[offset + i];
+        local_sq += val * val;
+    }
+    s_var[tid] = local_sq;
+    barrier();
+
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) s_var[tid] += s_var[tid + s];
+        barrier();
+    }
+
+    float rms = sqrt(s_var[0] / float(dim) + 1e-5);
+    float inv_rms = 1.0 / rms;
+
+    float local_mean_grad = 0.0;
+    for (uint i = tid; i < dim; i += 256) {
+        uint idx = offset + i;
+        float xi = x[idx];
+        float x_hat = xi * inv_rms;
+        local_mean_grad += dY[idx] * w[i] * x_hat;
+    }
+    s_mean_grad[tid] = local_mean_grad;
+    barrier();
+
+    for (uint s = 128; s > 0; s >>= 1) {
+        if (tid < s) s_mean_grad[tid] += s_mean_grad[tid + s];
+        barrier();
+    }
+
+    float mean_grad = s_mean_grad[0] / float(dim);
+
+    for (uint i = tid; i < dim; i += 256) {
+        uint idx = offset + i;
+        float xi = x[idx];
+        float x_hat = xi * inv_rms;
+        float dy = dY[idx];
+        float wi = w[i];
+
+        dW[idx] = dy * x_hat; 
+
+        dX[idx] = (dy * wi - mean_grad * x_hat) * inv_rms;
+    }
+}
