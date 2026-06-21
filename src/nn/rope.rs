@@ -8,6 +8,7 @@ use std::sync::Arc;
 pub struct RoPE {
     pub in_out_buffer: GpuBuffer,
     pub grad_input: GpuBuffer,
+    pub inv_freq_buffer: GpuBuffer,
     pub graph: ExecutableGraph,
     pub backward_graph: ExecutableGraph,
 }
@@ -27,10 +28,16 @@ impl RoPE {
 
         let shader = BuiltInShader::load_from_file(&ctx, "src/shaders/rope.spv").load(&ctx);
         let mut builder = ComputeGraphBuilder::new(ctx.clone());
+
+        // --- FORWARD ---
         builder.add_operation(
             shader,
-            vec![(0, input_buffer), (1, &meta)],
-            // X ekseni: 1024 / 64 (local_size_x) = 16 workgroup
+            vec![
+                (0, input_buffer),
+                (1, input_buffer),
+                (2, &inv_freq_buffer),
+                (3, &meta),
+            ],
             [(dim + 63) / 64, 1, 1],
         );
 
@@ -48,6 +55,7 @@ impl RoPE {
         Self {
             in_out_buffer: input_buffer.clone(),
             grad_input,
+            inv_freq_buffer,
             graph: builder.build(),
             backward_graph: bw_builder.build(),
         }
@@ -67,7 +75,7 @@ fn inv_freq_init(dim: u32, ctx: Arc<Context>) -> GpuBuffer {
     let half_dim = dim / 2;
     let mut inv_freq_data = Vec::with_capacity(half_dim as usize);
     for i in 0..half_dim {
-        let freq = 1.0 / 10000.0f32.powf((2 * i) as f32 / dim as f32);
+        let freq = (1.0 / 10000.0 as Real).powf((2 * i) as f32 / dim as f32);
         inv_freq_data.push(freq);
     }
     let inv_freq_buffer = GpuBuffer::from_cpu(&inv_freq_data, &ctx);
