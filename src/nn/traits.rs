@@ -1,8 +1,8 @@
 use std::path::Path;
 
 pub trait Layer {
-    fn forward(&self); //  -> GpuBuffer;
-    fn backward(&self); // -> GpuBuffer;
+    fn forward(&self);
+    fn backward(&self);
 }
 
 pub trait Serializable {

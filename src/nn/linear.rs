@@ -103,6 +103,6 @@ impl Layer for Linear {
     }
 
     fn backward(&self) {
-        // TODO
+        self.backward_graph.execute();
     }
 }

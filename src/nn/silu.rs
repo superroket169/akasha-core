@@ -57,5 +57,3 @@ impl Layer for SiLU {
         self.backward_graph.execute();
     }
 }
-
-// NOTE all thigs is seems so same. this should a soulution
