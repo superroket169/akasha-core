@@ -1,9 +1,9 @@
 #version 450
 layout(local_size_x = 256) in;
 
-layout(set = 0, binding = 0) buffer Input { float x[]; };      // Girdi [batch_size * seq_len * 1024]
-layout(set = 0, binding = 1) buffer Output { float y[]; };     // Çıktı [batch_size * seq_len * 1024]
-layout(set = 0, binding = 2) buffer Weight { float weight[]; }; // Öğrenilebilir ölçek (Gamma) [1024]
+layout(set = 0, binding = 0) buffer Input { float x[]; };
+layout(set = 0, binding = 1) buffer Output { float y[]; };
+layout(set = 0, binding = 2) buffer Weight { float weight[]; };
 layout(set = 0, binding = 3) uniform Meta {
     uint dim; // 1024
 };
