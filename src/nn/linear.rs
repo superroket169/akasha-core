@@ -1,4 +1,5 @@
 use super::traits::Layer;
+use crate::Real;
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -20,7 +21,7 @@ impl Linear {
         ctx: Arc<Context>,
         in_features: u32,
         out_features: u32,
-        weight_data: &[f32],
+        weight_data: &[Real],
         input_buffer: &GpuBuffer,
         grad_output: &GpuBuffer,
     ) -> Self {
@@ -30,10 +31,10 @@ impl Linear {
         let seq_len = 1;
         let m = seq_len as u32;
 
-        let meta_data = vec![m as f32, in_features as f32, out_features as f32];
+        let meta_data = vec![m as Real, in_features as Real, out_features as Real];
         let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
 
-        let dummy_out = vec![0.0f32; (m * out_features) as usize];
+        let dummy_out = vec![0.0 as Real; (m * out_features) as usize];
         let out_buffer = GpuBuffer::from_cpu(&dummy_out, &ctx);
 
         let shader = BuiltInShader::load_from_file(&ctx, "src/shaders/matmul.spv").load(&ctx);
@@ -52,10 +53,10 @@ impl Linear {
         let forward_graph = builder.build();
 
         // --- BACKWARD ---
-        let dummy_grad_w = vec![0.0f32; (in_features * out_features) as usize];
+        let dummy_grad_w = vec![0.0 as Real; (in_features * out_features) as usize];
         let grad_weight = GpuBuffer::from_cpu(&dummy_grad_w, &ctx);
 
-        let dummy_grad_in = vec![0.0f32; (m * in_features) as usize];
+        let dummy_grad_in = vec![0.0 as Real; (m * in_features) as usize];
         let grad_input = GpuBuffer::from_cpu(&dummy_grad_in, &ctx);
 
         let shader_bwd_w =

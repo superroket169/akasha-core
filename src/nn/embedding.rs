@@ -1,3 +1,4 @@
+use crate::Real;
 use crate::nn::Layer;
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
@@ -19,7 +20,7 @@ impl Embedding {
         vocab_size: u32,
         dim: u32,
         seq_len: u32,
-        table_data: &[f32],
+        table_data: &[Real],
         tokens_buffer: &GpuBuffer,
         grad_output: &GpuBuffer,
     ) -> Self {
@@ -29,13 +30,13 @@ impl Embedding {
             "Dict size doesnt match!"
         );
         let table = GpuBuffer::from_cpu(table_data, &ctx);
-        let grad_table = GpuBuffer::from_cpu(&vec![0.0f32; (vocab_size * dim) as usize], &ctx);
+        let grad_table = GpuBuffer::from_cpu(&vec![0.0 as Real; (vocab_size * dim) as usize], &ctx);
 
-        let meta_data = vec![dim as f32, seq_len as f32];
+        let meta_data = vec![dim as Real, seq_len as Real];
         let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
 
         let out_size = (seq_len * dim) as usize;
-        let dummy_out = vec![0.0f32; out_size];
+        let dummy_out = vec![0.0 as Real; out_size];
         let out_buffer = GpuBuffer::from_cpu(&dummy_out, &ctx);
 
         let shader = BuiltInShader::load_from_file(&ctx, "src/shaders/embedding.spv").load(&ctx);

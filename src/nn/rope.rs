@@ -1,4 +1,5 @@
 use super::traits::Layer;
+use crate::Real;
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -19,8 +20,9 @@ impl RoPE {
         grad_output: &GpuBuffer,
     ) -> Self {
         let pos = 0;
+        let inv_freq_buffer = inv_freq_init(dim, ctx.clone()); // kullanılacak
 
-        let meta_data = vec![dim as f32, pos as f32];
+        let meta_data = vec![dim as Real, pos as Real];
         let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
 
         let shader = BuiltInShader::load_from_file(&ctx, "src/shaders/rope.spv").load(&ctx);
@@ -33,7 +35,7 @@ impl RoPE {
         );
 
         // --- BACKWARD ---
-        let grad_input = GpuBuffer::from_cpu(&vec![0.0f32; dim as usize], &ctx);
+        let grad_input = GpuBuffer::from_cpu(&vec![0.0 as Real; dim as usize], &ctx);
         let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
         let shader_bwd = BuiltInShader::load_from_file(&ctx, "src/shaders/rope_bwd.spv").load(&ctx);
 
@@ -59,4 +61,15 @@ impl Layer for RoPE {
     fn backward(&self) {
         self.backward_graph.execute();
     }
+}
+
+fn inv_freq_init(dim: u32, ctx: Arc<Context>) -> GpuBuffer {
+    let half_dim = dim / 2;
+    let mut inv_freq_data = Vec::with_capacity(half_dim as usize);
+    for i in 0..half_dim {
+        let freq = 1.0 / 10000.0f32.powf((2 * i) as f32 / dim as f32);
+        inv_freq_data.push(freq);
+    }
+    let inv_freq_buffer = GpuBuffer::from_cpu(&inv_freq_data, &ctx);
+    inv_freq_buffer
 }

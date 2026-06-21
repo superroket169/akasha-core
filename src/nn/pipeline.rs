@@ -5,6 +5,7 @@ use super::rmsnorm::RMSNorm;
 use super::rope::RoPE;
 use super::silu::SiLU;
 use super::traits::Layer;
+use crate::Real;
 use filuplex::context::Context;
 use filuplex::ops::GpuBuffer;
 use std::sync::Arc;
@@ -31,14 +32,14 @@ pub struct TransformerBlock {
 
 impl TransformerBlock {
     pub fn new(ctx: Arc<Context>, dim: u32, seq_len: u32, input_buffer: &GpuBuffer) -> Self {
-        let dummy_norm_w = vec![1.0f32; dim as usize];
-        let dummy_w_proj = vec![0.01f32; (dim * dim) as usize];
-        let dummy_w_up = vec![0.01f32; (dim * (dim * 4)) as usize];
-        let dummy_w_down = vec![0.01f32; ((dim * 4) * dim) as usize];
+        let dummy_norm_w = vec![1.0 as Real; dim as usize];
+        let dummy_w_proj = vec![0.01 as Real; (dim * dim) as usize];
+        let dummy_w_up = vec![0.01 as Real; (dim * (dim * 4)) as usize];
+        let dummy_w_down = vec![0.01 as Real; ((dim * 4) * dim) as usize];
         let m = seq_len;
 
-        let dummy_grad_dim = GpuBuffer::from_cpu(&vec![0.0f32; (m * dim) as usize], &ctx);
-        let dummy_grad_4dim = GpuBuffer::from_cpu(&vec![0.0f32; (m * dim * 4) as usize], &ctx);
+        let dummy_grad_dim = GpuBuffer::from_cpu(&vec![0.0 as Real; (m * dim) as usize], &ctx);
+        let dummy_grad_4dim = GpuBuffer::from_cpu(&vec![0.0 as Real; (m * dim * 4) as usize], &ctx);
         // ------ Attention --------
         let norm_1 = RMSNorm::new(
             ctx.clone(),
