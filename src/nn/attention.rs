@@ -6,7 +6,12 @@ use std::sync::Arc;
 
 pub struct SelfAttention {
     pub out_buffer: GpuBuffer,
+    pub grad_q: GpuBuffer,
+    pub grad_k: GpuBuffer,
+    pub grad_v: GpuBuffer,
+    pub grad_scores: GpuBuffer,
     pub graph: ExecutableGraph,
+    pub backward_graph: ExecutableGraph,
 }
 
 impl SelfAttention {
@@ -18,12 +23,19 @@ impl SelfAttention {
         q_buf: &GpuBuffer,
         k_buf: &GpuBuffer,
         v_buf: &GpuBuffer,
+        grad_output: &GpuBuffer,
     ) -> Self {
         // side buffs
         let scores_size = (seq_len * seq_len) as usize;
         let out_size = (seq_len * dim) as usize;
         let scores_buf = GpuBuffer::from_cpu(&vec![0.0f32; scores_size], &ctx);
         let out_buffer = GpuBuffer::from_cpu(&vec![0.0f32; out_size], &ctx);
+
+        // grad buffs
+        let grad_q = GpuBuffer::from_cpu(&vec![0.0f32; out_size], &ctx);
+        let grad_k = GpuBuffer::from_cpu(&vec![0.0f32; out_size], &ctx);
+        let grad_v = GpuBuffer::from_cpu(&vec![0.0f32; out_size], &ctx);
+        let grad_scores = GpuBuffer::from_cpu(&vec![0.0f32; scores_size], &ctx);
 
         // meta
         let meta_qkt = GpuBuffer::from_cpu(&vec![seq_len as f32, dim as f32, seq_len as f32], &ctx);
@@ -69,9 +81,66 @@ impl SelfAttention {
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
 
+        // ----- BACKWARD -----
+
+        // shaders
+        let shader_matmul_bwd =
+            BuiltInShader::load_from_file(&ctx, "src/shaders/matmul.spv").load(&ctx);
+        let shader_matmul_bwd_trp =
+            BuiltInShader::load_from_file(&ctx, "src/shaders/matmul_trp.spv").load(&ctx);
+        let shader_softmax_bwd =
+            BuiltInShader::load_from_file(&ctx, "src/shaders/softmax_bwd.spv").load(&ctx);
+
+        let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
+
+        bw_builder.add_operation(
+            shader_matmul_bwd_trp.clone(),
+            vec![
+                (0, &scores_buf),
+                (1, grad_output),
+                (2, &grad_v),
+                (3, &meta_qkt),
+            ],
+            [(dim + 15) / 16, (seq_len + 15) / 16, 1],
+        );
+
+        bw_builder.add_operation(
+            shader_matmul_bwd_trp.clone(),
+            vec![
+                (0, grad_output),
+                (1, v_buf),
+                (2, &grad_scores),
+                (3, &meta_out),
+            ],
+            [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
+        );
+
+        bw_builder.add_operation(
+            shader_softmax_bwd,
+            vec![(0, &grad_scores), (1, &scores_buf), (2, &meta_seq)],
+            [(seq_len + 255) / 256, 1, 1],
+        );
+
+        bw_builder.add_operation(
+            shader_matmul_bwd,
+            vec![(0, &grad_scores), (1, k_buf), (2, &grad_q), (3, &meta_qkt)],
+            [(dim + 15) / 16, (seq_len + 15) / 16, 1],
+        );
+
+        bw_builder.add_operation(
+            shader_matmul_bwd_trp,
+            vec![(0, &grad_scores), (1, q_buf), (2, &grad_k), (3, &meta_qkt)],
+            [(dim + 15) / 16, (seq_len + 15) / 16, 1],
+        );
+
         Self {
             out_buffer,
+            grad_q,
+            grad_k,
+            grad_v,
+            grad_scores,
             graph: builder.build(),
+            backward_graph: bw_builder.build(),
         }
     }
 }
@@ -79,10 +148,8 @@ impl SelfAttention {
 impl Layer for SelfAttention {
     fn forward(&self) {
         self.graph.execute();
-        // self.out_buffer.clone()
     }
-
     fn backward(&self) {
-        // TODO
+        self.backward_graph.execute();
     }
 }
