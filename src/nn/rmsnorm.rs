@@ -39,7 +39,7 @@ impl RMSNorm {
 }
 
 impl Layer for RMSNorm {
-    fn forward(&self, _input: &GpuBuffer) -> GpuBuffer {
+    fn forward(&self) -> GpuBuffer {
         self.graph.execute();
         self.out_buffer.clone()
     }

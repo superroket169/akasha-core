@@ -30,7 +30,7 @@ impl SiLU {
 }
 
 impl Layer for SiLU {
-    fn forward(&self, _input: &GpuBuffer) -> GpuBuffer {
+    fn forward(&self) -> GpuBuffer {
         self.graph.execute();
         self.in_out_buffer.clone()
     }

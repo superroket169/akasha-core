@@ -1,3 +1,4 @@
+use super::traits::Layer;
 use filuplex::context::Context;
 use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
 use filuplex::ops::{BuiltInShader, GpuBuffer};
@@ -73,8 +74,10 @@ impl SelfAttention {
             graph: builder.build(),
         }
     }
+}
 
-    pub fn forward(&self) -> GpuBuffer {
+impl Layer for SelfAttention {
+    fn forward(&self) -> GpuBuffer {
         self.graph.execute();
         self.out_buffer.clone()
     }
