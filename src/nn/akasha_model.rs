@@ -48,8 +48,20 @@ impl AkashaModel {
             layers.push(block);
         }
 
+        let last_block = layers.last().expect("At least should be one layer!");
+
+        let dummy_grad_dim = GpuBuffer::from_cpu(&vec![0.0f32; (seq_len * dim) as usize], &ctx);
+        let dummy_grad_vocab =
+            GpuBuffer::from_cpu(&vec![0.0f32; (seq_len * vocab_size) as usize], &ctx);
+
         let dummy_norm_w = vec![1.0f32; dim as usize];
-        let final_norm = RMSNorm::new(ctx.clone(), dim, &dummy_norm_w, &current_input);
+        let final_norm = RMSNorm::new(
+            ctx.clone(),
+            dim,
+            &dummy_norm_w,
+            &last_block.add_2.in_out_buffer,
+            &dummy_grad_dim,
+        );
 
         let dummy_head_w = vec![0.01f32; (dim * vocab_size) as usize];
         let lm_head = Linear::new(
@@ -58,6 +70,7 @@ impl AkashaModel {
             vocab_size,
             &dummy_head_w,
             &final_norm.out_buffer,
+            &dummy_grad_vocab,
         );
 
         Self {
