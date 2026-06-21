@@ -40,7 +40,7 @@ fn main() {
     println!("Forward Pass is started");
 
     let start_time = std::time::Instant::now();
-    model.forward();
+    model.forward(ctx.clone());
     println!("Forward Pass Complated! Time: {:?}", start_time.elapsed());
 
     let out_size = (seq_len * vocab_size) as usize;

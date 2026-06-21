@@ -88,15 +88,30 @@ impl AkashaModel {
         }
     }
 
-    pub fn forward(&self) {
+    pub fn forward(&self, ctx: Arc<Context>) {
         self.embedding.forward();
+        unsafe {
+            self.ctx.device.wait_idle().unwrap();
+        }
 
         for layer in self.layers.iter() {
             layer.forward();
+
+            unsafe {
+                ctx.device.wait_idle().unwrap();
+            };
         }
 
         self.final_norm.forward();
+
+        unsafe {
+            self.ctx.device.wait_idle().unwrap();
+        }
         self.lm_head.forward();
+
+        unsafe {
+            self.ctx.device.wait_idle().unwrap();
+        }
 
         // Sonuç lm_head.out_buffer içinde
     }
