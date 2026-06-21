@@ -5,6 +5,7 @@ use filuplex::ops::{BuiltInShader, GpuBuffer};
 use std::sync::Arc;
 
 pub struct RMSNorm {
+    pub weight: GpuBuffer,
     pub out_buffer: GpuBuffer,
     pub graph: ExecutableGraph,
 }
@@ -32,6 +33,7 @@ impl RMSNorm {
         );
 
         Self {
+            weight,
             out_buffer,
             graph: builder.build(),
         }
