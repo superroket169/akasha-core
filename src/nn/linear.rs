@@ -20,13 +20,14 @@ impl Linear {
         ctx: Arc<WgpuContext>,
         in_features: u32,
         out_features: u32,
+        seq_len: u32,
         weight_data: &[Real],
         input_buffer: &Arc<Tensor>,
         grad_output: &Arc<Tensor>,
     ) -> Self {
         let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), weight_data));
 
-        let m = 1u32; // şimdilik 1
+        let m = seq_len;
         let meta_data = vec![m, out_features, in_features];
         let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
 
