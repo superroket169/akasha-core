@@ -220,19 +220,24 @@ impl SelfAttention {
             &[
                 TensorBind {
                     binding: 0,
-                    tensor: &grad_scores,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
                     tensor: &t_scores,
                     mode: TensorMode::Input,
                 },
                 TensorBind {
+                    binding: 1,
+                    tensor: &grad_scores,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
                     binding: 2,
+                    tensor: &grad_scores,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
                     tensor: &t_meta_seq,
                     mode: TensorMode::Meta,
-                },
+                }, // Config
             ],
             [(seq_len + 255) / 256, 1, 1],
         );
