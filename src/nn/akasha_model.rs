@@ -75,6 +75,7 @@ impl AkashaModel {
             ctx.clone(),
             dim,
             vocab_size,
+            seq_len,
             &dummy_head_w,
             &final_norm.out_buffer,
             &t_dummy_grad_vocab,
