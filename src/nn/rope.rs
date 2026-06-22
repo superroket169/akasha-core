@@ -1,90 +1,89 @@
 use super::traits::Layer;
 use crate::Real;
-use crate::nn::shader_paths::{ROPE, ROPE_BWD};
-use filuplex::context::Context;
-use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
-use filuplex::ops::{BuiltInShader, GpuBuffer};
 use std::sync::Arc;
+use wilupgu::context::WgpuContext;
+use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
+use wilupgu::nn::shaders::BuiltInShader;
+use wilupgu::tensor::Tensor;
 
 pub struct RoPE {
-    pub in_out_buffer: GpuBuffer,
-    pub grad_input: GpuBuffer,
-    pub inv_freq_buffer: GpuBuffer,
-    pub graph: ExecutableGraph,
-    pub backward_graph: ExecutableGraph,
+    pub in_out_buffer: Arc<Tensor>,
+    pub grad_input: Arc<Tensor>,
+    pub forward_graph: ComputeGraph,
+    pub backward_graph: ComputeGraph,
 }
 
 impl RoPE {
     pub fn new(
-        ctx: Arc<Context>,
+        ctx: Arc<WgpuContext>,
         dim: u32,
         seq_len: u32,
-        input_buffer: &GpuBuffer,
-        grad_output: &GpuBuffer,
+        input_buffer: &Arc<Tensor>,
+        grad_output: &Arc<Tensor>,
     ) -> Self {
-        let pos = 0;
-        let inv_freq_buffer = inv_freq_init(dim, ctx.clone());
+        let head_dim = 64u32;
+        let meta_data = vec![seq_len, dim, head_dim];
+        let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
 
-        let meta_data = vec![dim as Real, pos as Real];
-        let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
-
-        let shader = BuiltInShader::load_from_file(&ctx, ROPE).load(&ctx);
-        let mut builder = ComputeGraphBuilder::new(ctx.clone());
+        let shader_fw = BuiltInShader::RoPE.get_def();
+        let mut forward_graph = ComputeGraph::new(ctx.clone());
 
         // --- FORWARD ---
-        builder.add_operation(
-            shader,
-            vec![
-                (0, input_buffer),
-                (1, input_buffer),
-                (2, &inv_freq_buffer),
-                (3, &meta),
+        forward_graph.add_node(
+            &shader_fw,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: input_buffer,
+                    mode: TensorMode::InOut,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: &t_meta,
+                    mode: TensorMode::Meta,
+                },
             ],
-            [(dim + 63) / 64, 1, 1],
+            [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
 
         // --- BACKWARD ---
-        let grad_input = GpuBuffer::from_cpu(&vec![0.0 as Real; dim as usize], &ctx);
-        let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
-        let shader_bwd = BuiltInShader::load_from_file(&ctx, ROPE_BWD).load(&ctx);
+        let grad_zero = vec![0.0 as Real; (seq_len * dim) as usize];
+        let grad_input = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_zero));
 
-        bw_builder.add_operation(
-            shader_bwd,
-            vec![
-                (0, grad_output),
-                (1, &grad_input),
-                (2, &inv_freq_buffer),
-                (3, &meta),
+        let shader_bw = BuiltInShader::RoPEBwd.get_def();
+        let mut backward_graph = ComputeGraph::new(ctx.clone());
+
+        backward_graph.add_node(
+            &shader_bw,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: grad_output,
+                    mode: TensorMode::InOut,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: &t_meta,
+                    mode: TensorMode::Meta,
+                },
             ],
-            [seq_len, 1, 1],
+            [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
 
         Self {
             in_out_buffer: input_buffer.clone(),
             grad_input,
-            inv_freq_buffer,
-            graph: builder.build(),
-            backward_graph: bw_builder.build(),
+            forward_graph,
+            backward_graph,
         }
     }
 }
 
 impl Layer for RoPE {
     fn forward(&self) {
-        self.graph.execute();
+        self.forward_graph.execute();
     }
     fn backward(&self) {
         self.backward_graph.execute();
     }
-}
-
-fn inv_freq_init(dim: u32, ctx: Arc<Context>) -> GpuBuffer {
-    let half_dim = dim / 2;
-    let mut inv_freq_data = Vec::with_capacity(half_dim as usize);
-    for i in 0..half_dim {
-        let freq = (1.0 / 10000.0 as Real).powf((2 * i) as f32 / dim as f32);
-        inv_freq_data.push(freq);
-    }
-    let inv_freq_buffer = GpuBuffer::from_cpu(&inv_freq_data, &ctx);
-    inv_freq_buffer
 }

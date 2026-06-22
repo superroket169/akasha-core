@@ -1,157 +1,295 @@
 use super::traits::Layer;
 use crate::Real;
-use crate::nn::shader_paths::{CAUSAL_MASK, MATMUL, MATMUL_TRP, SOFTMAX, SOFTMAX_BWD};
-use filuplex::context::Context;
-use filuplex::graph::{ComputeGraphBuilder, ExecutableGraphQueue};
-use filuplex::ops::{BuiltInShader, GpuBuffer};
 use std::sync::Arc;
+use wilupgu::context::WgpuContext;
+use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
+use wilupgu::nn::shaders::BuiltInShader;
+use wilupgu::tensor::Tensor;
 
 pub struct SelfAttention {
-    pub ctx: Arc<Context>,
-    pub out_buffer: GpuBuffer,
-    pub grad_q: GpuBuffer,
-    pub grad_k: GpuBuffer,
-    pub grad_v: GpuBuffer,
-    pub grad_scores: GpuBuffer,
-    pub meta_qkt: GpuBuffer,
-    pub meta_seq: GpuBuffer,
-    pub meta_out: GpuBuffer,
+    pub ctx: Arc<WgpuContext>,
+    pub out_buffer: Arc<Tensor>,
+    pub grad_q: Arc<Tensor>,
+    pub grad_k: Arc<Tensor>,
+    pub grad_v: Arc<Tensor>,
+    pub grad_scores: Arc<Tensor>,
 
-    pub forward_queue: ExecutableGraphQueue,
-    pub backward_queue: ExecutableGraphQueue,
+    pub forward_graph: ComputeGraph,
+    pub backward_graph: ComputeGraph,
 }
 
 impl SelfAttention {
     pub fn new(
-        ctx: Arc<Context>,
+        ctx: Arc<WgpuContext>,
         seq_len: u32,
         dim: u32,
-        q_buf: &GpuBuffer,
-        k_buf: &GpuBuffer,
-        v_buf: &GpuBuffer,
-        grad_output: &GpuBuffer,
+        q_buf: &Arc<Tensor>,
+        k_buf: &Arc<Tensor>,
+        v_buf: &Arc<Tensor>,
+        grad_output: &Arc<Tensor>,
     ) -> Self {
         let scores_size = (seq_len * seq_len) as usize;
         let out_size = (seq_len * dim) as usize;
-        let scores_buf = GpuBuffer::from_cpu(&vec![0.0 as Real; scores_size], &ctx);
-        let out_buffer = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
 
-        let grad_q = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
-        let grad_k = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
-        let grad_v = GpuBuffer::from_cpu(&vec![0.0 as Real; out_size], &ctx);
-        let grad_scores = GpuBuffer::from_cpu(&vec![0.0 as Real; scores_size], &ctx);
+        // Tensor Allocation (Saf Wilupgu API)
+        let scores_data = vec![0.0 as Real; scores_size];
+        let t_scores = Arc::new(Tensor::init_from_cpu(ctx.clone(), &scores_data));
 
-        let meta_qkt =
-            GpuBuffer::from_cpu(&vec![seq_len as Real, dim as Real, seq_len as Real], &ctx);
-        let meta_seq = GpuBuffer::from_cpu(&vec![seq_len as Real], &ctx);
-        let meta_out =
-            GpuBuffer::from_cpu(&vec![seq_len as Real, seq_len as Real, dim as Real], &ctx);
+        let out_data = vec![0.0 as Real; out_size];
+        let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &out_data));
 
-        let shader_qkt = BuiltInShader::load_from_file(&ctx, MATMUL_TRP).load(&ctx);
-        let shader_mask = BuiltInShader::load_from_file(&ctx, CAUSAL_MASK).load(&ctx);
-        let shader_softmax = BuiltInShader::load_from_file(&ctx, SOFTMAX).load(&ctx);
-        let shader_out = BuiltInShader::load_from_file(&ctx, MATMUL).load(&ctx);
+        let grad_zero = vec![0.0 as Real; out_size];
+        let grad_q = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_zero));
+        let grad_k = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_zero));
+        let grad_v = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_zero));
+        let grad_scores = Arc::new(Tensor::init_from_cpu(ctx.clone(), &scores_data));
+
+        // Meta Tensors
+        let meta_qkt_data = vec![seq_len as u32, dim as u32, seq_len as u32];
+        let t_meta_qkt = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_qkt_data));
+
+        let meta_seq_data = vec![seq_len as u32];
+        let t_meta_seq = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_seq_data));
+
+        let meta_out_data = vec![seq_len as u32, seq_len as u32, dim as u32];
+        let t_meta_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_out_data));
+
+        // Shaders
+        let shader_qkt = BuiltInShader::MatMulTrp.get_def();
+        let shader_mask = BuiltInShader::CausalMask.get_def();
+        let shader_softmax = BuiltInShader::Softmax.get_def();
+        let shader_out = BuiltInShader::MatMul.get_def();
 
         // ==========================================
         //                  FORWARD
         // ==========================================
-        let mut forward_queue = ExecutableGraphQueue::new();
+        let mut forward_graph = ComputeGraph::new(ctx.clone());
 
-        let mut b_qkt = ComputeGraphBuilder::new(ctx.clone());
-        b_qkt.add_operation(
-            shader_qkt,
-            vec![(0, q_buf), (1, k_buf), (2, &scores_buf), (3, &meta_qkt)],
+        forward_graph.add_node(
+            &shader_qkt,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: q_buf,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: k_buf,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &t_scores,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &t_meta_qkt,
+                    mode: TensorMode::Meta,
+                },
+            ],
             [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
         );
-        forward_queue.push(b_qkt.build()); // Sıraya gir koçum!
 
-        let mut b_mask = ComputeGraphBuilder::new(ctx.clone());
-        b_mask.add_operation(
-            shader_mask,
-            vec![(0, &scores_buf), (1, &meta_seq)],
+        forward_graph.add_node(
+            &shader_mask,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: &t_scores,
+                    mode: TensorMode::InOut,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: &t_meta_seq,
+                    mode: TensorMode::Meta,
+                },
+            ],
             [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
         );
-        forward_queue.push(b_mask.build()); // Arkasına geç!
 
-        let mut b_softmax = ComputeGraphBuilder::new(ctx.clone());
-        b_softmax.add_operation(
-            shader_softmax,
-            vec![(0, &scores_buf), (1, &meta_seq)],
+        forward_graph.add_node(
+            &shader_softmax,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: &t_scores,
+                    mode: TensorMode::InOut,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: &t_meta_seq,
+                    mode: TensorMode::Meta,
+                },
+            ],
             [(seq_len + 255) / 256, 1, 1],
         );
-        forward_queue.push(b_softmax.build()); // Sen de geç!
 
-        let mut b_out = ComputeGraphBuilder::new(ctx.clone());
-        b_out.add_operation(
-            shader_out,
-            vec![
-                (0, &scores_buf),
-                (1, v_buf),
-                (2, &out_buffer),
-                (3, &meta_out),
+        forward_graph.add_node(
+            &shader_out,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: &t_scores,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: v_buf,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &out_buffer,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &t_meta_out,
+                    mode: TensorMode::Meta,
+                },
             ],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
-        forward_queue.push(b_out.build()); // Ve forward kapanışı!
 
         // ==========================================
         //                  BACKWARD
         // ==========================================
-        let mut backward_queue = ExecutableGraphQueue::new();
+        let mut backward_graph = ComputeGraph::new(ctx.clone());
+        let shader_matmul_bwd = BuiltInShader::MatMul.get_def();
+        let shader_matmul_bwd_trp = BuiltInShader::MatMulTrp.get_def();
+        let shader_softmax_bwd = BuiltInShader::SoftmaxBwd.get_def();
 
-        let shader_matmul_bwd = BuiltInShader::load_from_file(&ctx, MATMUL).load(&ctx);
-        let shader_matmul_bwd_trp = BuiltInShader::load_from_file(&ctx, MATMUL_TRP).load(&ctx);
-        let shader_softmax_bwd = BuiltInShader::load_from_file(&ctx, SOFTMAX_BWD).load(&ctx);
-
-        let mut bb_grad_v = ComputeGraphBuilder::new(ctx.clone());
-        bb_grad_v.add_operation(
-            shader_matmul_bwd_trp.clone(),
-            vec![
-                (0, &scores_buf),
-                (1, grad_output),
-                (2, &grad_v),
-                (3, &meta_qkt),
+        backward_graph.add_node(
+            &shader_matmul_bwd_trp,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: &t_scores,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: grad_output,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &grad_v,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &t_meta_qkt,
+                    mode: TensorMode::Meta,
+                },
             ],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
-        backward_queue.push(bb_grad_v.build());
 
-        let mut bb_grad_scores = ComputeGraphBuilder::new(ctx.clone());
-        bb_grad_scores.add_operation(
-            shader_matmul_bwd_trp.clone(),
-            vec![
-                (0, grad_output),
-                (1, v_buf),
-                (2, &grad_scores),
-                (3, &meta_out),
+        backward_graph.add_node(
+            &shader_matmul_bwd_trp,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: grad_output,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: v_buf,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &grad_scores,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &t_meta_out,
+                    mode: TensorMode::Meta,
+                },
             ],
             [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
         );
-        backward_queue.push(bb_grad_scores.build());
 
-        let mut bb_softmax = ComputeGraphBuilder::new(ctx.clone());
-        bb_softmax.add_operation(
-            shader_softmax_bwd,
-            vec![(0, &grad_scores), (1, &scores_buf), (2, &meta_seq)],
+        backward_graph.add_node(
+            &shader_softmax_bwd,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: &grad_scores,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: &t_scores,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &t_meta_seq,
+                    mode: TensorMode::Meta,
+                },
+            ],
             [(seq_len + 255) / 256, 1, 1],
         );
-        backward_queue.push(bb_softmax.build());
 
-        let mut bb_grad_q = ComputeGraphBuilder::new(ctx.clone());
-        bb_grad_q.add_operation(
-            shader_matmul_bwd,
-            vec![(0, &grad_scores), (1, k_buf), (2, &grad_q), (3, &meta_qkt)],
+        backward_graph.add_node(
+            &shader_matmul_bwd,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: &grad_scores,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: k_buf,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &grad_q,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &t_meta_qkt,
+                    mode: TensorMode::Meta,
+                },
+            ],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
-        backward_queue.push(bb_grad_q.build());
 
-        let mut bb_grad_k = ComputeGraphBuilder::new(ctx.clone());
-        bb_grad_k.add_operation(
-            shader_matmul_bwd_trp,
-            vec![(0, &grad_scores), (1, q_buf), (2, &grad_k), (3, &meta_qkt)],
+        backward_graph.add_node(
+            &shader_matmul_bwd_trp,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: &grad_scores,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: q_buf,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &grad_k,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &t_meta_qkt,
+                    mode: TensorMode::Meta,
+                },
+            ],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
-        backward_queue.push(bb_grad_k.build());
 
         Self {
             ctx,
@@ -160,20 +298,17 @@ impl SelfAttention {
             grad_k,
             grad_v,
             grad_scores,
-            meta_qkt,
-            meta_seq,
-            meta_out,
-            forward_queue,
-            backward_queue,
+            forward_graph,
+            backward_graph,
         }
     }
 }
 
 impl Layer for SelfAttention {
     fn forward(&self) {
-        self.forward_queue.execute();
+        self.forward_graph.execute();
     }
     fn backward(&self) {
-        self.backward_queue.execute();
+        self.backward_graph.execute();
     }
 }

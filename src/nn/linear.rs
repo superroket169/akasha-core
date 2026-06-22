@@ -1,88 +1,133 @@
 use super::traits::Layer;
 use crate::Real;
-use crate::nn::shader_paths::{MATMUL, MATMUL_BWD_INPUT_TRP_B, MATMUL_BWD_WEIGHT_TRP_A};
-use filuplex::context::Context;
-use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
-use filuplex::ops::{BuiltInShader, GpuBuffer};
 use std::sync::Arc;
+use wilupgu::context::WgpuContext;
+use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
+use wilupgu::nn::shaders::BuiltInShader;
+use wilupgu::tensor::Tensor;
 
 pub struct Linear {
-    pub weight: GpuBuffer,
-    pub out_buffer: GpuBuffer,
-
-    pub grad_weight: GpuBuffer,
-    pub grad_input: GpuBuffer,
-
-    pub forward_graph: ExecutableGraph,
-    pub backward_graph: ExecutableGraph,
+    pub weight: Arc<Tensor>,
+    pub out_buffer: Arc<Tensor>,
+    pub grad_weight: Arc<Tensor>,
+    pub grad_input: Arc<Tensor>,
+    pub forward_graph: ComputeGraph,
+    pub backward_graph: ComputeGraph,
 }
 
 impl Linear {
     pub fn new(
-        ctx: Arc<Context>,
+        ctx: Arc<WgpuContext>,
         in_features: u32,
         out_features: u32,
         weight_data: &[Real],
-        input_buffer: &GpuBuffer,
-        grad_output: &GpuBuffer,
+        input_buffer: &Arc<Tensor>,
+        grad_output: &Arc<Tensor>,
     ) -> Self {
+        let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), weight_data));
+
+        let m = 1u32; // şimdilik 1
+        let meta_data = vec![m, out_features, in_features];
+        let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
+
+        let out_size = (m * out_features) as usize;
+        let zero_out = vec![0.0 as Real; out_size];
+        let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
+
+        let zero_grad_w = vec![0.0 as Real; (in_features * out_features) as usize];
+        let grad_weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_grad_w));
+
+        let zero_grad_in = vec![0.0 as Real; (m * in_features) as usize];
+        let grad_input = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_grad_in));
+
         // --- FORWARD ---
-        let weight = GpuBuffer::from_cpu(weight_data, &ctx);
-
-        let seq_len = 1;
-        let m = seq_len as u32;
-
-        let meta_data = vec![m as Real, in_features as Real, out_features as Real];
-        let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
-
-        let dummy_out = vec![0.0 as Real; (m * out_features) as usize];
-        let out_buffer = GpuBuffer::from_cpu(&dummy_out, &ctx);
-
-        let shader = BuiltInShader::load_from_file(&ctx, MATMUL).load(&ctx);
-
-        let mut builder = ComputeGraphBuilder::new(ctx.clone());
-        builder.add_operation(
-            shader,
-            vec![
-                (0, input_buffer),
-                (1, &weight),
-                (2, &out_buffer),
-                (3, &meta),
+        let shader_fw = BuiltInShader::MatMul.get_def();
+        let mut forward_graph = ComputeGraph::new(ctx.clone());
+        forward_graph.add_node(
+            &shader_fw,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: input_buffer,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: &weight,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &out_buffer,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &t_meta,
+                    mode: TensorMode::Meta,
+                },
             ],
             [(out_features + 15) / 16, (m + 15) / 16, 1],
         );
-        let forward_graph = builder.build();
 
         // --- BACKWARD ---
-        let dummy_grad_w = vec![0.0 as Real; (in_features * out_features) as usize];
-        let grad_weight = GpuBuffer::from_cpu(&dummy_grad_w, &ctx);
+        let shader_bwd_w = BuiltInShader::MatMulWeightBwd.get_def();
+        let shader_bwd_in = BuiltInShader::MatMulTrp.get_def(); // Input Trp B
+        let mut backward_graph = ComputeGraph::new(ctx.clone());
 
-        let dummy_grad_in = vec![0.0 as Real; (m * in_features) as usize];
-        let grad_input = GpuBuffer::from_cpu(&dummy_grad_in, &ctx);
-
-        let shader_bwd_w = BuiltInShader::load_from_file(&ctx, MATMUL_BWD_WEIGHT_TRP_A).load(&ctx);
-        let shader_bwd_in = BuiltInShader::load_from_file(&ctx, MATMUL_BWD_INPUT_TRP_B).load(&ctx);
-
-        let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
-
-        bw_builder.add_operation(
-            shader_bwd_w,
-            vec![
-                (0, input_buffer),
-                (1, grad_output),
-                (2, &grad_weight),
-                (3, &meta),
+        backward_graph.add_node(
+            &shader_bwd_w,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: input_buffer,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: grad_output,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &grad_weight,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &t_meta,
+                    mode: TensorMode::Meta,
+                },
             ],
             [(out_features + 15) / 16, (in_features + 15) / 16, 1],
         );
 
-        bw_builder.add_operation(
-            shader_bwd_in,
-            vec![(0, grad_output), (1, &weight), (2, &grad_input), (3, &meta)],
+        backward_graph.add_node(
+            &shader_bwd_in,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: grad_output,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: &weight,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &grad_input,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &t_meta,
+                    mode: TensorMode::Meta,
+                },
+            ],
             [(in_features + 15) / 16, (m + 15) / 16, 1],
         );
-
-        let backward_graph = bw_builder.build();
 
         Self {
             weight,
@@ -99,7 +144,6 @@ impl Layer for Linear {
     fn forward(&self) {
         self.forward_graph.execute();
     }
-
     fn backward(&self) {
         self.backward_graph.execute();
     }

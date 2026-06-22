@@ -1,67 +1,72 @@
 use super::traits::Layer;
-use crate::Real;
-use crate::nn::shader_paths::{SILU, SILU_BWD};
-use filuplex::context::Context;
-use filuplex::graph::{ComputeGraphBuilder, ExecutableGraph};
-use filuplex::ops::{BuiltInShader, GpuBuffer};
 use std::sync::Arc;
+use wilupgu::context::WgpuContext;
+use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
+use wilupgu::nn::shaders::BuiltInShader;
+use wilupgu::tensor::Tensor;
 
 pub struct SiLU {
-    pub out_buffer: GpuBuffer,
-    pub grad_input: GpuBuffer,
-    pub meta: GpuBuffer,
-    pub graph: ExecutableGraph,
-    pub backward_graph: ExecutableGraph,
+    pub in_out_buffer: Arc<Tensor>,
+    pub forward_graph: ComputeGraph,
+    pub backward_graph: ComputeGraph,
 }
 
 impl SiLU {
     pub fn new(
-        ctx: Arc<Context>,
-        length: u32,
-        input_buffer: &GpuBuffer,
-        grad_output: &GpuBuffer,
+        ctx: Arc<WgpuContext>,
+        total_elements: u32,
+        input_buffer: &Arc<Tensor>,
+        grad_output: &Arc<Tensor>,
     ) -> Self {
-        let meta_data = vec![length as Real];
-        let meta = GpuBuffer::from_cpu(&meta_data, &ctx);
+        let shader_fw = BuiltInShader::SiLU.get_def();
+        let mut forward_graph = ComputeGraph::new(ctx.clone());
 
-        // --- FORWARD ---
-        let shader = BuiltInShader::load_from_file(&ctx, SILU).load(&ctx);
-        let mut builder = ComputeGraphBuilder::new(ctx.clone());
-        builder.add_operation(
-            shader,
-            vec![(0, input_buffer), (1, &meta)],
-            [(length + 255) / 256, 1, 1],
+        forward_graph.add_node(
+            &shader_fw,
+            &[TensorBind {
+                binding: 0,
+                tensor: input_buffer,
+                mode: TensorMode::InOut,
+            }],
+            [(total_elements + 255) / 256, 1, 1],
         );
 
-        // --- BACKWARD ---
-        let grad_input = GpuBuffer::from_cpu(&vec![0.0 as Real; length as usize], &ctx);
-        let mut bw_builder = ComputeGraphBuilder::new(ctx.clone());
-        let shader_bwd = BuiltInShader::load_from_file(&ctx, SILU_BWD).load(&ctx);
+        let shader_bw = BuiltInShader::SiLUBwd.get_def();
+        let mut backward_graph = ComputeGraph::new(ctx.clone());
 
-        bw_builder.add_operation(
-            shader_bwd,
-            vec![
-                (0, input_buffer),
-                (1, grad_output),
-                (2, &grad_input),
-                (3, &meta),
+        backward_graph.add_node(
+            &shader_bw,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: input_buffer,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: grad_output,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: grad_output,
+                    mode: TensorMode::Output,
+                },
             ],
-            [(length + 255) / 256, 1, 1],
+            [(total_elements + 255) / 256, 1, 1],
         );
 
         Self {
-            out_buffer: input_buffer.clone(),
-            grad_input,
-            meta,
-            graph: builder.build(),
-            backward_graph: bw_builder.build(),
+            in_out_buffer: input_buffer.clone(),
+            forward_graph,
+            backward_graph,
         }
     }
 }
 
 impl Layer for SiLU {
     fn forward(&self) {
-        self.graph.execute();
+        self.forward_graph.execute();
     }
     fn backward(&self) {
         self.backward_graph.execute();
