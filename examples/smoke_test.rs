@@ -1,13 +1,12 @@
-use akasha_core::Real;
 use akasha_core::nn::akasha_model::AkashaModel;
-use filuplex::context::{Context, GpuPref};
-use filuplex::ops::GpuBuffer;
 use std::sync::Arc;
+use wilupgu::context::WgpuContext;
+use wilupgu::tensor::Tensor;
 
 fn main() {
-    println!("Smoke test starting");
+    println!("[SMOKE TEST] Başlıyor...");
 
-    let ctx = Arc::new(Context::new(GpuPref::Default));
+    let ctx = Arc::new(pollster::block_on(WgpuContext::new()));
 
     let vocab_size = 50304;
     let dim = 1024;
@@ -15,41 +14,37 @@ fn main() {
     let num_layers = 1;
 
     println!(
-        "Model Config: {} Layer, {} Dim, {} SeqLen",
-        num_layers, dim, seq_len
+        "Model Config: {} Katman, {} Boyut, {} SeqLen, {} Vocab",
+        num_layers, dim, seq_len, vocab_size
     );
 
-    let mut tokens_cpu = vec![0.0 as Real; seq_len as usize];
+    let mut tokens_cpu = vec![0.0f32; seq_len as usize];
     for i in 0..seq_len {
-        tokens_cpu[i as usize] = ((i * 13) % vocab_size) as Real;
+        tokens_cpu[i as usize] = ((i * 13) % vocab_size) as f32;
     }
 
-    let input_tokens = GpuBuffer::from_cpu(&tokens_cpu, &ctx);
+    let t_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens_cpu));
 
-    println!("Akasha going to gpu (Pipeline Starting)...");
-
+    println!("Akasha going to vram...");
     let model = AkashaModel::new(
         ctx.clone(),
         vocab_size,
         dim,
         seq_len,
         num_layers,
-        &input_tokens,
+        &t_input_tokens,
     );
 
-    println!("Forward Pass is started");
-
+    println!("Forward Pass...");
     let start_time = std::time::Instant::now();
-    model.forward(ctx.clone());
-    println!("Forward Pass Complated! Time: {:?}", start_time.elapsed());
 
-    let out_size = (seq_len * vocab_size) as usize;
-    let cpu_out = vec![0.0 as Real; out_size];
+    model.forward();
 
-    println!("datas from GPU goes to CPU...");
+    println!("Forward Pass Tamamlandı! Süre: {:?}", start_time.elapsed());
 
-    let cpu_out = model.lm_head.out_buffer.to_cpu(&ctx);
+    println!("Results comes from vram...");
+    let cpu_out: Vec<f32> = model.lm_head.out_buffer.to_cpu();
 
-    println!("Test Completad, thats are values:");
+    println!("[TEST BAŞARILI] İlk 10 Değer:");
     println!("{:#?}", &cpu_out[0..10]);
 }

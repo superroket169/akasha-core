@@ -34,3 +34,8 @@ Gradient Clipping => 1.0 => Not ready
 - [ ] **Data Pipeline:** Tokenizer integration & Dataset scrubbing (Python)
 - [ ] **Training Loop:** Epochs, Gradient Accumulation, and Save/Load
 - [ ] **Validation:** "Hello World" (Overfitting on single batch)
+
+## New Architecture Desicion
+Vulkans classical strategy is FAILED. Well we have another vulkan pipeline plan
+This is it:
+
