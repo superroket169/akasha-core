@@ -18,7 +18,7 @@ fn main() {
         num_layers, dim, seq_len, vocab_size
     );
 
-    let mut tokens_cpu = vec![0.0f32; seq_len as usize];
+    let mut tokens_cpu = vec![0.5f32; seq_len as usize];
     for i in 0..seq_len {
         tokens_cpu[i as usize] = ((i * 13) % vocab_size) as f32;
     }
