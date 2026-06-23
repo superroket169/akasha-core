@@ -6,6 +6,7 @@ use wilupgu::context::WgpuContext;
 use wilupgu::tensor::Tensor;
 
 use super::embedding::Embedding;
+use super::init::random_normal_vec;
 use super::linear::Linear;
 use super::pipeline::TransformerBlock;
 use super::rmsnorm::RMSNorm;
@@ -51,13 +52,13 @@ impl AkashaModel {
             .map(|_| Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim)))
             .collect();
 
-        let dummy_emb_w = vec![0.01 as Real; (vocab_size * dim) as usize];
+        let emb_w = random_normal_vec((vocab_size * dim) as usize, 0.0, 0.02);
         let embedding = Embedding::new(
             ctx.clone(),
             vocab_size,
             dim,
             seq_len,
-            &dummy_emb_w,
+            &emb_w,
             input_tokens,
             &edges[0],
         );
@@ -80,24 +81,24 @@ impl AkashaModel {
 
         let last_block = layers.last().expect("At least should be one layer!");
 
-        let dummy_norm_w = vec![1.0 as Real; dim as usize];
+        let final_norm_w = random_normal_vec(dim as usize, 1.0, 0.02);
         let final_norm = RMSNorm::new(
             ctx.clone(),
             dim,
             seq_len,
-            &dummy_norm_w,
+            &final_norm_w,
             &last_block.add_2.in_out_buffer,
             &g_lmhead_in,
             &edges[num_layers],
         );
 
-        let dummy_head_w = vec![0.01 as Real; (dim * vocab_size) as usize];
+        let head_w = random_normal_vec((dim * vocab_size) as usize, 0.0, 0.02);
         let lm_head = Linear::new(
             ctx.clone(),
             dim,
             vocab_size,
             seq_len,
-            &dummy_head_w,
+            &head_w,
             &final_norm.out_buffer,
             &grad_logits,
             &g_lmhead_in,

@@ -2,6 +2,7 @@ pub mod add;
 pub mod akasha_model;
 pub mod attention;
 pub mod embedding;
+pub mod init;
 pub mod linear;
 pub mod pipeline;
 pub mod rmsnorm;

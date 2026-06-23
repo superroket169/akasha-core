@@ -1,5 +1,6 @@
 use super::add::Add;
 use super::attention::SelfAttention;
+use super::init::random_normal_vec;
 use super::linear::Linear;
 use super::rmsnorm::RMSNorm;
 use super::silu::SiLU;
@@ -90,25 +91,29 @@ impl TransformerBlock {
         let g_norm1_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let grad_input = grad_input.clone();
 
-        let dummy_w = vec![0.01 as Real; (dim * dim) as usize];
-        let dummy_norm_w = vec![1.0 as Real; dim as usize];
+        let norm_1_w = random_normal_vec(dim as usize, 1.0, 0.02);
 
         let norm_1 = RMSNorm::new(
             ctx.clone(),
             dim,
             seq_len,
-            &dummy_norm_w,
+            &norm_1_w,
             input_tensor,
             &g_norm1_out,
             &g_norm1_in,
         );
+
+        let q_w = random_normal_vec((dim * dim) as usize, 0.0, 0.02);
+        let k_w = random_normal_vec((dim * dim) as usize, 0.0, 0.02);
+        let v_w = random_normal_vec((dim * dim) as usize, 0.0, 0.02);
+        let out_w = random_normal_vec((dim * dim) as usize, 0.0, 0.02);
 
         let q_proj = Linear::new(
             ctx.clone(),
             dim,
             dim,
             seq_len,
-            &dummy_w,
+            &q_w,
             &norm_1.out_buffer,
             &g_attn_q,
             &g_qproj_in,
@@ -118,7 +123,7 @@ impl TransformerBlock {
             dim,
             dim,
             seq_len,
-            &dummy_w,
+            &k_w,
             &norm_1.out_buffer,
             &g_attn_k,
             &g_kproj_in,
@@ -128,7 +133,7 @@ impl TransformerBlock {
             dim,
             dim,
             seq_len,
-            &dummy_w,
+            &v_w,
             &norm_1.out_buffer,
             &g_attn_v,
             &g_vproj_in,
@@ -152,7 +157,7 @@ impl TransformerBlock {
             dim,
             dim,
             seq_len,
-            &dummy_w,
+            &out_w,
             &attention.out_buffer,
             &g_add1_b,
             &g_outproj_in,
@@ -168,25 +173,26 @@ impl TransformerBlock {
             &g_add1_b,
         );
 
+        let norm_2_w = random_normal_vec(dim as usize, 1.0, 0.02);
         let norm_2 = RMSNorm::new(
             ctx.clone(),
             dim,
             seq_len,
-            &dummy_norm_w,
+            &norm_2_w,
             &add_1.in_out_buffer,
             &g_ffnup_in,
             &g_norm2_in,
         );
 
-        let dummy_ffn_w = vec![0.01 as Real; (dim * hidden_dim) as usize];
-        let dummy_ffn_down_w = vec![0.01 as Real; (hidden_dim * dim) as usize];
+        let ffn_up_w = random_normal_vec((dim * hidden_dim) as usize, 0.0, 0.02);
+        let ffn_down_w = random_normal_vec((hidden_dim * dim) as usize, 0.0, 0.02);
 
         let ffn_up = Linear::new(
             ctx.clone(),
             dim,
             hidden_dim,
             seq_len,
-            &dummy_ffn_w,
+            &ffn_up_w,
             &norm_2.out_buffer,
             &g_silu_in,
             &g_ffnup_in,
@@ -205,7 +211,7 @@ impl TransformerBlock {
             hidden_dim,
             dim,
             seq_len,
-            &dummy_ffn_down_w,
+            &ffn_down_w,
             &silu.in_out_buffer,
             &g_add2_b,
             &g_ffndown_in,
