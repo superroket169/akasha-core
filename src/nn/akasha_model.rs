@@ -28,6 +28,26 @@ pub struct AkashaModel {
 }
 
 impl AkashaModel {
+    pub fn train_step(&self, input_tokens: &[u32], target_tokens: &[u32], lr: f32) -> () {
+        // TODO: this is sketch of train_step
+        /*
+        self.input_tensor.copy_from_cpu(input_tokens);
+        self.target_tensor.copy_from_cpu(target_tokens);
+
+        self.zero_grad();
+
+        self.forward();
+
+        self.backward();
+
+        self.apply_gradients(lr);
+
+        let loss_val: Vec<f32> = self.loss_buffer.to_cpu();
+        loss_val[0]
+
+        */
+    }
+
     pub fn new(
         ctx: Arc<WgpuContext>,
         vocab_size: u32,
