@@ -250,7 +250,17 @@ impl TransformerBlock {
 
     pub fn zero_grad(&self) {
         zero_tensor(&self.norm_1.grad_weight);
+        zero_tensor(&self.q_proj.grad_weight);
+        zero_tensor(&self.k_proj.grad_weight);
+        zero_tensor(&self.v_proj.grad_weight);
+        zero_tensor(&self.out_proj.grad_weight);
         zero_tensor(&self.norm_2.grad_weight);
+        zero_tensor(&self.ffn_up.grad_weight);
+        zero_tensor(&self.ffn_down.grad_weight);
+        self.zero_transient_grads();
+    }
+
+    pub fn zero_transient_grads(&self) {
         zero_tensor(&self.add_1.grad_a);
         zero_tensor(&self.add_1.grad_b);
         zero_tensor(&self.add_2.grad_a);

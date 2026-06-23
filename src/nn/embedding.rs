@@ -41,12 +41,12 @@ impl Embedding {
         let zero_out = vec![0.0 as Real; out_size];
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
 
-        let shader = BuiltInShader::Embedding.get_def();
+        let shader_fw = BuiltInShader::Embedding.get_def();
 
         // --- FORWARD ---
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         forward_graph.add_node(
-            &shader,
+            &shader_fw,
             &[
                 TensorBind {
                     binding: 0,
@@ -73,9 +73,10 @@ impl Embedding {
         );
 
         // --- BACKWARD ---
+        let shader_bw = BuiltInShader::EmbeddingBwd.get_def();
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         backward_graph.add_node(
-            &shader,
+            &shader_bw,
             &[
                 TensorBind {
                     binding: 0,
