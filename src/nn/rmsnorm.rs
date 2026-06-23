@@ -19,6 +19,7 @@ pub struct RMSNorm {
     pub out_buffer: Arc<Tensor>,
     pub grad_weight: Arc<Tensor>,
     pub grad_input: Arc<Tensor>,
+    pub rsqrt_cache: Arc<Tensor>,
     pub forward_graph: ComputeGraph,
     pub backward_graph: ComputeGraph,
 }
@@ -47,6 +48,11 @@ impl RMSNorm {
         let zero_out = vec![0.0 as Real; out_size];
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
         let grad_input = grad_input.clone();
+
+        let rsqrt_cache = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; seq_len as usize],
+        ));
 
         let eps = 1e-5f32;
         let meta_data = [Meta {
@@ -114,7 +120,7 @@ impl RMSNorm {
                 },
                 TensorBind {
                     binding: 4,
-                    tensor: &grad_weight,
+                    tensor: &rsqrt_cache,
                     mode: TensorMode::Output,
                 },
                 TensorBind {
@@ -126,11 +132,45 @@ impl RMSNorm {
             [seq_len, 1, 1],
         );
 
+        let shader_bw_weight = BuiltInShader::RMSNormWeightBwd.get_def();
+        backward_graph.add_node(
+            &shader_bw_weight,
+            &[
+                TensorBind {
+                    binding: 0,
+                    tensor: grad_output,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 1,
+                    tensor: input_buffer,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 2,
+                    tensor: &rsqrt_cache,
+                    mode: TensorMode::Input,
+                },
+                TensorBind {
+                    binding: 3,
+                    tensor: &grad_weight,
+                    mode: TensorMode::Output,
+                },
+                TensorBind {
+                    binding: 4,
+                    tensor: &t_meta,
+                    mode: TensorMode::Meta,
+                },
+            ],
+            [(dim + 255) / 256, 1, 1],
+        );
+
         Self {
             weight,
             out_buffer,
             grad_weight,
             grad_input,
+            rsqrt_cache,
             forward_graph,
             backward_graph,
         }
