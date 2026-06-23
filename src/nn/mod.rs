@@ -1,6 +1,7 @@
 pub mod add;
 pub mod akasha_model;
 pub mod attention;
+pub mod cross_entropy;
 pub mod embedding;
 pub mod init;
 pub mod linear;
@@ -17,6 +18,7 @@ pub use traits::Layer;
 pub use traits::Serializable;
 
 pub use add::Add;
+pub use cross_entropy::CrossEntropy;
 pub use rmsnorm::RMSNorm;
 pub use rope::RoPE;
 pub use silu::SiLU;
