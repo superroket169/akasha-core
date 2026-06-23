@@ -6,6 +6,14 @@ use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
 use wilupgu::nn::shaders::BuiltInShader;
 use wilupgu::tensor::Tensor;
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct Meta {
+    seq_len: u32,
+    size: u32,
+    eps: f32,
+}
+
 pub struct RMSNorm {
     pub weight: Arc<Tensor>,
     pub out_buffer: Arc<Tensor>,
@@ -40,7 +48,11 @@ impl RMSNorm {
         let grad_input = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
 
         let eps = 1e-5f32;
-        let meta_data = vec![dim as f32, eps]; // struct Meta { size: u32, eps: f32 } uydurması için
+        let meta_data = [Meta {
+            seq_len,
+            size: dim,
+            eps,
+        }];
         let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
 
         // --- FORWARD ---
