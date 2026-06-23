@@ -99,10 +99,10 @@ fn main() {
 
     let vocab_size = vocab.len() as u32;
     let seq_len = sentence_tokens.len() as u32;
-    let dim = 256;
-    let num_layers = 4;
-    let epochs = 1000;
-    let lr = 0.1f32;
+    let dim = 128;
+    let num_layers = 2;
+    let epochs = 1500;
+    let lr = 0.005f32;
 
     println!(
         "Vocab: {} words (incl. <pad>), seq_len: {}, dim: {}, layers: {}",

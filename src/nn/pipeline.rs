@@ -1,6 +1,6 @@
 use super::add::Add;
 use super::attention::SelfAttention;
-use super::init::random_normal_vec;
+use super::init::{random_normal_vec, xavier_std};
 use super::linear::Linear;
 use super::rmsnorm::RMSNorm;
 use super::silu::SiLU;
@@ -103,10 +103,11 @@ impl TransformerBlock {
             &g_norm1_in,
         );
 
-        let q_w = random_normal_vec((dim * dim) as usize, 0.0, 0.02);
-        let k_w = random_normal_vec((dim * dim) as usize, 0.0, 0.02);
-        let v_w = random_normal_vec((dim * dim) as usize, 0.0, 0.02);
-        let out_w = random_normal_vec((dim * dim) as usize, 0.0, 0.02);
+        let proj_std = xavier_std(dim);
+        let q_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
+        let k_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
+        let v_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
+        let out_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
 
         let q_proj = Linear::new(
             ctx.clone(),
@@ -184,8 +185,9 @@ impl TransformerBlock {
             &g_norm2_in,
         );
 
-        let ffn_up_w = random_normal_vec((dim * hidden_dim) as usize, 0.0, 0.02);
-        let ffn_down_w = random_normal_vec((hidden_dim * dim) as usize, 0.0, 0.02);
+        let ffn_up_w = random_normal_vec((dim * hidden_dim) as usize, 0.0, xavier_std(dim));
+        let ffn_down_w =
+            random_normal_vec((hidden_dim * dim) as usize, 0.0, xavier_std(hidden_dim));
 
         let ffn_up = Linear::new(
             ctx.clone(),

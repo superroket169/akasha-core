@@ -6,7 +6,7 @@ use wilupgu::context::WgpuContext;
 use wilupgu::tensor::Tensor;
 
 use super::embedding::Embedding;
-use super::init::random_normal_vec;
+use super::init::{random_normal_vec, xavier_std};
 use super::linear::Linear;
 use super::pipeline::TransformerBlock;
 use super::rmsnorm::RMSNorm;
@@ -52,7 +52,7 @@ impl AkashaModel {
             .map(|_| Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim)))
             .collect();
 
-        let emb_w = random_normal_vec((vocab_size * dim) as usize, 0.0, 0.02);
+        let emb_w = random_normal_vec((vocab_size * dim) as usize, 0.0, xavier_std(dim));
         let embedding = Embedding::new(
             ctx.clone(),
             vocab_size,
@@ -92,7 +92,7 @@ impl AkashaModel {
             &edges[num_layers],
         );
 
-        let head_w = random_normal_vec((dim * vocab_size) as usize, 0.0, 0.02);
+        let head_w = random_normal_vec((dim * vocab_size) as usize, 0.0, xavier_std(dim));
         let lm_head = Linear::new(
             ctx.clone(),
             dim,
