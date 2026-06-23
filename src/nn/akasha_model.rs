@@ -12,12 +12,18 @@ use super::rmsnorm::RMSNorm;
 use super::traits::Layer;
 use super::weights::{AkashaWeights, TransformerBlockWeights};
 
+fn zero_tensor(t: &Tensor) {
+    let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
+    t.copy_from_cpu(&vec![0.0 as Real; len]);
+}
+
 pub struct AkashaModel {
     pub ctx: Arc<WgpuContext>,
     pub embedding: Embedding,
     pub layers: Vec<TransformerBlock>,
     pub final_norm: RMSNorm,
     pub lm_head: Linear,
+    pub grad_logits: Arc<Tensor>,
 }
 
 impl AkashaModel {
@@ -29,10 +35,23 @@ impl AkashaModel {
         num_layers: usize,
         input_tokens: &Arc<Tensor>,
     ) -> Self {
-        let dummy_emb_w = vec![0.01 as Real; (vocab_size * dim) as usize];
-        let dummy_grad_emb = vec![0.0 as Real; (seq_len * dim) as usize];
-        let t_dummy_grad_emb = Arc::new(Tensor::init_from_cpu(ctx.clone(), &dummy_grad_emb));
+        assert!(num_layers >= 1, "At least one layer is required!");
 
+        let dim_size = (seq_len * dim) as usize;
+        let vocab_out_size = (seq_len * vocab_size) as usize;
+        let zeros_dim = vec![0.0 as Real; dim_size];
+
+        let grad_logits = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; vocab_out_size],
+        ));
+        let g_lmhead_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
+
+        let edges: Vec<Arc<Tensor>> = (0..=num_layers)
+            .map(|_| Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim)))
+            .collect();
+
+        let dummy_emb_w = vec![0.01 as Real; (vocab_size * dim) as usize];
         let embedding = Embedding::new(
             ctx.clone(),
             vocab_size,
@@ -40,34 +59,36 @@ impl AkashaModel {
             seq_len,
             &dummy_emb_w,
             input_tokens,
-            &t_dummy_grad_emb,
+            &edges[0],
         );
 
         let mut current_input = embedding.out_buffer.clone();
         let mut layers = Vec::with_capacity(num_layers);
 
-        for _ in 0..num_layers {
-            let block = TransformerBlock::new(ctx.clone(), dim, seq_len, &current_input);
+        for i in 0..num_layers {
+            let block = TransformerBlock::new(
+                ctx.clone(),
+                dim,
+                seq_len,
+                &current_input,
+                &edges[i + 1],
+                &edges[i],
+            );
             current_input = block.add_2.in_out_buffer.clone();
             layers.push(block);
         }
 
         let last_block = layers.last().expect("At least should be one layer!");
 
-        let dummy_grad_dim = vec![0.0 as Real; (seq_len * dim) as usize];
-        let t_dummy_grad_dim = Arc::new(Tensor::init_from_cpu(ctx.clone(), &dummy_grad_dim));
-
-        let dummy_grad_vocab = vec![0.0 as Real; (seq_len * vocab_size) as usize];
-        let t_dummy_grad_vocab = Arc::new(Tensor::init_from_cpu(ctx.clone(), &dummy_grad_vocab));
-
         let dummy_norm_w = vec![1.0 as Real; dim as usize];
         let final_norm = RMSNorm::new(
             ctx.clone(),
             dim,
-            1,
+            seq_len,
             &dummy_norm_w,
             &last_block.add_2.in_out_buffer,
-            &t_dummy_grad_dim,
+            &g_lmhead_in,
+            &edges[num_layers],
         );
 
         let dummy_head_w = vec![0.01 as Real; (dim * vocab_size) as usize];
@@ -78,7 +99,8 @@ impl AkashaModel {
             seq_len,
             &dummy_head_w,
             &final_norm.out_buffer,
-            &t_dummy_grad_vocab,
+            &grad_logits,
+            &g_lmhead_in,
         );
 
         Self {
@@ -87,6 +109,7 @@ impl AkashaModel {
             layers,
             final_norm,
             lm_head,
+            grad_logits,
         }
     }
 
@@ -106,6 +129,13 @@ impl AkashaModel {
             layer.backward();
         }
         self.embedding.backward();
+    }
+
+    pub fn zero_grad(&self) {
+        zero_tensor(&self.final_norm.grad_weight);
+        for layer in self.layers.iter() {
+            layer.zero_grad();
+        }
     }
 
     pub fn save_to_file(&self, path: &str) -> bincode::Result<()> {
