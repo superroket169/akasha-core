@@ -5,6 +5,7 @@ use std::sync::Arc;
 use wilupgu::context::WgpuContext;
 use wilupgu::tensor::Tensor;
 
+use super::cross_entropy::CrossEntropy;
 use super::embedding::Embedding;
 use super::init::{random_normal_vec, xavier_std};
 use super::linear::Linear;
@@ -12,40 +13,128 @@ use super::pipeline::TransformerBlock;
 use super::rmsnorm::RMSNorm;
 use super::traits::Layer;
 use super::weights::{AkashaWeights, TransformerBlockWeights};
+use crate::optim::AdamW;
 
 fn zero_tensor(t: &Tensor) {
     let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
     t.copy_from_cpu(&vec![0.0 as Real; len]);
 }
 
+fn collect_trainable_params(
+    embedding: &Embedding,
+    layers: &[TransformerBlock],
+    final_norm: &RMSNorm,
+    lm_head: &Linear,
+) -> Vec<(Arc<Tensor>, Arc<Tensor>)> {
+    let mut params: Vec<(Arc<Tensor>, Arc<Tensor>)> =
+        vec![(embedding.table.clone(), embedding.grad_table.clone())];
+    for layer in layers.iter() {
+        params.push((
+            layer.norm_1.weight.clone(),
+            layer.norm_1.grad_weight.clone(),
+        ));
+        params.push((
+            layer.q_proj.weight.clone(),
+            layer.q_proj.grad_weight.clone(),
+        ));
+        params.push((
+            layer.k_proj.weight.clone(),
+            layer.k_proj.grad_weight.clone(),
+        ));
+        params.push((
+            layer.v_proj.weight.clone(),
+            layer.v_proj.grad_weight.clone(),
+        ));
+        params.push((
+            layer.out_proj.weight.clone(),
+            layer.out_proj.grad_weight.clone(),
+        ));
+        params.push((
+            layer.norm_2.weight.clone(),
+            layer.norm_2.grad_weight.clone(),
+        ));
+        params.push((
+            layer.ffn_up.weight.clone(),
+            layer.ffn_up.grad_weight.clone(),
+        ));
+        params.push((
+            layer.ffn_down.weight.clone(),
+            layer.ffn_down.grad_weight.clone(),
+        ));
+    }
+    params.push((final_norm.weight.clone(), final_norm.grad_weight.clone()));
+    params.push((lm_head.weight.clone(), lm_head.grad_weight.clone()));
+    params
+}
+
 pub struct AkashaModel {
     pub ctx: Arc<WgpuContext>,
+    pub input_tokens: Arc<Tensor>,
     pub embedding: Embedding,
     pub layers: Vec<TransformerBlock>,
     pub final_norm: RMSNorm,
     pub lm_head: Linear,
     pub grad_logits: Arc<Tensor>,
+    pub cross_entropy: CrossEntropy,
+    pub optimizer: AdamW,
 }
 
 impl AkashaModel {
-    pub fn train_step(&self, input_tokens: &[u32], target_tokens: &[u32], lr: f32) -> () {
-        // TODO: this is sketch of train_step
-        /*
-        self.input_tensor.copy_from_cpu(input_tokens);
-        self.target_tensor.copy_from_cpu(target_tokens);
+    pub fn train_step(
+        &self,
+        input_tokens: &[u32],
+        target_tokens: &[u32],
+        batch_size: usize,
+        lr: f32,
+    ) -> f32 {
+        let seq_len = self.cross_entropy.seq_len as usize;
+        assert_eq!(
+            input_tokens.len(),
+            batch_size * seq_len,
+            "train_step: input_tokens must be batch_size * seq_len long"
+        );
+        assert_eq!(
+            target_tokens.len(),
+            batch_size * seq_len,
+            "train_step: target_tokens must be batch_size * seq_len long"
+        );
+
+        self.cross_entropy
+            .set_grad_scale(1.0 / (seq_len * batch_size) as Real);
 
         self.zero_grad();
 
-        self.forward();
+        let mut total_loss = 0.0 as Real;
+        for i in 0..batch_size {
+            let window = i * seq_len..(i + 1) * seq_len;
+            self.input_tokens
+                .copy_from_cpu(&input_tokens[window.clone()]);
+            self.cross_entropy
+                .target_tokens
+                .copy_from_cpu(&target_tokens[window]);
 
-        self.backward();
+            self.zero_transient_grads();
 
-        self.apply_gradients(lr);
+            self.forward();
+            self.cross_entropy.forward();
+            total_loss += self.cross_entropy.loss();
 
-        let loss_val: Vec<f32> = self.loss_buffer.to_cpu();
-        loss_val[0]
+            self.cross_entropy.backward();
+            self.backward();
+        }
 
-        */
+        self.optimizer.step(lr, 0.9, 0.999, 0.01);
+
+        total_loss / batch_size as Real
+    }
+
+    pub fn trainable_params(&self) -> Vec<(Arc<Tensor>, Arc<Tensor>)> {
+        collect_trainable_params(
+            &self.embedding,
+            &self.layers,
+            &self.final_norm,
+            &self.lm_head,
+        )
     }
 
     pub fn new(
@@ -124,13 +213,27 @@ impl AkashaModel {
             &g_lmhead_in,
         );
 
+        let cross_entropy = CrossEntropy::new(
+            ctx.clone(),
+            vocab_size,
+            seq_len,
+            &lm_head.out_buffer,
+            &grad_logits,
+        );
+
+        let trainable_params = collect_trainable_params(&embedding, &layers, &final_norm, &lm_head);
+        let optimizer = AdamW::new(ctx.clone(), &trainable_params);
+
         Self {
             ctx,
+            input_tokens: input_tokens.clone(),
             embedding,
             layers,
             final_norm,
             lm_head,
             grad_logits,
+            cross_entropy,
+            optimizer,
         }
     }
 
@@ -153,10 +256,51 @@ impl AkashaModel {
     }
 
     pub fn zero_grad(&self) {
+        zero_tensor(&self.embedding.grad_table);
         zero_tensor(&self.final_norm.grad_weight);
+        zero_tensor(&self.lm_head.grad_weight);
         for layer in self.layers.iter() {
             layer.zero_grad();
         }
+    }
+
+    pub fn zero_transient_grads(&self) {
+        for layer in self.layers.iter() {
+            layer.zero_transient_grads();
+        }
+    }
+
+    pub fn save_weights(&self, path: &str) -> bincode::Result<()> {
+        let params: Vec<(Vec<Real>, Vec<Real>)> = self
+            .trainable_params()
+            .iter()
+            .map(|(weight, grad)| (weight.to_cpu(), grad.to_cpu()))
+            .collect();
+
+        let file = File::create(path)?;
+        let mut writer = BufWriter::new(file);
+        bincode::serialize_into(&mut writer, &params)?;
+        Ok(())
+    }
+
+    pub fn load_weights(&self, path: &str) -> bincode::Result<()> {
+        let file = File::open(path)?;
+        let mut reader = BufReader::new(file);
+        let params: Vec<(Vec<Real>, Vec<Real>)> = bincode::deserialize_from(&mut reader)?;
+
+        let targets = self.trainable_params();
+        assert_eq!(
+            params.len(),
+            targets.len(),
+            "load_weights: saved parameter count doesn't match this model's architecture"
+        );
+
+        for ((weight, grad), (w_data, g_data)) in targets.iter().zip(params.iter()) {
+            weight.copy_from_cpu(w_data);
+            grad.copy_from_cpu(g_data);
+        }
+
+        Ok(())
     }
 
     pub fn save_to_file(&self, path: &str) -> bincode::Result<()> {
