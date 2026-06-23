@@ -19,6 +19,7 @@ name = "akasha-core"
 version = "0.1.0"
 dependencies = [
  "bincode",
+ "bytemuck",
  "pollster",
  "serde",
  "wilupgu",
