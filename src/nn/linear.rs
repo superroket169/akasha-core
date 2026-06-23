@@ -24,6 +24,7 @@ impl Linear {
         weight_data: &[Real],
         input_buffer: &Arc<Tensor>,
         grad_output: &Arc<Tensor>,
+        grad_input: &Arc<Tensor>,
     ) -> Self {
         let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), weight_data));
 
@@ -38,8 +39,7 @@ impl Linear {
         let zero_grad_w = vec![0.0 as Real; (in_features * out_features) as usize];
         let grad_weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_grad_w));
 
-        let zero_grad_in = vec![0.0 as Real; (m * in_features) as usize];
-        let grad_input = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_grad_in));
+        let grad_input = grad_input.clone();
 
         // --- FORWARD ---
         let shader_fw = BuiltInShader::MatMul.get_def();
