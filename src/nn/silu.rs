@@ -7,6 +7,7 @@ use wilupgu::tensor::Tensor;
 
 pub struct SiLU {
     pub in_out_buffer: Arc<Tensor>,
+    pub grad_input: Arc<Tensor>,
     pub forward_graph: ComputeGraph,
     pub backward_graph: ComputeGraph,
 }
@@ -17,6 +18,7 @@ impl SiLU {
         total_elements: u32,
         input_buffer: &Arc<Tensor>,
         grad_output: &Arc<Tensor>,
+        grad_input: &Arc<Tensor>,
     ) -> Self {
         let shader_fw = BuiltInShader::SiLU.get_def();
         let mut forward_graph = ComputeGraph::new(ctx.clone());
@@ -30,6 +32,8 @@ impl SiLU {
             }],
             [(total_elements + 255) / 256, 1, 1],
         );
+
+        let grad_input = grad_input.clone();
 
         let shader_bw = BuiltInShader::SiLUBwd.get_def();
         let mut backward_graph = ComputeGraph::new(ctx.clone());
@@ -49,7 +53,7 @@ impl SiLU {
                 },
                 TensorBind {
                     binding: 2,
-                    tensor: grad_output,
+                    tensor: &grad_input,
                     mode: TensorMode::Output,
                 },
             ],
@@ -58,6 +62,7 @@ impl SiLU {
 
         Self {
             in_out_buffer: input_buffer.clone(),
+            grad_input,
             forward_graph,
             backward_graph,
         }

@@ -44,6 +44,7 @@ impl SelfAttention {
         let grad_k = grad_k.clone();
         let grad_v = grad_v.clone();
         let grad_scores = Arc::new(Tensor::init_from_cpu(ctx.clone(), &scores_data));
+        let grad_scores_dx = Arc::new(Tensor::init_from_cpu(ctx.clone(), &scores_data));
 
         // Meta Tensors
         let meta_qkt_data = vec![seq_len as u32, dim as u32, seq_len as u32];
@@ -231,7 +232,7 @@ impl SelfAttention {
                 },
                 TensorBind {
                     binding: 2,
-                    tensor: &grad_scores,
+                    tensor: &grad_scores_dx,
                     mode: TensorMode::Output,
                 },
                 TensorBind {
@@ -248,7 +249,7 @@ impl SelfAttention {
             &[
                 TensorBind {
                     binding: 0,
-                    tensor: &grad_scores,
+                    tensor: &grad_scores_dx,
                     mode: TensorMode::Input,
                 },
                 TensorBind {
@@ -275,7 +276,7 @@ impl SelfAttention {
             &[
                 TensorBind {
                     binding: 0,
-                    tensor: &grad_scores,
+                    tensor: &grad_scores_dx,
                     mode: TensorMode::Input,
                 },
                 TensorBind {

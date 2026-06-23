@@ -73,6 +73,7 @@ impl TransformerBlock {
         let g_add2_a = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_add2_b = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_ffndown_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_hidden));
+        let g_silu_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_hidden));
         let g_ffnup_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_norm2_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_add1_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
@@ -187,7 +188,7 @@ impl TransformerBlock {
             seq_len,
             &dummy_ffn_w,
             &norm_2.out_buffer,
-            &g_ffndown_in,
+            &g_silu_in,
             &g_ffnup_in,
         );
 
@@ -196,6 +197,7 @@ impl TransformerBlock {
             (seq_len * hidden_dim) as u32,
             &ffn_up.out_buffer,
             &g_ffndown_in,
+            &g_silu_in,
         );
 
         let ffn_down = Linear::new(
