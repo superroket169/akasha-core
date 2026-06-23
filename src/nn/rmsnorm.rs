@@ -31,6 +31,7 @@ impl RMSNorm {
         weight_data: &[Real],
         input_buffer: &Arc<Tensor>,
         grad_output: &Arc<Tensor>,
+        grad_input: &Arc<Tensor>,
     ) -> Self {
         assert_eq!(
             weight_data.len(),
@@ -45,7 +46,7 @@ impl RMSNorm {
         let out_size = (seq_len * dim) as usize;
         let zero_out = vec![0.0 as Real; out_size];
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
-        let grad_input = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
+        let grad_input = grad_input.clone();
 
         let eps = 1e-5f32;
         let meta_data = [Meta {

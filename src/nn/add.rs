@@ -20,6 +20,8 @@ impl Add {
         buf_a: &Arc<Tensor>,
         buf_b: &Arc<Tensor>,
         grad_output: &Arc<Tensor>,
+        grad_a: &Arc<Tensor>,
+        grad_b: &Arc<Tensor>,
     ) -> Self {
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let shader_fw = BuiltInShader::ResidualAdd.get_def();
@@ -41,9 +43,8 @@ impl Add {
             [(length + 255) / 256, 1, 1],
         );
 
-        let empty_grad = vec![0.0f32; length as usize];
-        let grad_a = Arc::new(Tensor::init_from_cpu(ctx.clone(), &empty_grad));
-        let grad_b = Arc::new(Tensor::init_from_cpu(ctx.clone(), &empty_grad));
+        let grad_a = grad_a.clone();
+        let grad_b = grad_b.clone();
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let shader_bwd = BuiltInShader::ResidualAdd.get_def();

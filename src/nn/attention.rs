@@ -27,21 +27,22 @@ impl SelfAttention {
         k_buf: &Arc<Tensor>,
         v_buf: &Arc<Tensor>,
         grad_output: &Arc<Tensor>,
+        grad_q: &Arc<Tensor>,
+        grad_k: &Arc<Tensor>,
+        grad_v: &Arc<Tensor>,
     ) -> Self {
         let scores_size = (seq_len * seq_len) as usize;
         let out_size = (seq_len * dim) as usize;
 
-        // Tensor Allocation (Saf Wilupgu API)
         let scores_data = vec![0.0 as Real; scores_size];
         let t_scores = Arc::new(Tensor::init_from_cpu(ctx.clone(), &scores_data));
 
         let out_data = vec![0.0 as Real; out_size];
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &out_data));
 
-        let grad_zero = vec![0.0 as Real; out_size];
-        let grad_q = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_zero));
-        let grad_k = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_zero));
-        let grad_v = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_zero));
+        let grad_q = grad_q.clone();
+        let grad_k = grad_k.clone();
+        let grad_v = grad_v.clone();
         let grad_scores = Arc::new(Tensor::init_from_cpu(ctx.clone(), &scores_data));
 
         // Meta Tensors
