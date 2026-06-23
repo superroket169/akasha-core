@@ -1,6 +1,10 @@
 use crate::Real;
 use rand::Rng;
 
+pub fn xavier_std(fan_in: u32) -> Real {
+    1.0 / (fan_in as Real).sqrt()
+}
+
 pub fn random_normal_vec(len: usize, mean: Real, std: Real) -> Vec<Real> {
     let mut rng = rand::thread_rng();
     (0..len)
