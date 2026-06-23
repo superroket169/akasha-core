@@ -1,0 +1,23 @@
+PS C:\Users\CASPER\Desktop\isa_codes\akasha-core-main> cargo run --example smoke_test
+   Compiling akasha-core v0.1.0 (C:\Users\CASPER\Desktop\isa_codes\akasha-core-main)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.41s
+     Running `target\debug\examples\smoke_test.exe`
+[SMOKE TEST] Başlıyor...
+Model Config: 1 Katman, 1024 Boyut, 128 SeqLen, 50304 Vocab
+Akasha going to vram...
+Forward Pass...
+Forward Pass Tamamlandı! Süre: 3.1307ms
+Results comes from vram...
+[TEST BAŞARILI] İlk 10 Değer:
+[
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+]

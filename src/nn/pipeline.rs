@@ -156,17 +156,34 @@ impl TransformerBlock {
 impl Layer for TransformerBlock {
     fn forward(&self) {
         self.norm_1.forward();
+
+        self.q_proj.forward();
+        self.k_proj.forward();
+        self.v_proj.forward();
+
         self.attention.forward();
+
+        self.out_proj.forward();
+        self.add_1.forward();
+
         self.norm_2.forward();
         self.ffn_up.forward();
         self.ffn_down.forward();
+
+        self.add_2.forward();
     }
 
     fn backward(&self) {
+        self.add_2.backward();
         self.ffn_down.backward();
         self.ffn_up.backward();
         self.norm_2.backward();
+        self.add_1.backward();
+        self.out_proj.backward();
         self.attention.backward();
+        self.v_proj.backward();
+        self.k_proj.backward();
+        self.q_proj.backward();
         self.norm_1.backward();
     }
 }
