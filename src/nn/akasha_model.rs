@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
 use wilupgu::context::WgpuContext;
+use wilupgu::graph::{ComputeGraph, fuse_compute_graphs};
 use wilupgu::tensor::Tensor;
 
 use super::cross_entropy::CrossEntropy;
@@ -76,6 +77,8 @@ pub struct AkashaModel {
     pub grad_logits: Arc<Tensor>,
     pub cross_entropy: CrossEntropy,
     pub optimizer: AdamW,
+    pub fused_forward_graph: ComputeGraph,
+    pub backward_segments: Vec<ComputeGraph>,
 }
 
 impl AkashaModel {
@@ -114,12 +117,10 @@ impl AkashaModel {
 
             self.zero_transient_grads();
 
-            self.forward();
-            self.cross_entropy.forward();
+            self.fused_forward_graph.execute();
             total_loss += self.cross_entropy.loss();
 
-            self.cross_entropy.backward();
-            self.backward();
+            self.backward_fused();
         }
 
         self.optimizer.step(lr, 0.9, 0.999, 0.01);
@@ -223,6 +224,63 @@ impl AkashaModel {
         let trainable_params = collect_trainable_params(&embedding, &layers, &final_norm, &lm_head);
         let optimizer = AdamW::new(ctx.clone(), &trainable_params);
 
+        // ---- fused forward ----
+        let mut forward_graphs: Vec<&ComputeGraph> = vec![&embedding.forward_graph];
+        for layer in &layers {
+            forward_graphs.push(&layer.norm_1.forward_graph);
+            forward_graphs.push(&layer.q_proj.forward_graph);
+            forward_graphs.push(&layer.k_proj.forward_graph);
+            forward_graphs.push(&layer.v_proj.forward_graph);
+            forward_graphs.push(&layer.attention.forward_graph);
+            forward_graphs.push(&layer.out_proj.forward_graph);
+            forward_graphs.push(&layer.add_1.forward_graph);
+            forward_graphs.push(&layer.norm_2.forward_graph);
+            forward_graphs.push(&layer.ffn_up.forward_graph);
+            forward_graphs.push(&layer.silu.forward_graph);
+            forward_graphs.push(&layer.ffn_down.forward_graph);
+            forward_graphs.push(&layer.add_2.forward_graph);
+        }
+        forward_graphs.push(&final_norm.forward_graph);
+        forward_graphs.push(&lm_head.forward_graph);
+        forward_graphs.push(&cross_entropy.forward_graph);
+        let fused_forward_graph = fuse_compute_graphs(ctx.clone(), &forward_graphs);
+
+        // ---- fused backward ----
+        let mut backward_segments: Vec<ComputeGraph> = Vec::with_capacity(3 * num_layers + 1);
+        for (i, layer) in layers.iter().enumerate().rev() {
+            let mut segment_a: Vec<&ComputeGraph> = Vec::new();
+            if i == num_layers - 1 {
+                segment_a.push(&cross_entropy.backward_graph);
+                segment_a.push(&lm_head.backward_graph);
+                segment_a.push(&final_norm.backward_graph);
+            }
+            segment_a.push(&layer.add_2.backward_graph);
+            segment_a.push(&layer.ffn_down.backward_graph);
+            segment_a.push(&layer.silu.backward_graph);
+            segment_a.push(&layer.ffn_up.backward_graph);
+            segment_a.push(&layer.norm_2.backward_graph);
+            backward_segments.push(fuse_compute_graphs(ctx.clone(), &segment_a));
+
+            let segment_b: [&ComputeGraph; 6] = [
+                &layer.add_1.backward_graph,
+                &layer.out_proj.backward_graph,
+                &layer.attention.backward_graph,
+                &layer.v_proj.backward_graph,
+                &layer.k_proj.backward_graph,
+                &layer.q_proj.backward_graph,
+            ];
+            backward_segments.push(fuse_compute_graphs(ctx.clone(), &segment_b));
+
+            backward_segments.push(fuse_compute_graphs(
+                ctx.clone(),
+                &[&layer.norm_1.backward_graph],
+            ));
+        }
+        backward_segments.push(fuse_compute_graphs(
+            ctx.clone(),
+            &[&embedding.backward_graph],
+        ));
+
         Self {
             ctx,
             input_tokens: input_tokens.clone(),
@@ -233,6 +291,8 @@ impl AkashaModel {
             grad_logits,
             cross_entropy,
             optimizer,
+            fused_forward_graph,
+            backward_segments,
         }
     }
 
@@ -252,6 +312,28 @@ impl AkashaModel {
             layer.backward();
         }
         self.embedding.backward();
+    }
+
+    pub fn backward_fused(&self) {
+        let mut seg = 0;
+        for layer in self.layers.iter().rev() {
+            self.backward_segments[seg].execute();
+            seg += 1;
+            layer.run_barrier_a();
+
+            self.backward_segments[seg].execute();
+            seg += 1;
+            layer.run_barrier_b();
+
+            self.backward_segments[seg].execute();
+            seg += 1;
+            layer.run_barrier_c();
+        }
+        self.backward_segments[seg].execute();
+    }
+
+    pub fn forward_fused(&self) {
+        self.fused_forward_graph.execute();
     }
 
     pub fn zero_grad(&self) {
