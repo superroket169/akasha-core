@@ -1,6 +1,6 @@
 use crate::Real;
-use std::cell::Cell;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use wilupgu::context::WgpuContext;
 use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
 use wilupgu::nn::shaders::BuiltInShader;
@@ -32,7 +32,7 @@ fn elem_count(t: &Tensor) -> usize {
 pub struct AdamW {
     cfg: Arc<Tensor>,
     eps: Real,
-    step_count: Cell<u32>,
+    step_count: AtomicU32,
     graph: ComputeGraph,
     pub moments: Vec<(Arc<Tensor>, Arc<Tensor>)>, // (weight, grad)
 }
@@ -114,15 +114,14 @@ impl AdamW {
         Self {
             cfg,
             eps: DEFAULT_EPS,
-            step_count: Cell::new(0),
+            step_count: AtomicU32::new(0),
             graph,
             moments,
         }
     }
 
     pub fn step(&self, lr: Real, beta1: Real, beta2: Real, weight_decay: Real) {
-        let t = self.step_count.get() + 1;
-        self.step_count.set(t);
+        let t = self.step_count.fetch_add(1, Ordering::Relaxed) + 1;
 
         self.cfg.copy_from_cpu(&[StepConfig {
             step: t,

@@ -12,7 +12,6 @@ use super::linear::Linear;
 use super::pipeline::TransformerBlock;
 use super::rmsnorm::RMSNorm;
 use super::traits::Layer;
-use super::weights::{AkashaWeights, TransformerBlockWeights};
 use crate::optim::AdamW;
 
 fn zero_tensor(t: &Tensor) {
@@ -299,95 +298,6 @@ impl AkashaModel {
             weight.copy_from_cpu(w_data);
             grad.copy_from_cpu(g_data);
         }
-
-        Ok(())
-    }
-
-    pub fn save_to_file(&self, path: &str) -> bincode::Result<()> {
-        println!("The weights in VRAM are being shifting to the CPU...");
-
-        let mut blocks_weights = Vec::new();
-        for block in &self.layers {
-            blocks_weights.push(TransformerBlockWeights {
-                norm_1: block.norm_1.weight.to_cpu(),
-                q_proj: block.q_proj.weight.to_cpu(),
-                k_proj: block.k_proj.weight.to_cpu(),
-                v_proj: block.v_proj.weight.to_cpu(),
-                out_proj: block.out_proj.weight.to_cpu(),
-                norm_2: block.norm_2.weight.to_cpu(),
-                ffn_up: block.ffn_up.weight.to_cpu(),
-                ffn_down: block.ffn_down.weight.to_cpu(),
-            });
-        }
-
-        let all_weights = AkashaWeights {
-            embedding_table: self.embedding.table.to_cpu(),
-            blocks: blocks_weights,
-            final_norm: self.final_norm.weight.to_cpu(),
-            lm_head: self.lm_head.weight.to_cpu(),
-        };
-
-        println!("Weights writing to disk: {}", path);
-        let file = File::create(path)?;
-        let mut writer = BufWriter::new(file);
-        bincode::serialize_into(&mut writer, &all_weights)?;
-
-        Ok(())
-    }
-
-    pub fn load_from_file(&mut self, path: &str) -> bincode::Result<()> {
-        println!("Weights reading from disk: {}", path);
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
-        let all_weights: AkashaWeights = bincode::deserialize_from(&mut reader)?;
-
-        println!("Datas goes to Vram...");
-
-        self.embedding
-            .table
-            .copy_from_cpu(&all_weights.embedding_table);
-
-        for (i, block_weights) in all_weights.blocks.iter().enumerate() {
-            self.layers[i]
-                .norm_1
-                .weight
-                .copy_from_cpu(&block_weights.norm_1);
-            self.layers[i]
-                .q_proj
-                .weight
-                .copy_from_cpu(&block_weights.q_proj);
-            self.layers[i]
-                .k_proj
-                .weight
-                .copy_from_cpu(&block_weights.k_proj);
-            self.layers[i]
-                .v_proj
-                .weight
-                .copy_from_cpu(&block_weights.v_proj);
-            self.layers[i]
-                .out_proj
-                .weight
-                .copy_from_cpu(&block_weights.out_proj);
-            self.layers[i]
-                .norm_2
-                .weight
-                .copy_from_cpu(&block_weights.norm_2);
-            self.layers[i]
-                .ffn_up
-                .weight
-                .copy_from_cpu(&block_weights.ffn_up);
-            self.layers[i]
-                .ffn_down
-                .weight
-                .copy_from_cpu(&block_weights.ffn_down);
-        }
-
-        self.final_norm
-            .weight
-            .copy_from_cpu(&all_weights.final_norm);
-        self.lm_head.weight.copy_from_cpu(&all_weights.lm_head);
-
-        println!("Loading is completed");
 
         Ok(())
     }
