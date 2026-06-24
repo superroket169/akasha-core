@@ -13,7 +13,6 @@ const VOCAB_SIZE: u32 = NUM_WORDS + 1;
 const DIM: u32 = 128;
 const NUM_LAYERS: usize = 2;
 const BATCH_SIZE: usize = 4;
-const LOG_EVERY: usize = 10;
 const ROLLING_WINDOW: usize = 50;
 const DEFAULT_WEIGHTS_FILE: &str = "akasha.bin";
 const DEFAULT_LR: f32 = 0.005;
@@ -26,6 +25,7 @@ fn parse_flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
 }
 
 struct Dashboard {
+    step: usize,
     epoch: usize,
     last_loss: f32,
     recent_losses: VecDeque<f32>,
@@ -34,6 +34,7 @@ struct Dashboard {
 impl Dashboard {
     fn new() -> Self {
         Self {
+            step: 0,
             epoch: 0,
             last_loss: 0.0,
             recent_losses: VecDeque::with_capacity(ROLLING_WINDOW),
@@ -78,9 +79,10 @@ fn run_epochs(
     n: usize,
 ) {
     for _ in 0..n {
-        let loss = model.train_step(batch_inputs, batch_targets, BATCH_SIZE, lr);
-        dashboard.push_loss(loss);
-        if dashboard.epoch % LOG_EVERY == 0 {
+        let loss = model.train_step(batch_inputs, batch_targets, BATCH_SIZE, lr, dashboard.step);
+        dashboard.step += 1;
+        if let Some(loss) = loss {
+            dashboard.push_loss(loss);
             println!("  epoch {:6} | loss {:.4}", dashboard.epoch, loss);
         }
     }

@@ -1,3 +1,4 @@
+use crate::READ_LOSS;
 use crate::Real;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
@@ -88,7 +89,8 @@ impl AkashaModel {
         target_tokens: &[u32],
         batch_size: usize,
         lr: f32,
-    ) -> f32 {
+        step: usize,
+    ) -> Option<f32> {
         let seq_len = self.cross_entropy.seq_len as usize;
         assert_eq!(
             input_tokens.len(),
@@ -106,6 +108,7 @@ impl AkashaModel {
 
         self.zero_grad();
 
+        let read_loss = step % READ_LOSS == 0;
         let mut total_loss = 0.0 as Real;
         for i in 0..batch_size {
             let window = i * seq_len..(i + 1) * seq_len;
@@ -118,14 +121,20 @@ impl AkashaModel {
             self.zero_transient_grads();
 
             self.fused_forward_graph.execute();
-            total_loss += self.cross_entropy.loss();
+            if read_loss {
+                total_loss += self.cross_entropy.loss();
+            }
 
             self.backward_fused();
         }
 
         self.optimizer.step(lr, 0.9, 0.999, 0.01);
 
-        total_loss / batch_size as Real
+        if read_loss {
+            Some(total_loss / batch_size as Real)
+        } else {
+            None
+        }
     }
 
     pub fn trainable_params(&self) -> Vec<(Arc<Tensor>, Arc<Tensor>)> {
@@ -231,6 +240,7 @@ impl AkashaModel {
             forward_graphs.push(&layer.q_proj.forward_graph);
             forward_graphs.push(&layer.k_proj.forward_graph);
             forward_graphs.push(&layer.v_proj.forward_graph);
+            forward_graphs.push(&layer.rope_forward);
             forward_graphs.push(&layer.attention.forward_graph);
             forward_graphs.push(&layer.out_proj.forward_graph);
             forward_graphs.push(&layer.add_1.forward_graph);

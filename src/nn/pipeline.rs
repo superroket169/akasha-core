@@ -44,6 +44,33 @@ fn add_inplace_node(
     );
 }
 
+fn add_rope_node(
+    graph: &mut ComputeGraph,
+    shader: BuiltInShader,
+    vec: &Arc<Tensor>,
+    meta: &Arc<Tensor>,
+    dim: u32,
+    seq_len: u32,
+) {
+    let shader_def = shader.get_def();
+    graph.add_node(
+        &shader_def,
+        &[
+            TensorBind {
+                binding: 0,
+                tensor: vec,
+                mode: TensorMode::InOut,
+            },
+            TensorBind {
+                binding: 1,
+                tensor: meta,
+                mode: TensorMode::Meta,
+            },
+        ],
+        [(dim / 2 + 15) / 16, (seq_len + 15) / 16, 1],
+    );
+}
+
 pub struct TransformerBlock {
     pub norm_1: RMSNorm,
     pub q_proj: Linear,
@@ -58,6 +85,7 @@ pub struct TransformerBlock {
     pub ffn_down: Linear,
     pub add_2: Add,
     pub grad_input: Arc<Tensor>,
+    pub rope_forward: ComputeGraph,
     pub backward_graph: ComputeGraph,
 }
 
@@ -142,6 +170,27 @@ impl TransformerBlock {
             &norm_1.out_buffer,
             &g_attn_v,
             &g_vproj_in,
+        );
+
+        let rope_meta_data = vec![seq_len, dim, dim];
+        let t_meta_rope = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rope_meta_data));
+
+        let mut rope_forward = ComputeGraph::new(ctx.clone());
+        add_rope_node(
+            &mut rope_forward,
+            BuiltInShader::RoPE,
+            &q_proj.out_buffer,
+            &t_meta_rope,
+            dim,
+            seq_len,
+        );
+        add_rope_node(
+            &mut rope_forward,
+            BuiltInShader::RoPE,
+            &k_proj.out_buffer,
+            &t_meta_rope,
+            dim,
+            seq_len,
         );
 
         let attention = SelfAttention::new(
@@ -253,6 +302,24 @@ impl TransformerBlock {
         let mut barrier_3 = ComputeGraph::new(ctx.clone());
         add_inplace_node(&mut barrier_3, &grad_input, &norm_1.grad_input, elems);
 
+        let mut rope_backward = ComputeGraph::new(ctx.clone());
+        add_rope_node(
+            &mut rope_backward,
+            BuiltInShader::RoPEBwd,
+            &g_attn_q,
+            &t_meta_rope,
+            dim,
+            seq_len,
+        );
+        add_rope_node(
+            &mut rope_backward,
+            BuiltInShader::RoPEBwd,
+            &g_attn_k,
+            &t_meta_rope,
+            dim,
+            seq_len,
+        );
+
         let backward_graph = fuse_compute_graphs(
             ctx.clone(),
             &[
@@ -265,6 +332,7 @@ impl TransformerBlock {
                 &add_1.backward_graph,
                 &out_proj.backward_graph,
                 &attention.backward_graph,
+                &rope_backward,
                 &v_proj.backward_graph,
                 &k_proj.backward_graph,
                 &q_proj.backward_graph,
@@ -288,6 +356,7 @@ impl TransformerBlock {
             ffn_down,
             add_2,
             grad_input,
+            rope_forward,
             backward_graph,
         }
     }
@@ -320,6 +389,7 @@ impl Layer for TransformerBlock {
         self.k_proj.forward();
         self.v_proj.forward();
 
+        self.rope_forward.execute();
         self.attention.forward();
 
         self.out_proj.forward();
