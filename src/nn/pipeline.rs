@@ -8,6 +8,8 @@ use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
 use wilupgu::context::WgpuContext;
+use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode, fuse_compute_graphs};
+use wilupgu::nn::shaders::BuiltInShader;
 use wilupgu::tensor::Tensor;
 
 // Helpers
@@ -17,24 +19,29 @@ fn zero_tensor(t: &Tensor) {
     t.copy_from_cpu(&vec![0.0 as Real; len]);
 }
 
-fn cpu_sum2_into(dest: &Tensor, a: &Tensor, b: &Tensor) {
-    let a_cpu: Vec<Real> = a.to_cpu();
-    let b_cpu: Vec<Real> = b.to_cpu();
-    let summed: Vec<Real> = a_cpu.iter().zip(b_cpu.iter()).map(|(x, y)| x + y).collect();
-    dest.copy_from_cpu(&summed);
-}
-
-fn cpu_sum3_into(dest: &Tensor, a: &Tensor, b: &Tensor, c: &Tensor) {
-    let a_cpu: Vec<Real> = a.to_cpu();
-    let b_cpu: Vec<Real> = b.to_cpu();
-    let c_cpu: Vec<Real> = c.to_cpu();
-    let summed: Vec<Real> = a_cpu
-        .iter()
-        .zip(b_cpu.iter())
-        .zip(c_cpu.iter())
-        .map(|((x, y), z)| x + y + z)
-        .collect();
-    dest.copy_from_cpu(&summed);
+fn add_inplace_node(
+    graph: &mut ComputeGraph,
+    target: &Arc<Tensor>,
+    source: &Arc<Tensor>,
+    elems: u32,
+) {
+    let shader = BuiltInShader::BwdAddInplace.get_def();
+    graph.add_node(
+        &shader,
+        &[
+            TensorBind {
+                binding: 0,
+                tensor: target,
+                mode: TensorMode::InOut,
+            },
+            TensorBind {
+                binding: 1,
+                tensor: source,
+                mode: TensorMode::Input,
+            },
+        ],
+        [(elems + 255) / 256, 1, 1],
+    );
 }
 
 pub struct TransformerBlock {
@@ -51,8 +58,7 @@ pub struct TransformerBlock {
     pub ffn_down: Linear,
     pub add_2: Add,
     pub grad_input: Arc<Tensor>,
-    g_add1_out: Arc<Tensor>,
-    g_norm1_out: Arc<Tensor>,
+    pub backward_graph: ComputeGraph,
 }
 
 impl TransformerBlock {
@@ -77,8 +83,6 @@ impl TransformerBlock {
         let g_silu_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_hidden));
         let g_ffnup_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_norm2_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-        let g_add1_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-        let g_add1_a = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_add1_b = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_outproj_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_attn_q = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
@@ -87,9 +91,9 @@ impl TransformerBlock {
         let g_qproj_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_kproj_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_vproj_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-        let g_norm1_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_norm1_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let grad_input = grad_input.clone();
+        let elems = seq_len * dim;
 
         let norm_1_w = random_normal_vec(dim as usize, 1.0, 0.02);
 
@@ -99,7 +103,7 @@ impl TransformerBlock {
             seq_len,
             &norm_1_w,
             input_tensor,
-            &g_norm1_out,
+            &g_qproj_in,
             &g_norm1_in,
         );
 
@@ -169,8 +173,8 @@ impl TransformerBlock {
             dim * seq_len,
             input_tensor,
             &out_proj.out_buffer,
-            &g_add1_out,
-            &g_add1_a,
+            &g_add2_a,
+            &grad_input,
             &g_add1_b,
         );
 
@@ -229,6 +233,47 @@ impl TransformerBlock {
             &g_add2_b,
         );
 
+        let mut barrier_1 = ComputeGraph::new(ctx.clone());
+        add_inplace_node(&mut barrier_1, &add_2.grad_a, &norm_2.grad_input, elems);
+
+        let mut barrier_2 = ComputeGraph::new(ctx.clone());
+        add_inplace_node(
+            &mut barrier_2,
+            &q_proj.grad_input,
+            &k_proj.grad_input,
+            elems,
+        );
+        add_inplace_node(
+            &mut barrier_2,
+            &q_proj.grad_input,
+            &v_proj.grad_input,
+            elems,
+        );
+
+        let mut barrier_3 = ComputeGraph::new(ctx.clone());
+        add_inplace_node(&mut barrier_3, &grad_input, &norm_1.grad_input, elems);
+
+        let backward_graph = fuse_compute_graphs(
+            ctx.clone(),
+            &[
+                &add_2.backward_graph,
+                &ffn_down.backward_graph,
+                &silu.backward_graph,
+                &ffn_up.backward_graph,
+                &norm_2.backward_graph,
+                &barrier_1,
+                &add_1.backward_graph,
+                &out_proj.backward_graph,
+                &attention.backward_graph,
+                &v_proj.backward_graph,
+                &k_proj.backward_graph,
+                &q_proj.backward_graph,
+                &barrier_2,
+                &norm_1.backward_graph,
+                &barrier_3,
+            ],
+        );
+
         Self {
             norm_1,
             q_proj,
@@ -243,8 +288,7 @@ impl TransformerBlock {
             ffn_down,
             add_2,
             grad_input,
-            g_add1_out,
-            g_norm1_out,
+            backward_graph,
         }
     }
 
@@ -265,31 +309,6 @@ impl TransformerBlock {
         zero_tensor(&self.add_1.grad_b);
         zero_tensor(&self.add_2.grad_a);
         zero_tensor(&self.add_2.grad_b);
-    }
-
-    pub fn run_barrier_a(&self) {
-        cpu_sum2_into(
-            &self.g_add1_out,
-            &self.add_2.grad_a,
-            &self.norm_2.grad_input,
-        );
-    }
-
-    pub fn run_barrier_b(&self) {
-        cpu_sum3_into(
-            &self.g_norm1_out,
-            &self.q_proj.grad_input,
-            &self.k_proj.grad_input,
-            &self.v_proj.grad_input,
-        );
-    }
-
-    pub fn run_barrier_c(&self) {
-        cpu_sum2_into(
-            &self.grad_input,
-            &self.add_1.grad_a,
-            &self.norm_1.grad_input,
-        );
     }
 }
 
@@ -315,25 +334,6 @@ impl Layer for TransformerBlock {
     }
 
     fn backward(&self) {
-        self.add_2.backward();
-        self.ffn_down.backward();
-        self.silu.backward();
-        self.ffn_up.backward();
-        self.norm_2.backward();
-
-        self.run_barrier_a();
-
-        self.add_1.backward();
-        self.out_proj.backward();
-        self.attention.backward();
-        self.v_proj.backward();
-        self.k_proj.backward();
-        self.q_proj.backward();
-
-        self.run_barrier_b();
-
-        self.norm_1.backward();
-
-        self.run_barrier_c();
+        self.backward_graph.execute();
     }
 }
