@@ -78,7 +78,7 @@ pub struct AkashaModel {
     pub cross_entropy: CrossEntropy,
     pub optimizer: AdamW,
     pub fused_forward_graph: ComputeGraph,
-    pub backward_segments: Vec<ComputeGraph>,
+    pub fused_backward_graph: ComputeGraph,
 }
 
 impl AkashaModel {
@@ -246,40 +246,16 @@ impl AkashaModel {
         let fused_forward_graph = fuse_compute_graphs(ctx.clone(), &forward_graphs);
 
         // ---- fused backward ----
-        let mut backward_segments: Vec<ComputeGraph> = Vec::with_capacity(3 * num_layers + 1);
-        for (i, layer) in layers.iter().enumerate().rev() {
-            let mut segment_a: Vec<&ComputeGraph> = Vec::new();
-            if i == num_layers - 1 {
-                segment_a.push(&cross_entropy.backward_graph);
-                segment_a.push(&lm_head.backward_graph);
-                segment_a.push(&final_norm.backward_graph);
-            }
-            segment_a.push(&layer.add_2.backward_graph);
-            segment_a.push(&layer.ffn_down.backward_graph);
-            segment_a.push(&layer.silu.backward_graph);
-            segment_a.push(&layer.ffn_up.backward_graph);
-            segment_a.push(&layer.norm_2.backward_graph);
-            backward_segments.push(fuse_compute_graphs(ctx.clone(), &segment_a));
-
-            let segment_b: [&ComputeGraph; 6] = [
-                &layer.add_1.backward_graph,
-                &layer.out_proj.backward_graph,
-                &layer.attention.backward_graph,
-                &layer.v_proj.backward_graph,
-                &layer.k_proj.backward_graph,
-                &layer.q_proj.backward_graph,
-            ];
-            backward_segments.push(fuse_compute_graphs(ctx.clone(), &segment_b));
-
-            backward_segments.push(fuse_compute_graphs(
-                ctx.clone(),
-                &[&layer.norm_1.backward_graph],
-            ));
+        let mut backward_graphs: Vec<&ComputeGraph> = vec![
+            &cross_entropy.backward_graph,
+            &lm_head.backward_graph,
+            &final_norm.backward_graph,
+        ];
+        for layer in layers.iter().rev() {
+            backward_graphs.push(&layer.backward_graph);
         }
-        backward_segments.push(fuse_compute_graphs(
-            ctx.clone(),
-            &[&embedding.backward_graph],
-        ));
+        backward_graphs.push(&embedding.backward_graph);
+        let fused_backward_graph = fuse_compute_graphs(ctx.clone(), &backward_graphs);
 
         Self {
             ctx,
@@ -292,7 +268,7 @@ impl AkashaModel {
             cross_entropy,
             optimizer,
             fused_forward_graph,
-            backward_segments,
+            fused_backward_graph,
         }
     }
 
@@ -315,21 +291,7 @@ impl AkashaModel {
     }
 
     pub fn backward_fused(&self) {
-        let mut seg = 0;
-        for layer in self.layers.iter().rev() {
-            self.backward_segments[seg].execute();
-            seg += 1;
-            layer.run_barrier_a();
-
-            self.backward_segments[seg].execute();
-            seg += 1;
-            layer.run_barrier_b();
-
-            self.backward_segments[seg].execute();
-            seg += 1;
-            layer.run_barrier_c();
-        }
-        self.backward_segments[seg].execute();
+        self.fused_backward_graph.execute();
     }
 
     pub fn forward_fused(&self) {
