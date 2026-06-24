@@ -17,6 +17,7 @@ const BATCH_SIZE: usize = 40;
 const ROLLING_WINDOW: usize = 50;
 const DEFAULT_WEIGHTS_FILE: &str = "akasha.bin";
 const DEFAULT_LR: f32 = 0.001;
+const FINAL_LR: f32 = 0.0001;
 const DATA_VOCAB_SIZE: u32 = 64;
 const MAX_GEN_TOKENS: usize = 20;
 const ACCUMULATION_STEPS: usize = 1;
@@ -112,7 +113,14 @@ fn run_epochs(
     let seq_len = NUM_WORDS as usize;
     let step_size = seq_len * BATCH_SIZE;
 
-    for _ in 0..n {
+    for i in 0..n {
+        let decay_t = if n > 1 {
+            i as f32 / (n - 1) as f32
+        } else {
+            0.0
+        };
+        let current_lr = lr + (FINAL_LR - lr) * decay_t;
+
         let (batch_inputs, batch_targets) =
             make_batch(corpus_tokens, seq_len, BATCH_SIZE, pad_id, dashboard.cursor);
         dashboard.cursor = (dashboard.cursor + step_size) % corpus_tokens.len();
@@ -121,14 +129,17 @@ fn run_epochs(
             &batch_inputs,
             &batch_targets,
             BATCH_SIZE,
-            lr,
+            current_lr,
             dashboard.step,
             ACCUMULATION_STEPS,
         );
         dashboard.step += 1;
         if let Some(loss) = loss {
             dashboard.push_loss(loss);
-            println!("  epoch {:6} | loss {:.4}", dashboard.epoch, loss);
+            println!(
+                "  epoch {:6} | loss {:.4} | lr {:.6}",
+                dashboard.epoch, loss, current_lr
+            );
         }
     }
 }
