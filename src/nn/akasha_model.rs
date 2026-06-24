@@ -16,6 +16,10 @@ use super::rmsnorm::RMSNorm;
 use super::traits::Layer;
 use crate::optim::AdamW;
 
+const ADAM_BETA1: Real = 0.9;
+const ADAM_BETA2: Real = 0.95;
+const ADAM_WEIGHT_DECAY: Real = 0.0;
+
 fn zero_tensor(t: &Tensor) {
     let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
     t.copy_from_cpu(&vec![0.0 as Real; len]);
@@ -136,7 +140,8 @@ impl AkashaModel {
         }
 
         if is_last_in_cycle {
-            self.optimizer.step(lr, 0.9, 0.999, 0.01);
+            self.optimizer
+                .step(lr, ADAM_BETA1, ADAM_BETA2, ADAM_WEIGHT_DECAY);
         }
 
         if read_loss {
