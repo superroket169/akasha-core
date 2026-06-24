@@ -90,6 +90,7 @@ impl AkashaModel {
         batch_size: usize,
         lr: f32,
         step: usize,
+        accumulation_steps: usize,
     ) -> Option<f32> {
         let seq_len = self.cross_entropy.seq_len as usize;
         assert_eq!(
@@ -102,11 +103,17 @@ impl AkashaModel {
             batch_size * seq_len,
             "train_step: target_tokens must be batch_size * seq_len long"
         );
+        assert!(accumulation_steps >= 1, "accumulation_steps must be >= 1");
 
         self.cross_entropy
-            .set_grad_scale(1.0 / (seq_len * batch_size) as Real);
+            .set_grad_scale(1.0 / (seq_len * batch_size * accumulation_steps) as Real);
 
-        self.zero_grad();
+        let is_first_in_cycle = step % accumulation_steps == 0;
+        let is_last_in_cycle = (step + 1) % accumulation_steps == 0;
+
+        if is_first_in_cycle {
+            self.zero_grad();
+        }
 
         let read_loss = step % READ_LOSS == 0;
         let mut total_loss = 0.0 as Real;
@@ -128,7 +135,9 @@ impl AkashaModel {
             self.backward_fused();
         }
 
-        self.optimizer.step(lr, 0.9, 0.999, 0.01);
+        if is_last_in_cycle {
+            self.optimizer.step(lr, 0.9, 0.999, 0.01);
+        }
 
         if read_loss {
             Some(total_loss / batch_size as Real)
