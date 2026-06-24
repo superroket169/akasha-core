@@ -6,6 +6,13 @@ use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
 use wilupgu::nn::shaders::BuiltInShader;
 use wilupgu::tensor::Tensor;
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct AttnScaleMeta {
+    seq_len: u32,
+    scale: f32,
+}
+
 pub struct SelfAttention {
     pub ctx: Arc<WgpuContext>,
     pub out_buffer: Arc<Tensor>,
@@ -50,7 +57,8 @@ impl SelfAttention {
         let meta_qkt_data = vec![seq_len as u32, dim as u32, seq_len as u32];
         let t_meta_qkt = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_qkt_data));
 
-        let meta_seq_data = vec![seq_len as u32];
+        let scale = 1.0 / (dim as f32).sqrt();
+        let meta_seq_data = [AttnScaleMeta { seq_len, scale }];
         let t_meta_seq = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_seq_data));
 
         let meta_out_data = vec![seq_len as u32, seq_len as u32, dim as u32];
