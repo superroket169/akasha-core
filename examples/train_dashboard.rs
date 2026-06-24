@@ -13,13 +13,13 @@ const VOCAB_SIZE: u32 = NUM_WORDS + 1;
 
 const DIM: u32 = 128;
 const NUM_LAYERS: usize = 2;
-const BATCH_SIZE: usize = 4;
+const BATCH_SIZE: usize = 40;
 const ROLLING_WINDOW: usize = 50;
 const DEFAULT_WEIGHTS_FILE: &str = "akasha.bin";
-const DEFAULT_LR: f32 = 0.002;
+const DEFAULT_LR: f32 = 0.001;
 const DATA_VOCAB_SIZE: u32 = 64;
 const MAX_GEN_TOKENS: usize = 20;
-const ACCUMULATION_STEPS: usize = 10;
+const ACCUMULATION_STEPS: usize = 1;
 
 fn parse_flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
     args.iter()
