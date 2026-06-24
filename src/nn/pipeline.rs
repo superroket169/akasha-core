@@ -266,6 +266,31 @@ impl TransformerBlock {
         zero_tensor(&self.add_2.grad_a);
         zero_tensor(&self.add_2.grad_b);
     }
+
+    pub fn run_barrier_a(&self) {
+        cpu_sum2_into(
+            &self.g_add1_out,
+            &self.add_2.grad_a,
+            &self.norm_2.grad_input,
+        );
+    }
+
+    pub fn run_barrier_b(&self) {
+        cpu_sum3_into(
+            &self.g_norm1_out,
+            &self.q_proj.grad_input,
+            &self.k_proj.grad_input,
+            &self.v_proj.grad_input,
+        );
+    }
+
+    pub fn run_barrier_c(&self) {
+        cpu_sum2_into(
+            &self.grad_input,
+            &self.add_1.grad_a,
+            &self.norm_1.grad_input,
+        );
+    }
 }
 
 impl Layer for TransformerBlock {
@@ -296,11 +321,7 @@ impl Layer for TransformerBlock {
         self.ffn_up.backward();
         self.norm_2.backward();
 
-        cpu_sum2_into(
-            &self.g_add1_out,
-            &self.add_2.grad_a,
-            &self.norm_2.grad_input,
-        );
+        self.run_barrier_a();
 
         self.add_1.backward();
         self.out_proj.backward();
@@ -309,19 +330,10 @@ impl Layer for TransformerBlock {
         self.k_proj.backward();
         self.q_proj.backward();
 
-        cpu_sum3_into(
-            &self.g_norm1_out,
-            &self.q_proj.grad_input,
-            &self.k_proj.grad_input,
-            &self.v_proj.grad_input,
-        );
+        self.run_barrier_b();
 
         self.norm_1.backward();
 
-        cpu_sum2_into(
-            &self.grad_input,
-            &self.add_1.grad_a,
-            &self.norm_1.grad_input,
-        );
+        self.run_barrier_c();
     }
 }
