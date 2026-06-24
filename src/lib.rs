@@ -1,4 +1,5 @@
 pub mod nn;
+pub mod optim;
 pub mod tokenizer;
 
 pub type Real = f32;
