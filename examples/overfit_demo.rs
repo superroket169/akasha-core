@@ -2,8 +2,7 @@ use akasha_core::nn::akasha_model::AkashaModel;
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Tensor, WgpuBackend};
 
 const PAD_WORD: &str = "<pad>";
 
@@ -24,7 +23,7 @@ fn build_vocab() -> (HashMap<String, u32>, HashMap<u32, String>, Vec<u32>) {
     (vocab, inverse_vocab, sentence_tokens)
 }
 
-fn sgd_step(weight: &Tensor, grad: &Tensor, lr: f32) {
+fn sgd_step<B: Backend>(weight: &Tensor<B>, grad: &Tensor<B>, lr: f32) {
     let w: Vec<f32> = weight.to_cpu();
     let g: Vec<f32> = grad.to_cpu();
     let updated: Vec<f32> = w
@@ -35,7 +34,7 @@ fn sgd_step(weight: &Tensor, grad: &Tensor, lr: f32) {
     weight.copy_from_cpu(&updated);
 }
 
-fn sgd_update_all(model: &AkashaModel, lr: f32) {
+fn sgd_update_all<B: Backend>(model: &AkashaModel<B>, lr: f32) {
     sgd_step(&model.embedding.table, &model.embedding.grad_table, lr);
     for block in &model.layers {
         sgd_step(&block.norm_1.weight, &block.norm_1.grad_weight, lr);
@@ -92,7 +91,7 @@ fn argmax_excluding(row_logits: &[f32], exclude_id: u32) -> u32 {
 fn main() {
     println!("[OVERFIT DEMO] Starting...");
 
-    let ctx = Arc::new(pollster::block_on(WgpuContext::new()));
+    let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
 
     let (vocab, inverse_vocab, sentence_tokens) = build_vocab();
     let pad_id = vocab[PAD_WORD];
@@ -113,12 +112,14 @@ fn main() {
 
     let t_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &sentence_tokens));
 
+    let num_heads = 4;
     let model = AkashaModel::new(
         ctx.clone(),
         vocab_size,
         dim,
         seq_len,
         num_layers,
+        num_heads,
         &t_input_tokens,
     );
 

@@ -1,12 +1,11 @@
 use akasha_core::nn::akasha_model::AkashaModel;
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Tensor, WgpuBackend};
 
 fn main() {
     println!("[SMOKE TEST] Başlıyor...");
 
-    let ctx = Arc::new(pollster::block_on(WgpuContext::new()));
+    let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
 
     let vocab_size = 50304;
     let dim = 1024;
@@ -26,12 +25,14 @@ fn main() {
     let t_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens_cpu));
 
     println!("Akasha going to vram...");
+    let num_heads = 16;
     let model = AkashaModel::new(
         ctx.clone(),
         vocab_size,
         dim,
         seq_len,
         num_layers,
+        num_heads,
         &t_input_tokens,
     );
 

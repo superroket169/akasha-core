@@ -1,11 +1,10 @@
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Tensor, WgpuBackend};
 
 fn main() {
     println!("[ROUND TRIP TEST] Başlıyor...");
 
-    let ctx = Arc::new(pollster::block_on(async { WgpuContext::new().await }));
+    let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
 
     let test_size = 10;
     let mut cpu_data_in = vec![0.0f32; test_size];
