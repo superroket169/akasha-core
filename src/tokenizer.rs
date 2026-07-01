@@ -1,5 +1,30 @@
 use std::collections::HashMap;
 
+/// GPT-2 BPE tokenizer
+pub struct AkashaTokenizer {
+    inner: tokenizers::Tokenizer,
+}
+
+impl AkashaTokenizer {
+    pub fn from_pretrained() -> Self {
+        let t = tokenizers::Tokenizer::from_pretrained("gpt2", None)
+            .expect("failed to download/load gpt2 tokenizer (requires network access)");
+        Self { inner: t }
+    }
+
+    pub fn encode(&self, text: &str) -> Vec<u32> {
+        self.inner.encode(text, false).unwrap().get_ids().to_vec()
+    }
+
+    pub fn decode(&self, ids: &[u32]) -> String {
+        self.inner.decode(ids, true).unwrap()
+    }
+
+    pub fn vocab_size(&self) -> u32 {
+        self.inner.get_vocab_size(true) as u32
+    }
+}
+
 // ---- Tokenizer Struct ----
 pub struct Tokenizer {
     pub vocab: HashMap<String, u32>,
