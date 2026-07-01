@@ -3,8 +3,7 @@ use akasha_core::tokenizer::Tokenizer;
 use std::collections::VecDeque;
 use std::io::{self, Write};
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Tensor, WgpuBackend};
 
 // CONSTRAINS
 const NUM_WORDS: u32 = 6;
@@ -13,6 +12,7 @@ const VOCAB_SIZE: u32 = NUM_WORDS + 1;
 
 const DIM: u32 = 128;
 const NUM_LAYERS: usize = 2;
+const NUM_HEADS: u32 = 4;
 const BATCH_SIZE: usize = 40;
 const ROLLING_WINDOW: usize = 50;
 const DEFAULT_WEIGHTS_FILE: &str = "akasha.bin";
@@ -102,8 +102,8 @@ impl Dashboard {
     }
 }
 
-fn run_epochs(
-    model: &AkashaModel,
+fn run_epochs<B: Backend>(
+    model: &AkashaModel<B>,
     dashboard: &mut Dashboard,
     corpus_tokens: &[u32],
     pad_id: u32,
@@ -144,7 +144,7 @@ fn run_epochs(
     }
 }
 
-fn generate(model: &AkashaModel, tokenizer: &Tokenizer, prompt: &str, seq_len: usize, pad_id: u32) {
+fn generate<B: Backend>(model: &AkashaModel<B>, tokenizer: &Tokenizer, prompt: &str, seq_len: usize, pad_id: u32) {
     let prompt_tokens = tokenizer.encode(prompt);
 
     let mut window: Vec<u32> = if prompt_tokens.len() >= seq_len {
@@ -197,7 +197,7 @@ fn main() {
         .and_then(|s| s.parse().ok())
         .unwrap_or(DEFAULT_LR);
 
-    let ctx = Arc::new(pollster::block_on(WgpuContext::new()));
+    let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
 
     let (corpus_tokens, vocab_size, pad_id, tokenizer): (Vec<u32>, u32, u32, Option<Tokenizer>) =
         match data_path {
@@ -237,6 +237,7 @@ fn main() {
         DIM,
         NUM_WORDS,
         NUM_LAYERS,
+        NUM_HEADS,
         &t_input_tokens,
     );
 
