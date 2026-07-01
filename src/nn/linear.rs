@@ -1,30 +1,27 @@
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
-use wilupgu::nn::shaders::BuiltInShader;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
-pub struct Linear {
-    pub weight: Arc<Tensor>,
-    pub out_buffer: Arc<Tensor>,
-    pub grad_weight: Arc<Tensor>,
-    pub grad_input: Arc<Tensor>,
-    pub forward_graph: ComputeGraph,
-    pub backward_graph: ComputeGraph,
+pub struct Linear<B: Backend> {
+    pub weight: Arc<Tensor<B>>,
+    pub out_buffer: Arc<Tensor<B>>,
+    pub grad_weight: Arc<Tensor<B>>,
+    pub grad_input: Arc<Tensor<B>>,
+    pub forward_graph: ComputeGraph<B>,
+    pub backward_graph: ComputeGraph<B>,
 }
 
-impl Linear {
+impl<B: Backend> Linear<B> {
     pub fn new(
-        ctx: Arc<WgpuContext>,
+        ctx: Arc<B>,
         in_features: u32,
         out_features: u32,
         seq_len: u32,
         weight_data: &[Real],
-        input_buffer: &Arc<Tensor>,
-        grad_output: &Arc<Tensor>,
-        grad_input: &Arc<Tensor>,
+        input_buffer: &Arc<Tensor<B>>,
+        grad_output: &Arc<Tensor<B>>,
+        grad_input: &Arc<Tensor<B>>,
     ) -> Self {
         let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), weight_data));
 
@@ -41,91 +38,41 @@ impl Linear {
 
         let grad_input = grad_input.clone();
 
-        // --- FORWARD ---
-        let shader_fw = BuiltInShader::MatMul.get_def();
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         forward_graph.add_node(
-            &shader_fw,
+            "MatMul",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: input_buffer,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &weight,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &out_buffer,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta,
-                    mode: TensorMode::Meta,
-                },
+                Binding::new(0, &input_buffer.buffer, TensorMode::Input),
+                Binding::new(1, &weight.buffer, TensorMode::Input),
+                Binding::new(2, &out_buffer.buffer, TensorMode::Output),
+                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
             ],
             [(out_features + 15) / 16, (m + 15) / 16, 1],
         );
 
-        // --- BACKWARD ---
-        let shader_bwd_w = BuiltInShader::MatMulWeightBwd.get_def();
-        let shader_bwd_in = BuiltInShader::MatMulTrp.get_def(); // Input Trp B
+        let meta_grad_in_data = vec![m, in_features, out_features];
+        let t_meta_grad_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_grad_in_data));
+
         let mut backward_graph = ComputeGraph::new(ctx.clone());
 
         backward_graph.add_node(
-            &shader_bwd_w,
+            "MatMulWeightBwd",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: input_buffer,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: grad_output,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &grad_weight,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta,
-                    mode: TensorMode::Meta,
-                },
+                Binding::new(0, &input_buffer.buffer, TensorMode::Input),
+                Binding::new(1, &grad_output.buffer, TensorMode::Input),
+                Binding::new(2, &grad_weight.buffer, TensorMode::Output),
+                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
             ],
             [(out_features + 15) / 16, (in_features + 15) / 16, 1],
         );
 
         backward_graph.add_node(
-            &shader_bwd_in,
+            "MatMulTrp",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: grad_output,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &weight,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &grad_input,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta,
-                    mode: TensorMode::Meta,
-                },
+                Binding::new(0, &grad_output.buffer, TensorMode::Input),
+                Binding::new(1, &weight.buffer, TensorMode::Input),
+                Binding::new(2, &grad_input.buffer, TensorMode::Output),
+                Binding::new(3, &t_meta_grad_in.buffer, TensorMode::Meta),
             ],
             [(in_features + 15) / 16, (m + 15) / 16, 1],
         );
@@ -141,7 +88,7 @@ impl Linear {
     }
 }
 
-impl Layer for Linear {
+impl<B: Backend> Layer for Linear<B> {
     fn forward(&self) {
         self.forward_graph.execute();
     }

@@ -7,96 +7,76 @@ use super::silu::SiLU;
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode, fuse_compute_graphs};
-use wilupgu::nn::shaders::BuiltInShader;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Binding, ComputeGraph, fuse_compute_graphs, Tensor, TensorMode};
 
 // Helpers
 
-fn zero_tensor(t: &Tensor) {
+fn zero_tensor<B: Backend>(t: &Tensor<B>) {
     let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
     t.copy_from_cpu(&vec![0.0 as Real; len]);
 }
 
-fn add_inplace_node(
-    graph: &mut ComputeGraph,
-    target: &Arc<Tensor>,
-    source: &Arc<Tensor>,
+fn add_inplace_node<B: Backend>(
+    graph: &mut ComputeGraph<B>,
+    target: &Arc<Tensor<B>>,
+    source: &Arc<Tensor<B>>,
     elems: u32,
 ) {
-    let shader = BuiltInShader::BwdAddInplace.get_def();
     graph.add_node(
-        &shader,
+        "BwdAddInplace",
         &[
-            TensorBind {
-                binding: 0,
-                tensor: target,
-                mode: TensorMode::InOut,
-            },
-            TensorBind {
-                binding: 1,
-                tensor: source,
-                mode: TensorMode::Input,
-            },
+            Binding::new(0, &target.buffer, TensorMode::InOut),
+            Binding::new(1, &source.buffer, TensorMode::Input),
         ],
         [(elems + 255) / 256, 1, 1],
     );
 }
 
-fn add_rope_node(
-    graph: &mut ComputeGraph,
-    shader: BuiltInShader,
-    vec: &Arc<Tensor>,
-    meta: &Arc<Tensor>,
+fn add_rope_node<B: Backend>(
+    graph: &mut ComputeGraph<B>,
+    kernel: &str,
+    vec: &Arc<Tensor<B>>,
+    meta: &Arc<Tensor<B>>,
     dim: u32,
     seq_len: u32,
 ) {
-    let shader_def = shader.get_def();
     graph.add_node(
-        &shader_def,
+        kernel,
         &[
-            TensorBind {
-                binding: 0,
-                tensor: vec,
-                mode: TensorMode::InOut,
-            },
-            TensorBind {
-                binding: 1,
-                tensor: meta,
-                mode: TensorMode::Meta,
-            },
+            Binding::new(0, &vec.buffer, TensorMode::InOut),
+            Binding::new(1, &meta.buffer, TensorMode::Meta),
         ],
         [(dim / 2 + 15) / 16, (seq_len + 15) / 16, 1],
     );
 }
 
-pub struct TransformerBlock {
-    pub norm_1: RMSNorm,
-    pub q_proj: Linear,
-    pub k_proj: Linear,
-    pub v_proj: Linear,
-    pub out_proj: Linear,
-    pub attention: SelfAttention,
-    pub add_1: Add,
-    pub norm_2: RMSNorm,
-    pub ffn_up: Linear,
-    pub silu: SiLU,
-    pub ffn_down: Linear,
-    pub add_2: Add,
-    pub grad_input: Arc<Tensor>,
-    pub rope_forward: ComputeGraph,
-    pub backward_graph: ComputeGraph,
+pub struct TransformerBlock<B: Backend> {
+    pub norm_1: RMSNorm<B>,
+    pub q_proj: Linear<B>,
+    pub k_proj: Linear<B>,
+    pub v_proj: Linear<B>,
+    pub out_proj: Linear<B>,
+    pub attention: SelfAttention<B>,
+    pub add_1: Add<B>,
+    pub norm_2: RMSNorm<B>,
+    pub ffn_up: Linear<B>,
+    pub silu: SiLU<B>,
+    pub ffn_down: Linear<B>,
+    pub add_2: Add<B>,
+    pub grad_input: Arc<Tensor<B>>,
+    pub rope_forward: ComputeGraph<B>,
+    pub backward_graph: ComputeGraph<B>,
 }
 
-impl TransformerBlock {
+impl<B: Backend> TransformerBlock<B> {
     pub fn new(
-        ctx: Arc<WgpuContext>,
+        ctx: Arc<B>,
         dim: u32,
         seq_len: u32,
-        input_tensor: &Arc<Tensor>,
-        grad_output: &Arc<Tensor>,
-        grad_input: &Arc<Tensor>,
+        num_heads: u32,
+        input_tensor: &Arc<Tensor<B>>,
+        grad_output: &Arc<Tensor<B>>,
+        grad_input: &Arc<Tensor<B>>,
     ) -> Self {
         let dim_size = (seq_len * dim) as usize;
         let hidden_dim = dim * 4;
@@ -172,13 +152,14 @@ impl TransformerBlock {
             &g_vproj_in,
         );
 
-        let rope_meta_data = vec![seq_len, dim, dim];
+        let head_dim = dim / num_heads;
+        let rope_meta_data = vec![seq_len, dim, head_dim];
         let t_meta_rope = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rope_meta_data));
 
         let mut rope_forward = ComputeGraph::new(ctx.clone());
         add_rope_node(
             &mut rope_forward,
-            BuiltInShader::RoPE,
+            "RoPE",
             &q_proj.out_buffer,
             &t_meta_rope,
             dim,
@@ -186,7 +167,7 @@ impl TransformerBlock {
         );
         add_rope_node(
             &mut rope_forward,
-            BuiltInShader::RoPE,
+            "RoPE",
             &k_proj.out_buffer,
             &t_meta_rope,
             dim,
@@ -197,6 +178,7 @@ impl TransformerBlock {
             ctx.clone(),
             seq_len,
             dim,
+            num_heads,
             &q_proj.out_buffer,
             &k_proj.out_buffer,
             &v_proj.out_buffer,
@@ -305,7 +287,7 @@ impl TransformerBlock {
         let mut rope_backward = ComputeGraph::new(ctx.clone());
         add_rope_node(
             &mut rope_backward,
-            BuiltInShader::RoPEBwd,
+            "RoPEBwd",
             &g_attn_q,
             &t_meta_rope,
             dim,
@@ -313,7 +295,7 @@ impl TransformerBlock {
         );
         add_rope_node(
             &mut rope_backward,
-            BuiltInShader::RoPEBwd,
+            "RoPEBwd",
             &g_attn_k,
             &t_meta_rope,
             dim,
@@ -381,7 +363,7 @@ impl TransformerBlock {
     }
 }
 
-impl Layer for TransformerBlock {
+impl<B: Backend> Layer for TransformerBlock<B> {
     fn forward(&self) {
         self.norm_1.forward();
 

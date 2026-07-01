@@ -1,28 +1,25 @@
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
-use wilupgu::nn::shaders::BuiltInShader;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
-pub struct Embedding {
-    pub table: Arc<Tensor>,
-    pub grad_table: Arc<Tensor>,
-    pub out_buffer: Arc<Tensor>,
-    pub forward_graph: ComputeGraph,
-    pub backward_graph: ComputeGraph,
+pub struct Embedding<B: Backend> {
+    pub table: Arc<Tensor<B>>,
+    pub grad_table: Arc<Tensor<B>>,
+    pub out_buffer: Arc<Tensor<B>>,
+    pub forward_graph: ComputeGraph<B>,
+    pub backward_graph: ComputeGraph<B>,
 }
 
-impl Embedding {
+impl<B: Backend> Embedding<B> {
     pub fn new(
-        ctx: Arc<WgpuContext>,
+        ctx: Arc<B>,
         vocab_size: u32,
         dim: u32,
         seq_len: u32,
         table_data: &[Real],
-        tokens_buffer: &Arc<Tensor>,
-        grad_output: &Arc<Tensor>,
+        tokens_buffer: &Arc<Tensor<B>>,
+        grad_output: &Arc<Tensor<B>>,
     ) -> Self {
         assert_eq!(
             table_data.len(),
@@ -41,63 +38,26 @@ impl Embedding {
         let zero_out = vec![0.0 as Real; out_size];
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
 
-        let shader_fw = BuiltInShader::Embedding.get_def();
-
-        // --- FORWARD ---
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         forward_graph.add_node(
-            &shader_fw,
+            "Embedding",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: tokens_buffer,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &table,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &out_buffer,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta,
-                    mode: TensorMode::Meta,
-                },
+                Binding::new(0, &tokens_buffer.buffer, TensorMode::Input),
+                Binding::new(1, &table.buffer, TensorMode::Input),
+                Binding::new(2, &out_buffer.buffer, TensorMode::Output),
+                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
             ],
             [(dim + 255) / 256, seq_len, 1],
         );
 
-        // --- BACKWARD ---
-        let shader_bw = BuiltInShader::EmbeddingBwd.get_def();
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         backward_graph.add_node(
-            &shader_bw,
+            "EmbeddingBwd",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: tokens_buffer,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: grad_output,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &grad_table,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta,
-                    mode: TensorMode::Meta,
-                },
+                Binding::new(0, &tokens_buffer.buffer, TensorMode::Input),
+                Binding::new(1, &grad_output.buffer, TensorMode::Input),
+                Binding::new(2, &grad_table.buffer, TensorMode::Output),
+                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
             ],
             [(dim + 255) / 256, seq_len, 1],
         );
@@ -112,7 +72,7 @@ impl Embedding {
     }
 }
 
-impl Layer for Embedding {
+impl<B: Backend> Layer for Embedding<B> {
     fn forward(&self) {
         self.forward_graph.execute();
     }

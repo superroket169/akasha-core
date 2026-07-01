@@ -1,44 +1,32 @@
 use super::traits::Layer;
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
-use wilupgu::nn::shaders::BuiltInShader;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
-pub struct Add {
-    pub in_out_buffer: Arc<Tensor>,
-    pub grad_a: Arc<Tensor>,
-    pub grad_b: Arc<Tensor>,
-    pub forward_graph: ComputeGraph,
-    pub backward_graph: ComputeGraph,
+pub struct Add<B: Backend> {
+    pub in_out_buffer: Arc<Tensor<B>>,
+    pub grad_a: Arc<Tensor<B>>,
+    pub grad_b: Arc<Tensor<B>>,
+    pub forward_graph: ComputeGraph<B>,
+    pub backward_graph: ComputeGraph<B>,
 }
 
-impl Add {
+impl<B: Backend> Add<B> {
     pub fn new(
-        ctx: Arc<WgpuContext>,
+        ctx: Arc<B>,
         length: u32,
-        buf_a: &Arc<Tensor>,
-        buf_b: &Arc<Tensor>,
-        grad_output: &Arc<Tensor>,
-        grad_a: &Arc<Tensor>,
-        grad_b: &Arc<Tensor>,
+        buf_a: &Arc<Tensor<B>>,
+        buf_b: &Arc<Tensor<B>>,
+        grad_output: &Arc<Tensor<B>>,
+        grad_a: &Arc<Tensor<B>>,
+        grad_b: &Arc<Tensor<B>>,
     ) -> Self {
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        let shader_fw = BuiltInShader::ResidualAdd.get_def();
 
         forward_graph.add_node(
-            &shader_fw,
+            "ResidualAdd",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: buf_a,
-                    mode: TensorMode::InOut,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: buf_b,
-                    mode: TensorMode::Input,
-                },
+                Binding::new(0, &buf_a.buffer, TensorMode::InOut),
+                Binding::new(1, &buf_b.buffer, TensorMode::Input),
             ],
             [(length + 255) / 256, 1, 1],
         );
@@ -47,38 +35,21 @@ impl Add {
         let grad_b = grad_b.clone();
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        let shader_bwd = BuiltInShader::ResidualAdd.get_def();
 
         backward_graph.add_node(
-            &shader_bwd,
+            "ResidualAdd",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &grad_a,
-                    mode: TensorMode::InOut,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: grad_output,
-                    mode: TensorMode::Input,
-                },
+                Binding::new(0, &grad_a.buffer, TensorMode::InOut),
+                Binding::new(1, &grad_output.buffer, TensorMode::Input),
             ],
             [(length + 255) / 256, 1, 1],
         );
 
         backward_graph.add_node(
-            &shader_bwd,
+            "ResidualAdd",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &grad_b,
-                    mode: TensorMode::InOut,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: grad_output,
-                    mode: TensorMode::Input,
-                },
+                Binding::new(0, &grad_b.buffer, TensorMode::InOut),
+                Binding::new(1, &grad_output.buffer, TensorMode::Input),
             ],
             [(length + 255) / 256, 1, 1],
         );
@@ -93,7 +64,7 @@ impl Add {
     }
 }
 
-impl Layer for Add {
+impl<B: Backend> Layer for Add<B> {
     fn forward(&self) {
         self.forward_graph.execute();
     }

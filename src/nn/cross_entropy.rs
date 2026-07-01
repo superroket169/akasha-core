@@ -1,10 +1,7 @@
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
-use wilupgu::nn::shaders::BuiltInShader;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -13,24 +10,24 @@ struct Meta {
     num_rows: u32,
 }
 
-pub struct CrossEntropy {
+pub struct CrossEntropy<B: Backend> {
     pub seq_len: u32,
-    pub target_tokens: Arc<Tensor>,
-    pub probs: Arc<Tensor>,
-    pub losses: Arc<Tensor>,
-    pub d_losses: Arc<Tensor>,
-    pub grad_logits: Arc<Tensor>,
-    pub forward_graph: ComputeGraph,
-    pub backward_graph: ComputeGraph,
+    pub target_tokens: Arc<Tensor<B>>,
+    pub probs: Arc<Tensor<B>>,
+    pub losses: Arc<Tensor<B>>,
+    pub d_losses: Arc<Tensor<B>>,
+    pub grad_logits: Arc<Tensor<B>>,
+    pub forward_graph: ComputeGraph<B>,
+    pub backward_graph: ComputeGraph<B>,
 }
 
-impl CrossEntropy {
+impl<B: Backend> CrossEntropy<B> {
     pub fn new(
-        ctx: Arc<WgpuContext>,
+        ctx: Arc<B>,
         vocab_size: u32,
         seq_len: u32,
-        logits: &Arc<Tensor>,
-        grad_logits: &Arc<Tensor>,
+        logits: &Arc<Tensor<B>>,
+        grad_logits: &Arc<Tensor<B>>,
     ) -> Self {
         let target_tokens = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
@@ -50,80 +47,33 @@ impl CrossEntropy {
         ));
         let grad_logits = grad_logits.clone();
 
-        let meta_data = [Meta {
-            vocab_size,
-            num_rows: seq_len,
-        }];
+        let meta_data = [Meta { vocab_size, num_rows: seq_len }];
         let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
 
         let dispatch_x = (seq_len + 255) / 256;
 
-        // --- FORWARD ---
-        let shader_fw = BuiltInShader::CrossEntropy.get_def();
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         forward_graph.add_node(
-            &shader_fw,
+            "CrossEntropy",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: logits,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &target_tokens,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &probs,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &losses,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 4,
-                    tensor: &t_meta,
-                    mode: TensorMode::Meta,
-                },
+                Binding::new(0, &logits.buffer, TensorMode::Input),
+                Binding::new(1, &target_tokens.buffer, TensorMode::Input),
+                Binding::new(2, &probs.buffer, TensorMode::Output),
+                Binding::new(3, &losses.buffer, TensorMode::Output),
+                Binding::new(4, &t_meta.buffer, TensorMode::Meta),
             ],
             [dispatch_x, 1, 1],
         );
 
-        // --- BACKWARD ---
-        let shader_bw = BuiltInShader::CrossEntropyBwd.get_def();
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         backward_graph.add_node(
-            &shader_bw,
+            "CrossEntropyBwd",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &probs,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &target_tokens,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &d_losses,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &grad_logits,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 4,
-                    tensor: &t_meta,
-                    mode: TensorMode::Meta,
-                },
+                Binding::new(0, &probs.buffer, TensorMode::Input),
+                Binding::new(1, &target_tokens.buffer, TensorMode::Input),
+                Binding::new(2, &d_losses.buffer, TensorMode::Input),
+                Binding::new(3, &grad_logits.buffer, TensorMode::Output),
+                Binding::new(4, &t_meta.buffer, TensorMode::Meta),
             ],
             [dispatch_x, 1, 1],
         );
@@ -151,7 +101,7 @@ impl CrossEntropy {
     }
 }
 
-impl Layer for CrossEntropy {
+impl<B: Backend> Layer for CrossEntropy<B> {
     fn forward(&self) {
         self.forward_graph.execute();
     }

@@ -1,71 +1,48 @@
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
-use wilupgu::nn::shaders::BuiltInShader;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
-pub struct RoPE {
-    pub in_out_buffer: Arc<Tensor>,
-    pub grad_input: Arc<Tensor>,
-    pub forward_graph: ComputeGraph,
-    pub backward_graph: ComputeGraph,
+pub struct RoPE<B: Backend> {
+    pub in_out_buffer: Arc<Tensor<B>>,
+    pub grad_input: Arc<Tensor<B>>,
+    pub forward_graph: ComputeGraph<B>,
+    pub backward_graph: ComputeGraph<B>,
 }
 
-impl RoPE {
+impl<B: Backend> RoPE<B> {
     pub fn new(
-        ctx: Arc<WgpuContext>,
+        ctx: Arc<B>,
         dim: u32,
         seq_len: u32,
-        input_buffer: &Arc<Tensor>,
-        grad_output: &Arc<Tensor>,
+        input_buffer: &Arc<Tensor<B>>,
+        grad_output: &Arc<Tensor<B>>,
     ) -> Self {
         let head_dim = 64u32;
         let meta_data = vec![seq_len, dim, head_dim];
         let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
 
-        let shader_fw = BuiltInShader::RoPE.get_def();
         let mut forward_graph = ComputeGraph::new(ctx.clone());
 
-        // --- FORWARD ---
         forward_graph.add_node(
-            &shader_fw,
+            "RoPE",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: input_buffer,
-                    mode: TensorMode::InOut,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &t_meta,
-                    mode: TensorMode::Meta,
-                },
+                Binding::new(0, &input_buffer.buffer, TensorMode::InOut),
+                Binding::new(1, &t_meta.buffer, TensorMode::Meta),
             ],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
 
-        // --- BACKWARD ---
         let grad_zero = vec![0.0 as Real; (seq_len * dim) as usize];
         let grad_input = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_zero));
 
-        let shader_bw = BuiltInShader::RoPEBwd.get_def();
         let mut backward_graph = ComputeGraph::new(ctx.clone());
 
         backward_graph.add_node(
-            &shader_bw,
+            "RoPEBwd",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: grad_output,
-                    mode: TensorMode::InOut,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &t_meta,
-                    mode: TensorMode::Meta,
-                },
+                Binding::new(0, &grad_output.buffer, TensorMode::InOut),
+                Binding::new(1, &t_meta.buffer, TensorMode::Meta),
             ],
             [(dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
@@ -79,7 +56,7 @@ impl RoPE {
     }
 }
 
-impl Layer for RoPE {
+impl<B: Backend> Layer for RoPE<B> {
     fn forward(&self) {
         self.forward_graph.execute();
     }
