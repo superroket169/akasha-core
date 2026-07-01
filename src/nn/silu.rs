@@ -1,61 +1,40 @@
 use super::traits::Layer;
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
-use wilupgu::nn::shaders::BuiltInShader;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
-pub struct SiLU {
-    pub in_out_buffer: Arc<Tensor>,
-    pub grad_input: Arc<Tensor>,
-    pub forward_graph: ComputeGraph,
-    pub backward_graph: ComputeGraph,
+pub struct SiLU<B: Backend> {
+    pub in_out_buffer: Arc<Tensor<B>>,
+    pub grad_input: Arc<Tensor<B>>,
+    pub forward_graph: ComputeGraph<B>,
+    pub backward_graph: ComputeGraph<B>,
 }
 
-impl SiLU {
+impl<B: Backend> SiLU<B> {
     pub fn new(
-        ctx: Arc<WgpuContext>,
+        ctx: Arc<B>,
         total_elements: u32,
-        input_buffer: &Arc<Tensor>,
-        grad_output: &Arc<Tensor>,
-        grad_input: &Arc<Tensor>,
+        input_buffer: &Arc<Tensor<B>>,
+        grad_output: &Arc<Tensor<B>>,
+        grad_input: &Arc<Tensor<B>>,
     ) -> Self {
-        let shader_fw = BuiltInShader::SiLU.get_def();
         let mut forward_graph = ComputeGraph::new(ctx.clone());
 
         forward_graph.add_node(
-            &shader_fw,
-            &[TensorBind {
-                binding: 0,
-                tensor: input_buffer,
-                mode: TensorMode::InOut,
-            }],
+            "SiLU",
+            &[Binding::new(0, &input_buffer.buffer, TensorMode::InOut)],
             [(total_elements + 255) / 256, 1, 1],
         );
 
         let grad_input = grad_input.clone();
 
-        let shader_bw = BuiltInShader::SiLUBwd.get_def();
         let mut backward_graph = ComputeGraph::new(ctx.clone());
 
         backward_graph.add_node(
-            &shader_bw,
+            "SiLUBwd",
             &[
-                TensorBind {
-                    binding: 0,
-                    tensor: input_buffer,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: grad_output,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &grad_input,
-                    mode: TensorMode::Output,
-                },
+                Binding::new(0, &input_buffer.buffer, TensorMode::Input),
+                Binding::new(1, &grad_output.buffer, TensorMode::Input),
+                Binding::new(2, &grad_input.buffer, TensorMode::Output),
             ],
             [(total_elements + 255) / 256, 1, 1],
         );
@@ -69,7 +48,7 @@ impl SiLU {
     }
 }
 
-impl Layer for SiLU {
+impl<B: Backend> Layer for SiLU<B> {
     fn forward(&self) {
         self.forward_graph.execute();
     }
