@@ -1,10 +1,7 @@
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
-use wilupgu::nn::shaders::BuiltInShader;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -13,313 +10,332 @@ struct AttnScaleMeta {
     scale: f32,
 }
 
-pub struct SelfAttention {
-    pub ctx: Arc<WgpuContext>,
-    pub out_buffer: Arc<Tensor>,
-    pub grad_q: Arc<Tensor>,
-    pub grad_k: Arc<Tensor>,
-    pub grad_v: Arc<Tensor>,
-    pub grad_scores: Arc<Tensor>,
-
-    pub forward_graph: ComputeGraph,
-    pub backward_graph: ComputeGraph,
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct HeadMoveMeta {
+    seq_len: u32,
+    full_dim: u32,
+    head_dim: u32,
+    head_offset: u32,
 }
 
-impl SelfAttention {
+pub struct SelfAttention<B: Backend> {
+    pub out_buffer: Arc<Tensor<B>>,
+    pub forward_graph: ComputeGraph<B>,
+    pub backward_graph: ComputeGraph<B>,
+}
+
+impl<B: Backend> SelfAttention<B> {
     pub fn new(
-        ctx: Arc<WgpuContext>,
+        ctx: Arc<B>,
         seq_len: u32,
         dim: u32,
-        q_buf: &Arc<Tensor>,
-        k_buf: &Arc<Tensor>,
-        v_buf: &Arc<Tensor>,
-        grad_output: &Arc<Tensor>,
-        grad_q: &Arc<Tensor>,
-        grad_k: &Arc<Tensor>,
-        grad_v: &Arc<Tensor>,
+        num_heads: u32,
+        q_buf: &Arc<Tensor<B>>,
+        k_buf: &Arc<Tensor<B>>,
+        v_buf: &Arc<Tensor<B>>,
+        grad_output: &Arc<Tensor<B>>,
+        grad_q: &Arc<Tensor<B>>,
+        grad_k: &Arc<Tensor<B>>,
+        grad_v: &Arc<Tensor<B>>,
     ) -> Self {
-        let scores_size = (seq_len * seq_len) as usize;
+        assert_eq!(dim % num_heads, 0, "dim must be divisible by num_heads");
+        let head_dim = dim / num_heads;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+
         let out_size = (seq_len * dim) as usize;
+        let out_buffer = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; out_size],
+        ));
 
-        let scores_data = vec![0.0 as Real; scores_size];
-        let t_scores = Arc::new(Tensor::init_from_cpu(ctx.clone(), &scores_data));
+        let head_size = (seq_len * head_dim) as usize;
+        let scores_size = (seq_len * seq_len) as usize;
 
-        let out_data = vec![0.0 as Real; out_size];
-        let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &out_data));
+        let t_meta_seq = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &[AttnScaleMeta { seq_len, scale }],
+        ));
 
-        let grad_q = grad_q.clone();
-        let grad_k = grad_k.clone();
-        let grad_v = grad_v.clone();
-        let grad_scores = Arc::new(Tensor::init_from_cpu(ctx.clone(), &scores_data));
-        let grad_scores_dx = Arc::new(Tensor::init_from_cpu(ctx.clone(), &scores_data));
+        let grid_seq16 = (seq_len + 15) / 16;
+        let grid_hd16 = (head_dim + 15) / 16;
+        let grid_softmax = (seq_len + 255) / 256;
+        let grid_zero_head = ((seq_len * head_dim) + 255) / 256;
 
-        // Meta Tensors
-        let meta_qkt_data = vec![seq_len as u32, dim as u32, seq_len as u32];
-        let t_meta_qkt = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_qkt_data));
-
-        let scale = 1.0 / (dim as f32).sqrt();
-        let meta_seq_data = [AttnScaleMeta { seq_len, scale }];
-        let t_meta_seq = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_seq_data));
-
-        let meta_out_data = vec![seq_len as u32, seq_len as u32, dim as u32];
-        let t_meta_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_out_data));
-
-        // Shaders
-        let shader_qkt = BuiltInShader::MatMulTrp.get_def();
-        let shader_mask = BuiltInShader::CausalMask.get_def();
-        let shader_softmax = BuiltInShader::Softmax.get_def();
-        let shader_out = BuiltInShader::MatMul.get_def();
-
-        // ==========================================
-        //                  FORWARD
-        // ==========================================
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-
-        forward_graph.add_node(
-            &shader_qkt,
-            &[
-                TensorBind {
-                    binding: 0,
-                    tensor: q_buf,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: k_buf,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &t_scores,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta_qkt,
-                    mode: TensorMode::Meta,
-                },
-            ],
-            [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
-        );
-
-        forward_graph.add_node(
-            &shader_mask,
-            &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &t_scores,
-                    mode: TensorMode::InOut,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &t_meta_seq,
-                    mode: TensorMode::Meta,
-                },
-            ],
-            [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
-        );
-
-        forward_graph.add_node(
-            &shader_softmax,
-            &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &t_scores,
-                    mode: TensorMode::InOut,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &t_meta_seq,
-                    mode: TensorMode::Meta,
-                },
-            ],
-            [(seq_len + 255) / 256, 1, 1],
-        );
-
-        forward_graph.add_node(
-            &shader_out,
-            &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &t_scores,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: v_buf,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &out_buffer,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta_out,
-                    mode: TensorMode::Meta,
-                },
-            ],
-            [(dim + 15) / 16, (seq_len + 15) / 16, 1],
-        );
-
-        // ==========================================
-        //                  BACKWARD
-        // ==========================================
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        let shader_matmul_bwd = BuiltInShader::MatMul.get_def();
-        let shader_matmul_bwd_trp = BuiltInShader::MatMulTrp.get_def();
-        let shader_softmax_bwd = BuiltInShader::SoftmaxBwd.get_def();
 
-        backward_graph.add_node(
-            &shader_matmul_bwd_trp,
-            &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &t_scores,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: grad_output,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &grad_v,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta_qkt,
-                    mode: TensorMode::Meta,
-                },
-            ],
-            [(dim + 15) / 16, (seq_len + 15) / 16, 1],
-        );
+        // Per-head forward scores stay alive until backward (softmax_bwd needs the forward Y)
+        let mut t_scores_heads: Vec<Arc<Tensor<B>>> = Vec::with_capacity(num_heads as usize);
+        let mut q_heads: Vec<Arc<Tensor<B>>> = Vec::with_capacity(num_heads as usize);
+        let mut k_heads: Vec<Arc<Tensor<B>>> = Vec::with_capacity(num_heads as usize);
+        let mut v_heads: Vec<Arc<Tensor<B>>> = Vec::with_capacity(num_heads as usize);
 
-        backward_graph.add_node(
-            &shader_matmul_bwd_trp,
-            &[
-                TensorBind {
-                    binding: 0,
-                    tensor: grad_output,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: v_buf,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &grad_scores,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta_out,
-                    mode: TensorMode::Meta,
-                },
-            ],
-            [(seq_len + 15) / 16, (seq_len + 15) / 16, 1],
-        );
+        // Shared scratch: reused/overwritten sequentially per head
+        let out_head = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; head_size],
+        ));
+        let grad_out_head = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; head_size],
+        ));
+        let grad_q_head = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; head_size],
+        ));
+        let grad_k_head = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; head_size],
+        ));
+        let grad_v_head = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; head_size],
+        ));
+        let grad_y = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; scores_size],
+        ));
+        let grad_raw = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; scores_size],
+        ));
+        let zero_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[(seq_len * head_dim)]));
 
-        backward_graph.add_node(
-            &shader_softmax_bwd,
-            &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &t_scores,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: &grad_scores,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &grad_scores_dx,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta_seq,
-                    mode: TensorMode::Meta,
-                }, // Config
-            ],
-            [(seq_len + 255) / 256, 1, 1],
-        );
+        for h in 0..num_heads {
+            let head_offset = h * head_dim;
+            let t_meta_head = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &[HeadMoveMeta {
+                    seq_len,
+                    full_dim: dim,
+                    head_dim,
+                    head_offset,
+                }],
+            ));
 
-        backward_graph.add_node(
-            &shader_matmul_bwd,
-            &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &grad_scores_dx,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: k_buf,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &grad_q,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta_qkt,
-                    mode: TensorMode::Meta,
-                },
-            ],
-            [(dim + 15) / 16, (seq_len + 15) / 16, 1],
-        );
+            let q_head = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &vec![0.0 as Real; head_size],
+            ));
+            let k_head = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &vec![0.0 as Real; head_size],
+            ));
+            let v_head = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &vec![0.0 as Real; head_size],
+            ));
+            let t_scores = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &vec![0.0 as Real; scores_size],
+            ));
 
-        backward_graph.add_node(
-            &shader_matmul_bwd_trp,
-            &[
-                TensorBind {
-                    binding: 0,
-                    tensor: &grad_scores_dx,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 1,
-                    tensor: q_buf,
-                    mode: TensorMode::Input,
-                },
-                TensorBind {
-                    binding: 2,
-                    tensor: &grad_k,
-                    mode: TensorMode::Output,
-                },
-                TensorBind {
-                    binding: 3,
-                    tensor: &t_meta_qkt,
-                    mode: TensorMode::Meta,
-                },
-            ],
-            [(dim + 15) / 16, (seq_len + 15) / 16, 1],
-        );
+            // ---- gather Q/K/V columns for this head ----
+            for (src, dst) in [(q_buf, &q_head), (k_buf, &k_head), (v_buf, &v_head)] {
+                forward_graph.add_node(
+                    "HeadGather",
+                    &[
+                        Binding::new(0, &src.buffer, TensorMode::Input),
+                        Binding::new(1, &dst.buffer, TensorMode::Output),
+                        Binding::new(2, &t_meta_head.buffer, TensorMode::Meta),
+                    ],
+                    [grid_hd16, grid_seq16, 1],
+                );
+            }
+
+            // ---- scores = Q_h @ K_h^T, meta {M=seq,N=seq,K=head_dim} ----
+            let meta_qkt = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &[seq_len, seq_len, head_dim],
+            ));
+            forward_graph.add_node(
+                "MatMulTrp",
+                &[
+                    Binding::new(0, &q_head.buffer, TensorMode::Input),
+                    Binding::new(1, &k_head.buffer, TensorMode::Input),
+                    Binding::new(2, &t_scores.buffer, TensorMode::Output),
+                    Binding::new(3, &meta_qkt.buffer, TensorMode::Meta),
+                ],
+                [grid_seq16, grid_seq16, 1],
+            );
+
+            forward_graph.add_node(
+                "CausalMask",
+                &[
+                    Binding::new(0, &t_scores.buffer, TensorMode::InOut),
+                    Binding::new(1, &t_meta_seq.buffer, TensorMode::Meta),
+                ],
+                [grid_seq16, grid_seq16, 1],
+            );
+
+            forward_graph.add_node(
+                "Softmax",
+                &[
+                    Binding::new(0, &t_scores.buffer, TensorMode::InOut),
+                    Binding::new(1, &t_meta_seq.buffer, TensorMode::Meta),
+                ],
+                [grid_softmax, 1, 1],
+            );
+
+            // ---- out_h = scores @ V_h, meta {M=seq,N=head_dim,K=seq} ----
+            let meta_out = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &[seq_len, head_dim, seq_len],
+            ));
+            forward_graph.add_node(
+                "MatMul",
+                &[
+                    Binding::new(0, &t_scores.buffer, TensorMode::Input),
+                    Binding::new(1, &v_head.buffer, TensorMode::Input),
+                    Binding::new(2, &out_head.buffer, TensorMode::Output),
+                    Binding::new(3, &meta_out.buffer, TensorMode::Meta),
+                ],
+                [grid_hd16, grid_seq16, 1],
+            );
+
+            forward_graph.add_node(
+                "HeadScatter",
+                &[
+                    Binding::new(0, &out_head.buffer, TensorMode::Input),
+                    Binding::new(1, &out_buffer.buffer, TensorMode::Output),
+                    Binding::new(2, &t_meta_head.buffer, TensorMode::Meta),
+                ],
+                [grid_hd16, grid_seq16, 1],
+            );
+
+            t_scores_heads.push(t_scores);
+            q_heads.push(q_head);
+            k_heads.push(k_head);
+            v_heads.push(v_head);
+
+            // ============================== BACKWARD ================================
+
+            backward_graph.add_node(
+                "HeadGather",
+                &[
+                    Binding::new(0, &grad_output.buffer, TensorMode::Input),
+                    Binding::new(1, &grad_out_head.buffer, TensorMode::Output),
+                    Binding::new(2, &t_meta_head.buffer, TensorMode::Meta),
+                ],
+                [grid_hd16, grid_seq16, 1],
+            );
+
+            // dV_h = Y^T @ dOut_h  (accumulating MatMulWeightBwd -- zero first)
+            backward_graph.add_node(
+                "ZeroTensor",
+                &[
+                    Binding::new(0, &grad_v_head.buffer, TensorMode::Output),
+                    Binding::new(1, &zero_meta.buffer, TensorMode::Meta),
+                ],
+                [grid_zero_head, 1, 1],
+            );
+            let meta_dv = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &[seq_len, head_dim, seq_len],
+            ));
+            backward_graph.add_node(
+                "MatMulWeightBwd",
+                &[
+                    Binding::new(0, &t_scores_heads[h as usize].buffer, TensorMode::Input),
+                    Binding::new(1, &grad_out_head.buffer, TensorMode::Input),
+                    Binding::new(2, &grad_v_head.buffer, TensorMode::Output),
+                    Binding::new(3, &meta_dv.buffer, TensorMode::Meta),
+                ],
+                [(head_dim + 15) / 16, grid_seq16, 1],
+            );
+
+            // dY_h = dOut_h @ V_h^T, meta {M=seq,N=seq,K=head_dim}
+            let meta_dy = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &[seq_len, seq_len, head_dim],
+            ));
+            backward_graph.add_node(
+                "MatMulTrp",
+                &[
+                    Binding::new(0, &grad_out_head.buffer, TensorMode::Input),
+                    Binding::new(1, &v_heads[h as usize].buffer, TensorMode::Input),
+                    Binding::new(2, &grad_y.buffer, TensorMode::Output),
+                    Binding::new(3, &meta_dy.buffer, TensorMode::Meta),
+                ],
+                [grid_seq16, grid_seq16, 1],
+            );
+
+            backward_graph.add_node(
+                "SoftmaxBwd",
+                &[
+                    Binding::new(0, &t_scores_heads[h as usize].buffer, TensorMode::Input),
+                    Binding::new(1, &grad_y.buffer, TensorMode::Input),
+                    Binding::new(2, &grad_raw.buffer, TensorMode::Output),
+                    Binding::new(3, &t_meta_seq.buffer, TensorMode::Meta),
+                ],
+                [grid_softmax, 1, 1],
+            );
+
+            let meta_dq = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &[seq_len, head_dim, seq_len],
+            ));
+            backward_graph.add_node(
+                "MatMul",
+                &[
+                    Binding::new(0, &grad_raw.buffer, TensorMode::Input),
+                    Binding::new(1, &k_heads[h as usize].buffer, TensorMode::Input),
+                    Binding::new(2, &grad_q_head.buffer, TensorMode::Output),
+                    Binding::new(3, &meta_dq.buffer, TensorMode::Meta),
+                ],
+                [grid_hd16, grid_seq16, 1],
+            );
+
+            backward_graph.add_node(
+                "ZeroTensor",
+                &[
+                    Binding::new(0, &grad_k_head.buffer, TensorMode::Output),
+                    Binding::new(1, &zero_meta.buffer, TensorMode::Meta),
+                ],
+                [grid_zero_head, 1, 1],
+            );
+            let meta_dk = Arc::new(Tensor::init_from_cpu(
+                ctx.clone(),
+                &[seq_len, head_dim, seq_len],
+            ));
+            backward_graph.add_node(
+                "MatMulWeightBwd",
+                &[
+                    Binding::new(0, &grad_raw.buffer, TensorMode::Input),
+                    Binding::new(1, &q_heads[h as usize].buffer, TensorMode::Input),
+                    Binding::new(2, &grad_k_head.buffer, TensorMode::Output),
+                    Binding::new(3, &meta_dk.buffer, TensorMode::Meta),
+                ],
+                [(head_dim + 15) / 16, grid_seq16, 1],
+            );
+
+            for (src, dst) in [
+                (&grad_q_head, grad_q),
+                (&grad_k_head, grad_k),
+                (&grad_v_head, grad_v),
+            ] {
+                backward_graph.add_node(
+                    "HeadScatter",
+                    &[
+                        Binding::new(0, &src.buffer, TensorMode::Input),
+                        Binding::new(1, &dst.buffer, TensorMode::Output),
+                        Binding::new(2, &t_meta_head.buffer, TensorMode::Meta),
+                    ],
+                    [grid_hd16, grid_seq16, 1],
+                );
+            }
+        }
 
         Self {
-            ctx,
             out_buffer,
-            grad_q,
-            grad_k,
-            grad_v,
-            grad_scores,
             forward_graph,
             backward_graph,
         }
     }
 }
 
-impl Layer for SelfAttention {
+impl<B: Backend> Layer for SelfAttention<B> {
     fn forward(&self) {
         self.forward_graph.execute();
     }
