@@ -1,10 +1,7 @@
 use crate::Real;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, TensorBind, TensorMode};
-use wilupgu::nn::shaders::BuiltInShader;
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
 const DEFAULT_EPS: Real = 1e-8;
 
@@ -12,6 +9,7 @@ const DEFAULT_EPS: Real = 1e-8;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct ParamMeta {
     size: u32,
+    groups_x: u32,
 }
 
 #[repr(C)]
@@ -25,20 +23,20 @@ struct StepConfig {
     weight_decay: f32,
 }
 
-fn elem_count(t: &Tensor) -> usize {
+fn elem_count<B: Backend>(t: &Tensor<B>) -> usize {
     (t.size / std::mem::size_of::<Real>() as u64) as usize
 }
 
-pub struct AdamW {
-    cfg: Arc<Tensor>,
+pub struct AdamW<B: Backend> {
+    cfg: Arc<Tensor<B>>,
     eps: Real,
     step_count: AtomicU32,
-    graph: ComputeGraph,
-    pub moments: Vec<(Arc<Tensor>, Arc<Tensor>)>, // (weight, grad)
+    graph: ComputeGraph<B>,
+    pub moments: Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)>, // (weight, grad)
 }
 
-impl AdamW {
-    pub fn new(ctx: Arc<WgpuContext>, params: &[(Arc<Tensor>, Arc<Tensor>)]) -> Self {
+impl<B: Backend> AdamW<B> {
+    pub fn new(ctx: Arc<B>, params: &[(Arc<Tensor<B>>, Arc<Tensor<B>>)]) -> Self {
         let cfg = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
             &[StepConfig {
@@ -51,7 +49,6 @@ impl AdamW {
             }],
         ));
 
-        let def = BuiltInShader::AdamW.get_def();
         let mut graph = ComputeGraph::new(ctx.clone());
         let mut moments = Vec::with_capacity(params.len());
 
@@ -66,46 +63,30 @@ impl AdamW {
             let zeros = vec![0.0 as Real; len];
             let m = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros));
             let v = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros));
+
+            let total_groups = (((len as u32) + 255) / 256).max(1);
+            let groups_x = total_groups.min(8192);
+            let groups_y = (total_groups + groups_x - 1) / groups_x;
+
             let param_meta = Arc::new(Tensor::init_from_cpu(
                 ctx.clone(),
-                &[ParamMeta { size: len as u32 }],
+                &[ParamMeta {
+                    size: len as u32,
+                    groups_x,
+                }],
             ));
 
             graph.add_node(
-                &def,
+                "AdamW",
                 &[
-                    TensorBind {
-                        binding: 0,
-                        tensor: weight,
-                        mode: TensorMode::InOut,
-                    },
-                    TensorBind {
-                        binding: 1,
-                        tensor: grad,
-                        mode: TensorMode::Input,
-                    },
-                    TensorBind {
-                        binding: 2,
-                        tensor: &m,
-                        mode: TensorMode::InOut,
-                    },
-                    TensorBind {
-                        binding: 3,
-                        tensor: &v,
-                        mode: TensorMode::InOut,
-                    },
-                    TensorBind {
-                        binding: 4,
-                        tensor: &param_meta,
-                        mode: TensorMode::Meta,
-                    },
-                    TensorBind {
-                        binding: 5,
-                        tensor: &cfg,
-                        mode: TensorMode::Meta,
-                    },
+                    Binding::new(0, &weight.buffer, TensorMode::InOut),
+                    Binding::new(1, &grad.buffer, TensorMode::Input),
+                    Binding::new(2, &m.buffer, TensorMode::InOut),
+                    Binding::new(3, &v.buffer, TensorMode::InOut),
+                    Binding::new(4, &param_meta.buffer, TensorMode::Meta),
+                    Binding::new(5, &cfg.buffer, TensorMode::Meta),
                 ],
-                [((len as u32) + 255) / 256, 1, 1],
+                [groups_x, groups_y, 1],
             );
 
             moments.push((m, v));
