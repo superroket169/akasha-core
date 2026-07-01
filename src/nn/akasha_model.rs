@@ -3,9 +3,7 @@ use crate::Real;
 use std::fs::File;
 use std::io::{BufReader, BufWriter};
 use std::sync::Arc;
-use wilupgu::context::WgpuContext;
-use wilupgu::graph::{ComputeGraph, fuse_compute_graphs};
-use wilupgu::tensor::Tensor;
+use wilupgu::{Backend, ComputeGraph, Tensor, fuse_compute_graphs};
 
 use super::cross_entropy::CrossEntropy;
 use super::embedding::Embedding;
@@ -16,22 +14,43 @@ use super::rmsnorm::RMSNorm;
 use super::traits::Layer;
 use crate::optim::AdamW;
 
+use crate::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM};
+
 const ADAM_BETA1: Real = 0.9;
 const ADAM_BETA2: Real = 0.95;
-const ADAM_WEIGHT_DECAY: Real = 0.0;
 
-fn zero_tensor(t: &Tensor) {
+fn sample_token(logits: &[Real], temperature: f32) -> u32 {
+    let scaled: Vec<f64> = logits
+        .iter()
+        .map(|&x| (x as f64) / temperature as f64)
+        .collect();
+    let max = scaled.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+    let exps: Vec<f64> = scaled.iter().map(|&x| (x - max).exp()).collect();
+    let sum: f64 = exps.iter().sum();
+    let probs: Vec<f64> = exps.iter().map(|&x| x / sum).collect();
+
+    let mut r: f64 = rand::random();
+    for (i, &p) in probs.iter().enumerate() {
+        if r < p {
+            return i as u32;
+        }
+        r -= p;
+    }
+    (probs.len() - 1) as u32
+}
+
+fn zero_tensor<B: Backend>(t: &Tensor<B>) {
     let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
     t.copy_from_cpu(&vec![0.0 as Real; len]);
 }
 
-fn collect_trainable_params(
-    embedding: &Embedding,
-    layers: &[TransformerBlock],
-    final_norm: &RMSNorm,
-    lm_head: &Linear,
-) -> Vec<(Arc<Tensor>, Arc<Tensor>)> {
-    let mut params: Vec<(Arc<Tensor>, Arc<Tensor>)> =
+fn collect_trainable_params<B: Backend>(
+    embedding: &Embedding<B>,
+    layers: &[TransformerBlock<B>],
+    final_norm: &RMSNorm<B>,
+    lm_head: &Linear<B>,
+) -> Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)> {
+    let mut params: Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)> =
         vec![(embedding.table.clone(), embedding.grad_table.clone())];
     for layer in layers.iter() {
         params.push((
@@ -72,21 +91,23 @@ fn collect_trainable_params(
     params
 }
 
-pub struct AkashaModel {
-    pub ctx: Arc<WgpuContext>,
-    pub input_tokens: Arc<Tensor>,
-    pub embedding: Embedding,
-    pub layers: Vec<TransformerBlock>,
-    pub final_norm: RMSNorm,
-    pub lm_head: Linear,
-    pub grad_logits: Arc<Tensor>,
-    pub cross_entropy: CrossEntropy,
-    pub optimizer: AdamW,
-    pub fused_forward_graph: ComputeGraph,
-    pub fused_backward_graph: ComputeGraph,
+pub struct AkashaModel<B: Backend> {
+    pub ctx: Arc<B>,
+    pub vocab_size: u32,
+    pub seq_len: u32,
+    pub input_tokens: Arc<Tensor<B>>,
+    pub embedding: Embedding<B>,
+    pub layers: Vec<TransformerBlock<B>>,
+    pub final_norm: RMSNorm<B>,
+    pub lm_head: Linear<B>,
+    pub grad_logits: Arc<Tensor<B>>,
+    pub cross_entropy: CrossEntropy<B>,
+    pub optimizer: AdamW<B>,
+    pub fused_forward_graph: ComputeGraph<B>,
+    pub fused_backward_graph: ComputeGraph<B>,
 }
 
-impl AkashaModel {
+impl<B: Backend> AkashaModel<B> {
     pub fn train_step(
         &self,
         input_tokens: &[u32],
@@ -140,6 +161,7 @@ impl AkashaModel {
         }
 
         if is_last_in_cycle {
+            self.clip_grad_norm(GRAD_CLIP_NORM);
             self.optimizer
                 .step(lr, ADAM_BETA1, ADAM_BETA2, ADAM_WEIGHT_DECAY);
         }
@@ -151,7 +173,26 @@ impl AkashaModel {
         }
     }
 
-    pub fn trainable_params(&self) -> Vec<(Arc<Tensor>, Arc<Tensor>)> {
+    pub fn clip_grad_norm(&self, max_norm: f32) {
+        let params = self.trainable_params();
+        let grads: Vec<Vec<Real>> = params.iter().map(|(_, grad)| grad.to_cpu()).collect();
+
+        let total_sq: f64 = grads
+            .iter()
+            .map(|g| g.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>())
+            .sum();
+        let total_norm = total_sq.sqrt() as f32;
+
+        if total_norm > max_norm {
+            let scale = max_norm / (total_norm + 1e-6);
+            for ((_, grad_tensor), grad_data) in params.iter().zip(grads.iter()) {
+                let scaled: Vec<Real> = grad_data.iter().map(|&x| x * scale).collect();
+                grad_tensor.copy_from_cpu(&scaled);
+            }
+        }
+    }
+
+    pub fn trainable_params(&self) -> Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)> {
         collect_trainable_params(
             &self.embedding,
             &self.layers,
@@ -161,12 +202,13 @@ impl AkashaModel {
     }
 
     pub fn new(
-        ctx: Arc<WgpuContext>,
+        ctx: Arc<B>,
         vocab_size: u32,
         dim: u32,
         seq_len: u32,
         num_layers: usize,
-        input_tokens: &Arc<Tensor>,
+        num_heads: u32,
+        input_tokens: &Arc<Tensor<B>>,
     ) -> Self {
         assert!(num_layers >= 1, "At least one layer is required!");
 
@@ -180,7 +222,7 @@ impl AkashaModel {
         ));
         let g_lmhead_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
 
-        let edges: Vec<Arc<Tensor>> = (0..=num_layers)
+        let edges: Vec<Arc<Tensor<B>>> = (0..=num_layers)
             .map(|_| Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim)))
             .collect();
 
@@ -203,6 +245,7 @@ impl AkashaModel {
                 ctx.clone(),
                 dim,
                 seq_len,
+                num_heads,
                 &current_input,
                 &edges[i + 1],
                 &edges[i],
@@ -248,7 +291,7 @@ impl AkashaModel {
         let optimizer = AdamW::new(ctx.clone(), &trainable_params);
 
         // ---- fused forward ----
-        let mut forward_graphs: Vec<&ComputeGraph> = vec![&embedding.forward_graph];
+        let mut forward_graphs: Vec<&ComputeGraph<B>> = vec![&embedding.forward_graph];
         for layer in &layers {
             forward_graphs.push(&layer.norm_1.forward_graph);
             forward_graphs.push(&layer.q_proj.forward_graph);
@@ -270,7 +313,7 @@ impl AkashaModel {
         let fused_forward_graph = fuse_compute_graphs(ctx.clone(), &forward_graphs);
 
         // ---- fused backward ----
-        let mut backward_graphs: Vec<&ComputeGraph> = vec![
+        let mut backward_graphs: Vec<&ComputeGraph<B>> = vec![
             &cross_entropy.backward_graph,
             &lm_head.backward_graph,
             &final_norm.backward_graph,
@@ -283,6 +326,8 @@ impl AkashaModel {
 
         Self {
             ctx,
+            vocab_size,
+            seq_len,
             input_tokens: input_tokens.clone(),
             embedding,
             layers,
@@ -335,6 +380,46 @@ impl AkashaModel {
         for layer in self.layers.iter() {
             layer.zero_transient_grads();
         }
+    }
+
+    pub fn generate(
+        &self,
+        tokenizer: &crate::tokenizer::AkashaTokenizer,
+        prompt_tokens: &[u32],
+        max_new_tokens: usize,
+        temperature: f32,
+    ) -> String {
+        let seq_len = self.seq_len as usize;
+        let vocab_size = self.vocab_size as usize;
+        let mut tokens = prompt_tokens.to_vec();
+        const EOS: u32 = 50256;
+
+        for _ in 0..max_new_tokens {
+            let cur_len = tokens.len();
+            let (start, pred_pos) = if cur_len >= seq_len {
+                (cur_len - seq_len, seq_len - 1)
+            } else {
+                (0, cur_len - 1)
+            };
+
+            let mut window = vec![0u32; seq_len];
+            let slice = &tokens[start..];
+            window[..slice.len()].copy_from_slice(slice);
+
+            self.input_tokens.copy_from_cpu(&window);
+            self.forward_fused();
+
+            let logits = self.lm_head.out_buffer.to_cpu();
+            let row = &logits[pred_pos * vocab_size..(pred_pos + 1) * vocab_size];
+            let next = sample_token(row, temperature);
+            tokens.push(next);
+
+            if next == EOS {
+                break;
+            }
+        }
+
+        tokenizer.decode(&tokens[prompt_tokens.len()..])
     }
 
     pub fn save_weights(&self, path: &str) -> bincode::Result<()> {
