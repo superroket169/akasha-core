@@ -145,7 +145,13 @@ fn run_epochs<B: Backend>(
     }
 }
 
-fn generate<B: Backend>(model: &AkashaModel<B>, tokenizer: &Tokenizer, prompt: &str, seq_len: usize, pad_id: u32) {
+fn generate<B: Backend>(
+    model: &AkashaModel<B>,
+    tokenizer: &Tokenizer,
+    prompt: &str,
+    seq_len: usize,
+    pad_id: u32,
+) {
     let prompt_tokens = tokenizer.encode(prompt);
 
     let mut window: Vec<u32> = if prompt_tokens.len() >= seq_len {

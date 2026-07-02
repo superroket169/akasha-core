@@ -1,8 +1,9 @@
-use super::ops::meta::{CrossEntropyMeta, KernelMeta};
+use super::ops;
+use super::ops::meta::CrossEntropyMeta;
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
+use wilupgu::{Backend, ComputeGraph, Tensor};
 
 pub struct CrossEntropy<B: Backend> {
     pub seq_len: u32,
@@ -41,38 +42,29 @@ impl<B: Backend> CrossEntropy<B> {
         ));
         let grad_logits = grad_logits.clone();
 
-        let t_meta = CrossEntropyMeta {
+        let shape = CrossEntropyMeta {
             vocab_size,
             num_rows: seq_len,
-        }
-        .upload(&ctx);
-
-        let dispatch_x = (seq_len + 255) / 256;
+        };
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        forward_graph.add_node(
-            "CrossEntropy",
-            &[
-                Binding::new(0, &logits.buffer, TensorMode::Input),
-                Binding::new(1, &target_tokens.buffer, TensorMode::Input),
-                Binding::new(2, &probs.buffer, TensorMode::Output),
-                Binding::new(3, &losses.buffer, TensorMode::Output),
-                Binding::new(4, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [dispatch_x, 1, 1],
+        ops::loss::cross_entropy(
+            &mut forward_graph,
+            logits,
+            &target_tokens,
+            &probs,
+            &losses,
+            shape,
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        backward_graph.add_node(
-            "CrossEntropyBwd",
-            &[
-                Binding::new(0, &probs.buffer, TensorMode::Input),
-                Binding::new(1, &target_tokens.buffer, TensorMode::Input),
-                Binding::new(2, &d_losses.buffer, TensorMode::Input),
-                Binding::new(3, &grad_logits.buffer, TensorMode::Output),
-                Binding::new(4, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [dispatch_x, 1, 1],
+        ops::loss::cross_entropy_bwd(
+            &mut backward_graph,
+            &probs,
+            &target_tokens,
+            &d_losses,
+            &grad_logits,
+            shape,
         );
 
         Self {

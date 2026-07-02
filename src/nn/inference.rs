@@ -1,19 +1,17 @@
-use super::akasha_model::{AkashaModel, sample_token};
-use super::attention::SelfAttention;
+use super::akasha_model::AkashaModel;
 use super::cache::Cache;
-use super::embedding::Embedding;
-use super::linear::Linear;
-use super::pipeline::{TransformerBlock, add_qkv_slice_node, add_rope_node};
+use super::ops;
 use super::ops::meta::{
     CacheWriteMeta, EmbeddingMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
     RopeOffsetMeta, SoftmaxRectMeta,
 };
-use super::rmsnorm::RMSNorm;
+use super::pipeline::{TransformerBlock, qkv_slice};
+use super::sampling::sample_token;
 use crate::Real;
 use crate::config::ModelConfig;
 use crate::tokenizer::AkashaTokenizer;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
+use wilupgu::{Backend, ComputeGraph, Tensor};
 
 struct DecodeScratch<B: Backend> {
     hidden: Arc<Tensor<B>>,
@@ -44,11 +42,11 @@ struct DecodeScratch<B: Backend> {
     q_move_meta: Vec<Arc<Tensor<B>>>, // per head: HeadMoveMeta (seq_len=1)
 
     // ---- dynamic Meta buffers: updated once per decode step ----
-    rope_meta: Arc<Tensor<B>>,        // RopeOffsetMeta (pos advances)
-    cache_write_meta: Arc<Tensor<B>>, // CacheWriteMeta (dst_row_offset advances)
-    qkt_meta: Arc<Tensor<B>>,         // MatMulMeta{1,attn_len,head_dim}
-    softmax_meta: Arc<Tensor<B>>,     // SoftmaxRectMeta (width=attn_len)
-    av_meta: Arc<Tensor<B>>,          // MatMulMeta{1,head_dim,attn_len}
+    rope_meta: Arc<Tensor<B>>,            // RopeOffsetMeta (pos advances)
+    cache_write_meta: Arc<Tensor<B>>,     // CacheWriteMeta (dst_row_offset advances)
+    qkt_meta: Arc<Tensor<B>>,             // MatMulMeta{1,attn_len,head_dim}
+    softmax_meta: Arc<Tensor<B>>,         // SoftmaxRectMeta (width=attn_len)
+    av_meta: Arc<Tensor<B>>,              // MatMulMeta{1,head_dim,attn_len}
     cache_move_meta: Vec<Arc<Tensor<B>>>, // per head: HeadMoveMeta (seq_len=attn_len)
 }
 
@@ -84,15 +82,7 @@ impl<B: Backend> DecodeScratch<B> {
         }
         .upload(&ctx);
         let qkv_split_meta = (0..3u32)
-            .map(|i| {
-                HeadMoveMeta {
-                    seq_len: 1,
-                    full_dim: dim * 3,
-                    head_dim: dim,
-                    head_offset: i * dim,
-                }
-                .upload(&ctx)
-            })
+            .map(|i| qkv_slice(1, dim, i * dim).upload(&ctx))
             .collect();
         let ffnup_meta = MatMulMeta {
             m: 1,
@@ -295,164 +285,120 @@ fn build_prefill_layer<B: Backend>(
     } = *cfg;
     let head_dim = cfg.head_dim();
     let zeros_dim = vec![0.0 as Real; (prompt_len * dim) as usize];
+    let norm_shape = NormMeta {
+        seq_len: prompt_len,
+        size: dim,
+        eps: cfg.norm_eps,
+    };
 
+    // ---- norm_1 + fused q/k/v projection ----
     let norm1_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    RMSNorm::forward_nodes(
+    ops::norm::rmsnorm(
         graph,
-        &layer.norm_1.weight,
         hidden_in,
+        &layer.norm_1.weight,
         &norm1_out,
-        prompt_len,
-        dim,
-        cfg.norm_eps,
+        norm_shape,
+    );
+
+    let qkv_out = Arc::new(Tensor::init_from_cpu(
+        ctx.clone(),
+        &vec![0.0 as Real; (prompt_len * dim * 3) as usize],
+    ));
+    ops::matmul::matmul(
+        graph,
+        &norm1_out,
+        &layer.qkv_proj.weight,
+        &qkv_out,
+        MatMulMeta {
+            m: prompt_len,
+            n: dim * 3,
+            k: dim,
+        },
     );
 
     let q_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     let k_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    let qkv_out = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0.0 as Real; (prompt_len * dim * 3) as usize],
-    ));
-    Linear::forward_nodes(
-        graph,
-        &layer.qkv_proj.weight,
-        &norm1_out,
-        &qkv_out,
-        prompt_len,
-        dim,
-        dim * 3,
-    );
-    add_qkv_slice_node(graph, "HeadGather", &qkv_out, &q_buf, dim, prompt_len, 0);
-    add_qkv_slice_node(graph, "HeadGather", &qkv_out, &k_buf, dim, prompt_len, dim);
-    add_qkv_slice_node(
-        graph,
-        "HeadGather",
-        &qkv_out,
-        &v_buf,
-        dim,
-        prompt_len,
-        2 * dim,
-    );
+    for (buf, off) in [(&q_buf, 0), (&k_buf, dim), (&v_buf, 2 * dim)] {
+        ops::head_move::head_gather(graph, &qkv_out, buf, qkv_slice(prompt_len, dim, off));
+    }
 
-    let rope_meta = RopeMeta {
+    // ---- RoPE + cache write ----
+    let rope_shape = RopeMeta {
         seq_len: prompt_len,
         dim,
         head_dim,
-    }
-    .upload(ctx);
-    add_rope_node(graph, "RoPE", &q_buf, &rope_meta, dim, prompt_len);
-    add_rope_node(graph, "RoPE", &k_buf, &rope_meta, dim, prompt_len);
+    };
+    ops::rope::rope(graph, &q_buf, rope_shape);
+    ops::rope::rope(graph, &k_buf, rope_shape);
 
-    let cache_write_meta = CacheWriteMeta {
+    let cache_shape = CacheWriteMeta {
         row_count: prompt_len,
         width: dim,
         dst_row_offset: 0,
-    }
-    .upload(ctx);
-    graph.add_node(
-        "CacheWrite",
-        &[
-            Binding::new(0, &k_buf.buffer, TensorMode::Input),
-            Binding::new(1, &cache_k.buffer, TensorMode::InOut),
-            Binding::new(2, &cache_write_meta.buffer, TensorMode::Meta),
-        ],
-        [(dim + 15) / 16, (prompt_len + 15) / 16, 1],
-    );
-    graph.add_node(
-        "CacheWrite",
-        &[
-            Binding::new(0, &v_buf.buffer, TensorMode::Input),
-            Binding::new(1, &cache_v.buffer, TensorMode::InOut),
-            Binding::new(2, &cache_write_meta.buffer, TensorMode::Meta),
-        ],
-        [(dim + 15) / 16, (prompt_len + 15) / 16, 1],
-    );
+    };
+    ops::cache::cache_write(graph, &k_buf, cache_k, cache_shape);
+    ops::cache::cache_write(graph, &v_buf, cache_v, cache_shape);
 
+    // ---- attention ----
     let attn_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    let mut q_heads = Vec::new();
-    let mut k_heads = Vec::new();
-    let mut v_heads = Vec::new();
-    let mut t_scores_heads = Vec::new();
-    SelfAttention::forward_nodes(
+    let _saved = ops::attention::causal_attention(
+        graph, &q_buf, &k_buf, &v_buf, &attn_out, prompt_len, dim, num_heads,
+    );
+
+    // out_proj fused with the residual add: writes into hidden_in
+    ops::matmul::matmul_add(
         graph,
-        prompt_len,
-        dim,
-        num_heads,
-        &q_buf,
-        &k_buf,
-        &v_buf,
         &attn_out,
-        &mut q_heads,
-        &mut k_heads,
-        &mut v_heads,
-        &mut t_scores_heads,
-    );
-
-    let outproj_meta = MatMulMeta {
-        m: prompt_len,
-        n: dim,
-        k: dim,
-    }
-    .upload(ctx);
-    graph.add_node(
-        "MatMulAdd",
-        &[
-            Binding::new(0, &attn_out.buffer, TensorMode::Input),
-            Binding::new(1, &layer.out_proj.weight.buffer, TensorMode::Input),
-            Binding::new(2, &hidden_in.buffer, TensorMode::InOut),
-            Binding::new(3, &outproj_meta.buffer, TensorMode::Meta),
-        ],
-        [(dim + 15) / 16, (prompt_len + 15) / 16, 1],
-    );
-
-    let norm2_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    RMSNorm::forward_nodes(
-        graph,
-        &layer.norm_2.weight,
+        &layer.out_proj.weight,
         hidden_in,
+        MatMulMeta {
+            m: prompt_len,
+            n: dim,
+            k: dim,
+        },
+    );
+
+    // ---- FFN + residual ----
+    let norm2_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
+    ops::norm::rmsnorm(
+        graph,
+        hidden_in,
+        &layer.norm_2.weight,
         &norm2_out,
-        prompt_len,
-        dim,
-        cfg.norm_eps,
+        norm_shape,
     );
 
     let ffn_up_out = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
         &vec![0.0 as Real; (prompt_len * ffn_hidden_dim) as usize],
     ));
-    Linear::forward_nodes(
+    ops::matmul::matmul(
         graph,
-        &layer.ffn_up.weight,
         &norm2_out,
+        &layer.ffn_up.weight,
         &ffn_up_out,
-        prompt_len,
-        dim,
-        ffn_hidden_dim,
+        MatMulMeta {
+            m: prompt_len,
+            n: ffn_hidden_dim,
+            k: dim,
+        },
     );
 
-    graph.add_node(
-        "SiLU",
-        &[Binding::new(0, &ffn_up_out.buffer, TensorMode::InOut)],
-        [(prompt_len * ffn_hidden_dim + 255) / 256, 1, 1],
-    );
+    ops::elementwise::silu(graph, &ffn_up_out, prompt_len * ffn_hidden_dim);
 
-    // Fused ffn_down-MatMul + residual-add, same reasoning as out_proj above.
-    let ffndown_meta = MatMulMeta {
-        m: prompt_len,
-        n: dim,
-        k: ffn_hidden_dim,
-    }
-    .upload(ctx);
-    graph.add_node(
-        "MatMulAdd",
-        &[
-            Binding::new(0, &ffn_up_out.buffer, TensorMode::Input),
-            Binding::new(1, &layer.ffn_down.weight.buffer, TensorMode::Input),
-            Binding::new(2, &hidden_in.buffer, TensorMode::InOut),
-            Binding::new(3, &ffndown_meta.buffer, TensorMode::Meta),
-        ],
-        [(dim + 15) / 16, (prompt_len + 15) / 16, 1],
+    // ffn_down fused with the residual add
+    ops::matmul::matmul_add(
+        graph,
+        &ffn_up_out,
+        &layer.ffn_down.weight,
+        hidden_in,
+        MatMulMeta {
+            m: prompt_len,
+            n: dim,
+            k: ffn_hidden_dim,
+        },
     );
 
     hidden_in.clone()
@@ -476,211 +422,209 @@ fn build_decode_layer<B: Backend>(
     let head_dim = cfg.head_dim();
     let attn_len = pos + 1;
 
-    // ---- norm_1 ----
-    graph.add_node(
-        "RMSNorm",
-        &[
-            Binding::new(0, &scratch.hidden.buffer, TensorMode::Input),
-            Binding::new(1, &layer.norm_1.weight.buffer, TensorMode::Input),
-            Binding::new(2, &scratch.norm_out.buffer, TensorMode::Output),
-            Binding::new(3, &scratch.norm_meta.buffer, TensorMode::Meta),
-        ],
-        [1, 1, 1],
+    let norm_shape = NormMeta {
+        seq_len: 1,
+        size: dim,
+        eps: cfg.norm_eps,
+    };
+
+    // ---- norm_1 + fused q/k/v projection ----
+    ops::norm::rmsnorm_with(
+        graph,
+        &scratch.hidden,
+        &layer.norm_1.weight,
+        &scratch.norm_out,
+        norm_shape,
+        &scratch.norm_meta,
     );
 
-    // ---- fused q/k/v projection ----
-    graph.add_node(
-        "MatMul",
-        &[
-            Binding::new(0, &scratch.norm_out.buffer, TensorMode::Input),
-            Binding::new(1, &layer.qkv_proj.weight.buffer, TensorMode::Input),
-            Binding::new(2, &scratch.qkv_out.buffer, TensorMode::Output),
-            Binding::new(3, &scratch.qkv_proj_meta.buffer, TensorMode::Meta),
-        ],
-        [(dim * 3 + 15) / 16, 1, 1],
+    ops::matmul::matmul_with(
+        graph,
+        &scratch.norm_out,
+        &layer.qkv_proj.weight,
+        &scratch.qkv_out,
+        MatMulMeta {
+            m: 1,
+            n: dim * 3,
+            k: dim,
+        },
+        &scratch.qkv_proj_meta,
     );
-    for (dst, meta) in [
-        (&scratch.q_buf, &scratch.qkv_split_meta[0]),
-        (&scratch.k_buf, &scratch.qkv_split_meta[1]),
-        (&scratch.v_buf, &scratch.qkv_split_meta[2]),
-    ] {
-        graph.add_node(
-            "HeadGather",
-            &[
-                Binding::new(0, &scratch.qkv_out.buffer, TensorMode::Input),
-                Binding::new(1, &dst.buffer, TensorMode::Output),
-                Binding::new(2, &meta.buffer, TensorMode::Meta),
-            ],
-            [(dim + 15) / 16, 1, 1],
+    for (i, dst) in [&scratch.q_buf, &scratch.k_buf, &scratch.v_buf]
+        .into_iter()
+        .enumerate()
+    {
+        ops::head_move::head_gather_with(
+            graph,
+            &scratch.qkv_out,
+            dst,
+            qkv_slice(1, dim, i as u32 * dim),
+            &scratch.qkv_split_meta[i],
         );
     }
 
-    // ---- RoPE ----
-    let rope_grid = [(head_dim / 2 + 15) / 16, 1, 1];
-    graph.add_node(
-        "RoPEOffset",
-        &[
-            Binding::new(0, &scratch.q_buf.buffer, TensorMode::InOut),
-            Binding::new(1, &scratch.rope_meta.buffer, TensorMode::Meta),
-        ],
-        rope_grid,
+    // ---- RoPE + cache write ----
+    let rope_shape = RopeOffsetMeta {
+        seq_len: 1,
+        dim,
+        head_dim,
+        pos,
+    };
+    ops::rope::rope_offset_with(graph, &scratch.q_buf, rope_shape, &scratch.rope_meta);
+    ops::rope::rope_offset_with(graph, &scratch.k_buf, rope_shape, &scratch.rope_meta);
+
+    let cache_shape = CacheWriteMeta {
+        row_count: 1,
+        width: dim,
+        dst_row_offset: pos,
+    };
+    ops::cache::cache_write_with(
+        graph,
+        &scratch.k_buf,
+        cache_k,
+        cache_shape,
+        &scratch.cache_write_meta,
     );
-    graph.add_node(
-        "RoPEOffset",
-        &[
-            Binding::new(0, &scratch.k_buf.buffer, TensorMode::InOut),
-            Binding::new(1, &scratch.rope_meta.buffer, TensorMode::Meta),
-        ],
-        rope_grid,
+    ops::cache::cache_write_with(
+        graph,
+        &scratch.v_buf,
+        cache_v,
+        cache_shape,
+        &scratch.cache_write_meta,
     );
 
-    graph.add_node(
-        "CacheWrite",
-        &[
-            Binding::new(0, &scratch.k_buf.buffer, TensorMode::Input),
-            Binding::new(1, &cache_k.buffer, TensorMode::InOut),
-            Binding::new(2, &scratch.cache_write_meta.buffer, TensorMode::Meta),
-        ],
-        [(dim + 15) / 16, 1, 1],
-    );
-    graph.add_node(
-        "CacheWrite",
-        &[
-            Binding::new(0, &scratch.v_buf.buffer, TensorMode::Input),
-            Binding::new(1, &cache_v.buffer, TensorMode::InOut),
-            Binding::new(2, &scratch.cache_write_meta.buffer, TensorMode::Meta),
-        ],
-        [(dim + 15) / 16, 1, 1],
-    );
-
+    // ---- cached attention ----
+    let scale = 1.0 / (head_dim as f32).sqrt();
     for h in 0..num_heads as usize {
-        let q_move_meta = &scratch.q_move_meta[h];
-        let cache_move_meta = &scratch.cache_move_meta[h];
+        let q_move = HeadMoveMeta {
+            seq_len: 1,
+            full_dim: dim,
+            head_dim,
+            head_offset: h as u32 * head_dim,
+        };
+        let cache_move = HeadMoveMeta {
+            seq_len: attn_len,
+            ..q_move
+        };
 
-        graph.add_node(
-            "HeadGather",
-            &[
-                Binding::new(0, &scratch.q_buf.buffer, TensorMode::Input),
-                Binding::new(1, &scratch.q_head.buffer, TensorMode::Output),
-                Binding::new(2, &q_move_meta.buffer, TensorMode::Meta),
-            ],
-            [(head_dim + 15) / 16, 1, 1],
+        ops::head_move::head_gather_with(
+            graph,
+            &scratch.q_buf,
+            &scratch.q_head,
+            q_move,
+            &scratch.q_move_meta[h],
         );
-        graph.add_node(
-            "HeadGather",
-            &[
-                Binding::new(0, &cache_k.buffer, TensorMode::Input),
-                Binding::new(1, &scratch.k_head.buffer, TensorMode::Output),
-                Binding::new(2, &cache_move_meta.buffer, TensorMode::Meta),
-            ],
-            [(head_dim + 15) / 16, (attn_len + 15) / 16, 1],
+        ops::head_move::head_gather_with(
+            graph,
+            cache_k,
+            &scratch.k_head,
+            cache_move,
+            &scratch.cache_move_meta[h],
         );
-        graph.add_node(
-            "HeadGather",
-            &[
-                Binding::new(0, &cache_v.buffer, TensorMode::Input),
-                Binding::new(1, &scratch.v_head.buffer, TensorMode::Output),
-                Binding::new(2, &cache_move_meta.buffer, TensorMode::Meta),
-            ],
-            [(head_dim + 15) / 16, (attn_len + 15) / 16, 1],
-        );
-
-        graph.add_node(
-            "MatMulTrp",
-            &[
-                Binding::new(0, &scratch.q_head.buffer, TensorMode::Input),
-                Binding::new(1, &scratch.k_head.buffer, TensorMode::Input),
-                Binding::new(2, &scratch.scores.buffer, TensorMode::Output),
-                Binding::new(3, &scratch.qkt_meta.buffer, TensorMode::Meta),
-            ],
-            [(attn_len + 15) / 16, 1, 1],
+        ops::head_move::head_gather_with(
+            graph,
+            cache_v,
+            &scratch.v_head,
+            cache_move,
+            &scratch.cache_move_meta[h],
         );
 
-        graph.add_node(
-            "SoftmaxRect",
-            &[
-                Binding::new(0, &scratch.scores.buffer, TensorMode::InOut),
-                Binding::new(1, &scratch.softmax_meta.buffer, TensorMode::Meta),
-            ],
-            [1, 1, 1],
+        ops::matmul::matmul_trp_with(
+            graph,
+            &scratch.q_head,
+            &scratch.k_head,
+            &scratch.scores,
+            MatMulMeta {
+                m: 1,
+                n: attn_len,
+                k: head_dim,
+            },
+            &scratch.qkt_meta,
         );
 
-        graph.add_node(
-            "MatMul",
-            &[
-                Binding::new(0, &scratch.scores.buffer, TensorMode::Input),
-                Binding::new(1, &scratch.v_head.buffer, TensorMode::Input),
-                Binding::new(2, &scratch.out_head.buffer, TensorMode::Output),
-                Binding::new(3, &scratch.av_meta.buffer, TensorMode::Meta),
-            ],
-            [(head_dim + 15) / 16, 1, 1],
+        ops::attention::softmax_rect_with(
+            graph,
+            &scratch.scores,
+            SoftmaxRectMeta {
+                num_rows: 1,
+                width: attn_len,
+                scale,
+            },
+            &scratch.softmax_meta,
         );
 
-        graph.add_node(
-            "HeadScatter",
-            &[
-                Binding::new(0, &scratch.out_head.buffer, TensorMode::Input),
-                Binding::new(1, &scratch.attn_out.buffer, TensorMode::Output),
-                Binding::new(2, &q_move_meta.buffer, TensorMode::Meta),
-            ],
-            [(head_dim + 15) / 16, 1, 1],
+        ops::matmul::matmul_with(
+            graph,
+            &scratch.scores,
+            &scratch.v_head,
+            &scratch.out_head,
+            MatMulMeta {
+                m: 1,
+                n: head_dim,
+                k: attn_len,
+            },
+            &scratch.av_meta,
+        );
+
+        ops::head_move::head_scatter_with(
+            graph,
+            &scratch.out_head,
+            &scratch.attn_out,
+            q_move,
+            &scratch.q_move_meta[h],
         );
     }
 
     // ---- out_proj + residual ----
-    graph.add_node(
-        "MatMulAdd",
-        &[
-            Binding::new(0, &scratch.attn_out.buffer, TensorMode::Input),
-            Binding::new(1, &layer.out_proj.weight.buffer, TensorMode::Input),
-            Binding::new(2, &scratch.hidden.buffer, TensorMode::InOut),
-            Binding::new(3, &scratch.qkv_meta.buffer, TensorMode::Meta),
-        ],
-        [(dim + 15) / 16, 1, 1],
+    ops::matmul::matmul_add_with(
+        graph,
+        &scratch.attn_out,
+        &layer.out_proj.weight,
+        &scratch.hidden,
+        MatMulMeta {
+            m: 1,
+            n: dim,
+            k: dim,
+        },
+        &scratch.qkv_meta,
     );
 
     // ---- FFN + residual ----
-    graph.add_node(
-        "RMSNorm",
-        &[
-            Binding::new(0, &scratch.hidden.buffer, TensorMode::Input),
-            Binding::new(1, &layer.norm_2.weight.buffer, TensorMode::Input),
-            Binding::new(2, &scratch.norm_out.buffer, TensorMode::Output),
-            Binding::new(3, &scratch.norm_meta.buffer, TensorMode::Meta),
-        ],
-        [1, 1, 1],
+    ops::norm::rmsnorm_with(
+        graph,
+        &scratch.hidden,
+        &layer.norm_2.weight,
+        &scratch.norm_out,
+        norm_shape,
+        &scratch.norm_meta,
     );
 
-    graph.add_node(
-        "MatMul",
-        &[
-            Binding::new(0, &scratch.norm_out.buffer, TensorMode::Input),
-            Binding::new(1, &layer.ffn_up.weight.buffer, TensorMode::Input),
-            Binding::new(2, &scratch.ffn_up_out.buffer, TensorMode::Output),
-            Binding::new(3, &scratch.ffnup_meta.buffer, TensorMode::Meta),
-        ],
-        [(ffn_hidden_dim + 15) / 16, 1, 1],
+    ops::matmul::matmul_with(
+        graph,
+        &scratch.norm_out,
+        &layer.ffn_up.weight,
+        &scratch.ffn_up_out,
+        MatMulMeta {
+            m: 1,
+            n: ffn_hidden_dim,
+            k: dim,
+        },
+        &scratch.ffnup_meta,
     );
 
-    graph.add_node(
-        "SiLU",
-        &[Binding::new(
-            0,
-            &scratch.ffn_up_out.buffer,
-            TensorMode::InOut,
-        )],
-        [(ffn_hidden_dim + 255) / 256, 1, 1],
-    );
+    ops::elementwise::silu(graph, &scratch.ffn_up_out, ffn_hidden_dim);
 
-    graph.add_node(
-        "MatMulAdd",
-        &[
-            Binding::new(0, &scratch.ffn_up_out.buffer, TensorMode::Input),
-            Binding::new(1, &layer.ffn_down.weight.buffer, TensorMode::Input),
-            Binding::new(2, &scratch.hidden.buffer, TensorMode::InOut),
-            Binding::new(3, &scratch.ffndown_meta.buffer, TensorMode::Meta),
-        ],
-        [(dim + 15) / 16, 1, 1],
+    ops::matmul::matmul_add_with(
+        graph,
+        &scratch.ffn_up_out,
+        &layer.ffn_down.weight,
+        &scratch.hidden,
+        MatMulMeta {
+            m: 1,
+            n: dim,
+            k: ffn_hidden_dim,
+        },
+        &scratch.ffndown_meta,
     );
 }
 
@@ -759,14 +703,16 @@ impl<B: Backend> InferenceSession<B> {
             ctx.clone(),
             &vec![0.0 as Real; (prompt_len * dim) as usize],
         ));
-        Embedding::forward_nodes(
+        ops::embedding::embedding(
             &mut graph,
-            &model.embedding.table,
             &tokens_buf,
+            &model.embedding.table,
             &hidden,
-            vocab_size,
-            dim,
-            prompt_len,
+            EmbeddingMeta {
+                vocab_size,
+                dim,
+                seq_len: prompt_len,
+            },
         );
 
         {
@@ -789,28 +735,32 @@ impl<B: Backend> InferenceSession<B> {
             ctx.clone(),
             &vec![0.0 as Real; (prompt_len * dim) as usize],
         ));
-        RMSNorm::forward_nodes(
+        ops::norm::rmsnorm(
             &mut graph,
-            &model.final_norm.weight,
             &hidden,
+            &model.final_norm.weight,
             &final_out,
-            prompt_len,
-            dim,
-            cfg.norm_eps,
+            NormMeta {
+                seq_len: prompt_len,
+                size: dim,
+                eps: cfg.norm_eps,
+            },
         );
 
         let logits = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
             &vec![0.0 as Real; (prompt_len * vocab_size) as usize],
         ));
-        Linear::forward_nodes(
+        ops::matmul::matmul(
             &mut graph,
-            &model.lm_head.weight,
             &final_out,
+            &model.lm_head.weight,
             &logits,
-            prompt_len,
-            dim,
-            vocab_size,
+            MatMulMeta {
+                m: prompt_len,
+                n: vocab_size,
+                k: dim,
+            },
         );
 
         graph.execute();
@@ -848,15 +798,17 @@ impl<B: Backend> InferenceSession<B> {
 
         let mut graph = ComputeGraph::new(ctx.clone());
 
-        graph.add_node(
-            "Embedding",
-            &[
-                Binding::new(0, &self.input_token_buf.buffer, TensorMode::Input),
-                Binding::new(1, &model.embedding.table.buffer, TensorMode::Input),
-                Binding::new(2, &self.scratch.hidden.buffer, TensorMode::Output),
-                Binding::new(3, &self.scratch.emb_meta.buffer, TensorMode::Meta),
-            ],
-            [(dim + 255) / 256, 1, 1],
+        ops::embedding::embedding_with(
+            &mut graph,
+            &self.input_token_buf,
+            &model.embedding.table,
+            &self.scratch.hidden,
+            EmbeddingMeta {
+                vocab_size,
+                dim,
+                seq_len: 1,
+            },
+            &self.scratch.emb_meta,
         );
 
         {
@@ -874,26 +826,30 @@ impl<B: Backend> InferenceSession<B> {
             }
         }
 
-        graph.add_node(
-            "RMSNorm",
-            &[
-                Binding::new(0, &self.scratch.hidden.buffer, TensorMode::Input),
-                Binding::new(1, &model.final_norm.weight.buffer, TensorMode::Input),
-                Binding::new(2, &self.scratch.final_norm_out.buffer, TensorMode::Output),
-                Binding::new(3, &self.scratch.norm_meta.buffer, TensorMode::Meta),
-            ],
-            [1, 1, 1],
+        ops::norm::rmsnorm_with(
+            &mut graph,
+            &self.scratch.hidden,
+            &model.final_norm.weight,
+            &self.scratch.final_norm_out,
+            NormMeta {
+                seq_len: 1,
+                size: dim,
+                eps: cfg.norm_eps,
+            },
+            &self.scratch.norm_meta,
         );
 
-        graph.add_node(
-            "MatMul",
-            &[
-                Binding::new(0, &self.scratch.final_norm_out.buffer, TensorMode::Input),
-                Binding::new(1, &model.lm_head.weight.buffer, TensorMode::Input),
-                Binding::new(2, &self.scratch.logits.buffer, TensorMode::Output),
-                Binding::new(3, &self.scratch.lm_meta.buffer, TensorMode::Meta),
-            ],
-            [(vocab_size + 15) / 16, 1, 1],
+        ops::matmul::matmul_with(
+            &mut graph,
+            &self.scratch.final_norm_out,
+            &model.lm_head.weight,
+            &self.scratch.logits,
+            MatMulMeta {
+                m: 1,
+                n: vocab_size,
+                k: dim,
+            },
+            &self.scratch.lm_meta,
         );
 
         graph.execute();

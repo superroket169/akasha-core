@@ -9,8 +9,10 @@ use super::cross_entropy::CrossEntropy;
 use super::embedding::Embedding;
 use super::init::{random_normal_vec, xavier_std};
 use super::linear::Linear;
+use super::ops::zero_tensor;
 use super::pipeline::TransformerBlock;
 use super::rmsnorm::RMSNorm;
+use super::sampling::sample_token;
 use super::traits::Layer;
 use crate::optim::AdamW;
 
@@ -18,31 +20,6 @@ use crate::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
 
 const ADAM_BETA1: Real = 0.9;
 const ADAM_BETA2: Real = 0.95;
-
-pub(crate) fn sample_token(logits: &[Real], temperature: f32) -> u32 {
-    let scaled: Vec<f64> = logits
-        .iter()
-        .map(|&x| (x as f64) / temperature as f64)
-        .collect();
-    let max = scaled.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-    let exps: Vec<f64> = scaled.iter().map(|&x| (x - max).exp()).collect();
-    let sum: f64 = exps.iter().sum();
-    let probs: Vec<f64> = exps.iter().map(|&x| x / sum).collect();
-
-    let mut r: f64 = rand::random();
-    for (i, &p) in probs.iter().enumerate() {
-        if r < p {
-            return i as u32;
-        }
-        r -= p;
-    }
-    (probs.len() - 1) as u32
-}
-
-fn zero_tensor<B: Backend>(t: &Tensor<B>) {
-    let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
-    t.copy_from_cpu(&vec![0.0 as Real; len]);
-}
 
 fn collect_trainable_params<B: Backend>(
     embedding: &Embedding<B>,
@@ -230,13 +207,8 @@ impl<B: Backend> AkashaModel<B> {
         let mut layers = Vec::with_capacity(num_layers);
 
         for i in 0..num_layers {
-            let block = TransformerBlock::new(
-                ctx.clone(),
-                cfg,
-                &current_input,
-                &edges[i + 1],
-                &edges[i],
-            );
+            let block =
+                TransformerBlock::new(ctx.clone(), cfg, &current_input, &edges[i + 1], &edges[i]);
             current_input = block.add_2.in_out_buffer.clone();
             layers.push(block);
         }

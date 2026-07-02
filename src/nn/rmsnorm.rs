@@ -1,8 +1,9 @@
-use super::ops::meta::{KernelMeta, NormMeta};
+use super::ops;
+use super::ops::meta::NormMeta;
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
+use wilupgu::{Backend, ComputeGraph, Tensor};
 
 pub struct RMSNorm<B: Backend> {
     pub weight: Arc<Tensor<B>>,
@@ -15,34 +16,6 @@ pub struct RMSNorm<B: Backend> {
 }
 
 impl<B: Backend> RMSNorm<B> {
-    pub(crate) fn forward_nodes(
-        graph: &mut ComputeGraph<B>,
-        weight: &Arc<Tensor<B>>,
-        input: &Arc<Tensor<B>>,
-        output: &Arc<Tensor<B>>,
-        seq_len: u32,
-        dim: u32,
-        eps: f32,
-    ) {
-        let t_meta = NormMeta {
-            seq_len,
-            size: dim,
-            eps,
-        }
-        .upload(&input.ctx);
-
-        graph.add_node(
-            "RMSNorm",
-            &[
-                Binding::new(0, &input.buffer, TensorMode::Input),
-                Binding::new(1, &weight.buffer, TensorMode::Input),
-                Binding::new(2, &output.buffer, TensorMode::Output),
-                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [seq_len, 1, 1],
-        );
-    }
-
     pub fn new(
         ctx: Arc<B>,
         dim: u32,
@@ -58,6 +31,12 @@ impl<B: Backend> RMSNorm<B> {
             "RMSNorm weight size mismatch!"
         );
 
+        let shape = NormMeta {
+            seq_len,
+            size: dim,
+            eps: 1e-5,
+        };
+
         let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), weight_data));
         let zero_dim = vec![0.0 as Real; dim as usize];
         let grad_weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_dim));
@@ -72,48 +51,25 @@ impl<B: Backend> RMSNorm<B> {
             &vec![0.0 as Real; seq_len as usize],
         ));
 
-        let t_meta = NormMeta {
-            seq_len,
-            size: dim,
-            eps: 1e-5,
-        }
-        .upload(&ctx);
-
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        Self::forward_nodes(
+        ops::norm::rmsnorm(
             &mut forward_graph,
-            &weight,
             input_buffer,
+            &weight,
             &out_buffer,
-            seq_len,
-            dim,
-            1e-5,
+            shape,
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        backward_graph.add_node(
-            "RMSNormBwd",
-            &[
-                Binding::new(0, &grad_output.buffer, TensorMode::Input),
-                Binding::new(1, &input_buffer.buffer, TensorMode::Input),
-                Binding::new(2, &weight.buffer, TensorMode::Input),
-                Binding::new(3, &grad_input.buffer, TensorMode::Output),
-                Binding::new(4, &rsqrt_cache.buffer, TensorMode::Output),
-                Binding::new(5, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [seq_len, 1, 1],
-        );
-
-        backward_graph.add_node(
-            "RMSNormWeightBwd",
-            &[
-                Binding::new(0, &grad_output.buffer, TensorMode::Input),
-                Binding::new(1, &input_buffer.buffer, TensorMode::Input),
-                Binding::new(2, &rsqrt_cache.buffer, TensorMode::Input),
-                Binding::new(3, &grad_weight.buffer, TensorMode::Output),
-                Binding::new(4, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [(dim + 255) / 256, 1, 1],
+        ops::norm::rmsnorm_bwd(
+            &mut backward_graph,
+            grad_output,
+            input_buffer,
+            &weight,
+            &grad_input,
+            &rsqrt_cache,
+            &grad_weight,
+            shape,
         );
 
         Self {

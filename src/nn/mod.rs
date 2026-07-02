@@ -11,6 +11,7 @@ pub mod ops;
 pub mod pipeline;
 pub mod rmsnorm;
 pub mod rope;
+pub mod sampling;
 pub mod shader_paths;
 pub mod silu;
 pub mod traits;

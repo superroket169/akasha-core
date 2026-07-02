@@ -1,6 +1,7 @@
+use super::ops;
 use super::traits::Layer;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
+use wilupgu::{Backend, ComputeGraph, Tensor};
 
 pub struct Add<B: Backend> {
     pub in_out_buffer: Arc<Tensor<B>>,
@@ -20,39 +21,15 @@ impl<B: Backend> Add<B> {
         grad_a: &Arc<Tensor<B>>,
         grad_b: &Arc<Tensor<B>>,
     ) -> Self {
-        let mut forward_graph = ComputeGraph::new(ctx.clone());
-
-        forward_graph.add_node(
-            "ResidualAdd",
-            &[
-                Binding::new(0, &buf_a.buffer, TensorMode::InOut),
-                Binding::new(1, &buf_b.buffer, TensorMode::Input),
-            ],
-            [(length + 255) / 256, 1, 1],
-        );
-
         let grad_a = grad_a.clone();
         let grad_b = grad_b.clone();
 
+        let mut forward_graph = ComputeGraph::new(ctx.clone());
+        ops::elementwise::residual_add(&mut forward_graph, buf_a, buf_b, length);
+
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-
-        backward_graph.add_node(
-            "ResidualAdd",
-            &[
-                Binding::new(0, &grad_a.buffer, TensorMode::InOut),
-                Binding::new(1, &grad_output.buffer, TensorMode::Input),
-            ],
-            [(length + 255) / 256, 1, 1],
-        );
-
-        backward_graph.add_node(
-            "ResidualAdd",
-            &[
-                Binding::new(0, &grad_b.buffer, TensorMode::InOut),
-                Binding::new(1, &grad_output.buffer, TensorMode::Input),
-            ],
-            [(length + 255) / 256, 1, 1],
-        );
+        ops::elementwise::residual_add(&mut backward_graph, &grad_a, grad_output, length);
+        ops::elementwise::residual_add(&mut backward_graph, &grad_b, grad_output, length);
 
         Self {
             in_out_buffer: buf_a.clone(),

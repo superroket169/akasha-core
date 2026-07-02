@@ -1,8 +1,9 @@
-use super::ops::meta::{KernelMeta, MatMulMeta};
+use super::ops;
+use super::ops::meta::MatMulMeta;
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
+use wilupgu::{Backend, ComputeGraph, Tensor};
 
 pub struct Linear<B: Backend> {
     pub weight: Arc<Tensor<B>>,
@@ -14,34 +15,7 @@ pub struct Linear<B: Backend> {
 }
 
 impl<B: Backend> Linear<B> {
-    pub(crate) fn forward_nodes(
-        graph: &mut ComputeGraph<B>,
-        weight: &Arc<Tensor<B>>,
-        input: &Arc<Tensor<B>>,
-        output: &Arc<Tensor<B>>,
-        seq_len: u32,
-        in_features: u32,
-        out_features: u32,
-    ) {
-        let t_meta = MatMulMeta {
-            m: seq_len,
-            n: out_features,
-            k: in_features,
-        }
-        .upload(&input.ctx);
-
-        graph.add_node(
-            "MatMul",
-            &[
-                Binding::new(0, &input.buffer, TensorMode::Input),
-                Binding::new(1, &weight.buffer, TensorMode::Input),
-                Binding::new(2, &output.buffer, TensorMode::Output),
-                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [(out_features + 15) / 16, (seq_len + 15) / 16, 1],
-        );
-    }
-
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         ctx: Arc<B>,
         in_features: u32,
@@ -54,15 +28,7 @@ impl<B: Backend> Linear<B> {
     ) -> Self {
         let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), weight_data));
 
-        let m = seq_len;
-        let t_meta = MatMulMeta {
-            m,
-            n: out_features,
-            k: in_features,
-        }
-        .upload(&ctx);
-
-        let out_size = (m * out_features) as usize;
+        let out_size = (seq_len * out_features) as usize;
         let zero_out = vec![0.0 as Real; out_size];
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
 
@@ -72,45 +38,40 @@ impl<B: Backend> Linear<B> {
         let grad_input = grad_input.clone();
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        Self::forward_nodes(
+        ops::matmul::matmul(
             &mut forward_graph,
-            &weight,
             input_buffer,
+            &weight,
             &out_buffer,
-            seq_len,
-            in_features,
-            out_features,
+            MatMulMeta {
+                m: seq_len,
+                n: out_features,
+                k: in_features,
+            },
         );
-
-        let t_meta_grad_in = MatMulMeta {
-            m,
-            n: in_features,
-            k: out_features,
-        }
-        .upload(&ctx);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-
-        backward_graph.add_node(
-            "MatMulWeightBwd",
-            &[
-                Binding::new(0, &input_buffer.buffer, TensorMode::Input),
-                Binding::new(1, &grad_output.buffer, TensorMode::Input),
-                Binding::new(2, &grad_weight.buffer, TensorMode::Output),
-                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [(out_features + 15) / 16, (in_features + 15) / 16, 1],
+        ops::matmul::matmul_weight_bwd(
+            &mut backward_graph,
+            input_buffer,
+            grad_output,
+            &grad_weight,
+            MatMulMeta {
+                m: seq_len,
+                n: out_features,
+                k: in_features,
+            },
         );
-
-        backward_graph.add_node(
-            "MatMulTrp",
-            &[
-                Binding::new(0, &grad_output.buffer, TensorMode::Input),
-                Binding::new(1, &weight.buffer, TensorMode::Input),
-                Binding::new(2, &grad_input.buffer, TensorMode::Output),
-                Binding::new(3, &t_meta_grad_in.buffer, TensorMode::Meta),
-            ],
-            [(in_features + 15) / 16, (m + 15) / 16, 1],
+        ops::matmul::matmul_trp(
+            &mut backward_graph,
+            grad_output,
+            &weight,
+            &grad_input,
+            MatMulMeta {
+                m: seq_len,
+                n: in_features,
+                k: out_features,
+            },
         );
 
         Self {

@@ -1,18 +1,10 @@
-//! Single source of truth for every kernel's Meta-buffer layout.
-//!
-//! Each struct mirrors, field by field and in order, the meta struct the
-//! corresponding WGSL/CUDA/CPU kernel reads — so uploading one is
-//! bit-identical to the old positional `&[u32]` arrays. Bare positional meta
-//! arrays are banned: the `qkv_proj_meta` N/K-swap bug happened precisely
-//! because nothing stopped `[1, dim, dim*3]` from compiling where
-//! `[1, dim*3, dim]` was meant.
+//! Typed meta layouts, one per kernel family. Field order mirrors what the
+//! kernel reads; bare positional `&[u32]` metas are banned (N/K-swap bug).
 
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
-/// Upload/update helpers shared by every meta struct.
 pub trait KernelMeta: bytemuck::Pod {
-    /// Allocate a device meta tensor holding `self`.
     fn upload<B: Backend>(&self, ctx: &Arc<B>) -> Arc<Tensor<B>> {
         Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
@@ -20,14 +12,13 @@ pub trait KernelMeta: bytemuck::Pod {
         ))
     }
 
-    /// Overwrite an existing (persistent) meta tensor in place.
+    /// Overwrite a persistent meta tensor in place.
     fn write_to<B: Backend>(&self, tensor: &Tensor<B>) {
         tensor.copy_from_cpu(std::slice::from_ref(self));
     }
 }
 
-/// `MatMul` / `MatMulTrp` / `MatMulAdd` / `MatMulWeightBwd`:
-/// C is `[m, n]`, the contraction length is `k`.
+/// MatMul family: C is `[m, n]`, contraction length `k`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct MatMulMeta {
@@ -37,7 +28,7 @@ pub struct MatMulMeta {
 }
 impl KernelMeta for MatMulMeta {}
 
-/// `RMSNorm` / `RMSNormBwd` / `RMSNormWeightBwd`: `seq_len` rows of `size`.
+/// RMSNorm kernels: `seq_len` rows of `size`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct NormMeta {
@@ -47,10 +38,8 @@ pub struct NormMeta {
 }
 impl KernelMeta for NormMeta {}
 
-/// `HeadGather` / `HeadScatter`: copy a `head_dim`-wide column slice at
-/// `head_offset` between a `full_dim`-wide buffer and a compact
-/// `[seq_len, head_dim]` buffer. Also reused for fused-QKV splitting
-/// (`head_dim = dim`, `full_dim = 3*dim`).
+/// HeadGather/HeadScatter: `head_dim`-wide slice at `head_offset` in a
+/// `full_dim`-wide buffer. Reused for fused-QKV slices (`head_dim = dim`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct HeadMoveMeta {
@@ -61,8 +50,7 @@ pub struct HeadMoveMeta {
 }
 impl KernelMeta for HeadMoveMeta {}
 
-/// `CausalSoftmax` / `SoftmaxBwd`: square `[seq_len, seq_len]` scores,
-/// pre-softmax scale `1/sqrt(head_dim)`.
+/// CausalSoftmax/SoftmaxBwd: square `[seq_len, seq_len]` scores.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct AttnScaleMeta {
@@ -71,8 +59,7 @@ pub struct AttnScaleMeta {
 }
 impl KernelMeta for AttnScaleMeta {}
 
-/// `SoftmaxRect`: rectangular `[num_rows, width]` scores (decode attention,
-/// where `width = attn_len` grows each step).
+/// SoftmaxRect: rectangular `[num_rows, width]` scores (decode).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct SoftmaxRectMeta {
@@ -82,7 +69,7 @@ pub struct SoftmaxRectMeta {
 }
 impl KernelMeta for SoftmaxRectMeta {}
 
-/// `RoPE` / `RoPEBwd`: rotate `seq_len` rows of `dim`, positions `0..seq_len`.
+/// RoPE/RoPEBwd: rotate `seq_len` rows at positions `0..seq_len`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RopeMeta {
@@ -92,8 +79,7 @@ pub struct RopeMeta {
 }
 impl KernelMeta for RopeMeta {}
 
-/// `RoPEOffset`: like `RoPE` but rotating at an absolute position `pos`
-/// (decode: `seq_len = 1`, `pos` = cache length).
+/// RoPEOffset: one row at absolute position `pos` (decode).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct RopeOffsetMeta {
@@ -104,8 +90,7 @@ pub struct RopeOffsetMeta {
 }
 impl KernelMeta for RopeOffsetMeta {}
 
-/// `CacheWrite`: append `row_count` rows of `width` into a persistent cache
-/// starting at row `dst_row_offset`.
+/// CacheWrite: `row_count` rows of `width` appended at `dst_row_offset`.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CacheWriteMeta {
@@ -115,8 +100,7 @@ pub struct CacheWriteMeta {
 }
 impl KernelMeta for CacheWriteMeta {}
 
-/// `Embedding` / `EmbeddingBwd`: table is `[vocab_size, dim]`, `seq_len`
-/// token rows.
+/// Embedding/EmbeddingBwd: `[vocab_size, dim]` table, `seq_len` token rows.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct EmbeddingMeta {
@@ -126,7 +110,7 @@ pub struct EmbeddingMeta {
 }
 impl KernelMeta for EmbeddingMeta {}
 
-/// `CrossEntropy` / `CrossEntropyBwd`: `num_rows` rows of `vocab_size` logits.
+/// CrossEntropy kernels: `num_rows` rows of `vocab_size` logits.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CrossEntropyMeta {
@@ -135,7 +119,7 @@ pub struct CrossEntropyMeta {
 }
 impl KernelMeta for CrossEntropyMeta {}
 
-/// `ZeroTensor`: zero `len` elements.
+/// ZeroTensor: zero `len` elements.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ZeroMeta {

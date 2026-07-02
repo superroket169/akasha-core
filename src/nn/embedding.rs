@@ -1,8 +1,9 @@
-use super::ops::meta::{EmbeddingMeta, KernelMeta};
+use super::ops;
+use super::ops::meta::EmbeddingMeta;
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
+use wilupgu::{Backend, ComputeGraph, Tensor};
 
 pub struct Embedding<B: Backend> {
     pub table: Arc<Tensor<B>>,
@@ -13,34 +14,6 @@ pub struct Embedding<B: Backend> {
 }
 
 impl<B: Backend> Embedding<B> {
-    pub(crate) fn forward_nodes(
-        graph: &mut ComputeGraph<B>,
-        table: &Arc<Tensor<B>>,
-        tokens: &Arc<Tensor<B>>,
-        output: &Arc<Tensor<B>>,
-        vocab_size: u32,
-        dim: u32,
-        seq_len: u32,
-    ) {
-        let t_meta = EmbeddingMeta {
-            vocab_size,
-            dim,
-            seq_len,
-        }
-        .upload(&tokens.ctx);
-
-        graph.add_node(
-            "Embedding",
-            &[
-                Binding::new(0, &tokens.buffer, TensorMode::Input),
-                Binding::new(1, &table.buffer, TensorMode::Input),
-                Binding::new(2, &output.buffer, TensorMode::Output),
-                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [(dim + 255) / 256, seq_len, 1],
-        );
-    }
-
     pub fn new(
         ctx: Arc<B>,
         vocab_size: u32,
@@ -56,42 +29,36 @@ impl<B: Backend> Embedding<B> {
             "Dict size mismatch!"
         );
 
-        let table = Arc::new(Tensor::init_from_cpu(ctx.clone(), table_data));
-        let zero_table = vec![0.0 as Real; (vocab_size * dim) as usize];
-        let grad_table = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_table));
-
-        let t_meta = EmbeddingMeta {
+        let shape = EmbeddingMeta {
             vocab_size,
             dim,
             seq_len,
-        }
-        .upload(&ctx);
+        };
+
+        let table = Arc::new(Tensor::init_from_cpu(ctx.clone(), table_data));
+        let zero_table = vec![0.0 as Real; (vocab_size * dim) as usize];
+        let grad_table = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_table));
 
         let out_size = (seq_len * dim) as usize;
         let zero_out = vec![0.0 as Real; out_size];
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        Self::forward_nodes(
+        ops::embedding::embedding(
             &mut forward_graph,
-            &table,
             tokens_buffer,
+            &table,
             &out_buffer,
-            vocab_size,
-            dim,
-            seq_len,
+            shape,
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        backward_graph.add_node(
-            "EmbeddingBwd",
-            &[
-                Binding::new(0, &tokens_buffer.buffer, TensorMode::Input),
-                Binding::new(1, &grad_output.buffer, TensorMode::Input),
-                Binding::new(2, &grad_table.buffer, TensorMode::Output),
-                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [(dim + 255) / 256, seq_len, 1],
+        ops::embedding::embedding_bwd(
+            &mut backward_graph,
+            tokens_buffer,
+            grad_output,
+            &grad_table,
+            shape,
         );
 
         Self {

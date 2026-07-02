@@ -151,6 +151,14 @@ fn main() {
     #[allow(unused_variables)]
     let force_cpu = args.iter().any(|a| a == "--cpu");
 
+    #[cfg(not(feature = "cpu"))]
+    if force_cpu {
+        eprintln!(
+            "[wilupgu] WARNING: --cpu ignored -- this binary was built without the `cpu` feature."
+        );
+        eprintln!("          rebuild with: cargo run --release --features cpu -- --chat --cpu");
+    }
+
     #[cfg(feature = "cpu")]
     if force_cpu {
         use wilupgu::CpuBackend;

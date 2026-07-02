@@ -1,6 +1,7 @@
+use super::ops;
 use super::traits::Layer;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
+use wilupgu::{Backend, ComputeGraph, Tensor};
 
 pub struct SiLU<B: Backend> {
     pub in_out_buffer: Arc<Tensor<B>>,
@@ -17,26 +18,18 @@ impl<B: Backend> SiLU<B> {
         grad_output: &Arc<Tensor<B>>,
         grad_input: &Arc<Tensor<B>>,
     ) -> Self {
-        let mut forward_graph = ComputeGraph::new(ctx.clone());
-
-        forward_graph.add_node(
-            "SiLU",
-            &[Binding::new(0, &input_buffer.buffer, TensorMode::InOut)],
-            [(total_elements + 255) / 256, 1, 1],
-        );
-
         let grad_input = grad_input.clone();
 
-        let mut backward_graph = ComputeGraph::new(ctx.clone());
+        let mut forward_graph = ComputeGraph::new(ctx.clone());
+        ops::elementwise::silu(&mut forward_graph, input_buffer, total_elements);
 
-        backward_graph.add_node(
-            "SiLUBwd",
-            &[
-                Binding::new(0, &input_buffer.buffer, TensorMode::Input),
-                Binding::new(1, &grad_output.buffer, TensorMode::Input),
-                Binding::new(2, &grad_input.buffer, TensorMode::Output),
-            ],
-            [(total_elements + 255) / 256, 1, 1],
+        let mut backward_graph = ComputeGraph::new(ctx.clone());
+        ops::elementwise::silu_bwd(
+            &mut backward_graph,
+            input_buffer,
+            grad_output,
+            &grad_input,
+            total_elements,
         );
 
         Self {

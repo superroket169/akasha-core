@@ -1,9 +1,8 @@
 # REFACTOR — the great untangling
 
-Status: **Stage 1 code-complete** (2026-07-02) — compiles clean
-(`cargo check --all-targets --features cpu`, zero warnings); awaiting the
-standard validation pass (CPU-backend chat run + diagnose.rs) before ticking
-the box below.
+Status: **Stage 2 code-complete** (2026-07-02) — compiles clean, awaiting
+the standard validation pass (chat run + diagnose.rs). Stage 1 validated
+with a Vulkan-backend chat run.
 
 The KV-cache work made inference fast but turned `inference.rs` /
 `akasha_model.rs` / `pipeline.rs` / `attention.rs` into spaghetti: the same
@@ -187,8 +186,7 @@ Each stage compiles, is committable on its own, and is validated the same
 way: `cargo check --all-targets`, a short CPU-backend chat run (same seed →
 same output as before the stage), and `diagnose.rs`.
 
-- [ ] **Stage 1 — `ModelConfig` + typed metas (`ops/meta.rs`)** *(code
-  complete, needs validation run)*
+- [x] **Stage 1 — `ModelConfig` + typed metas (`ops/meta.rs`)**
   Mechanical, zero behavior change. Kill duplicate meta structs, replace
   every positional meta array, thread `&ModelConfig` through
   `AkashaModel::new` / `TransformerBlock::new` / `InferenceSession::new`
@@ -198,11 +196,20 @@ same output as before the stage), and `diagnose.rs`.
   earlier fused-QKV change (still touched `q_proj`/`k_proj`/`v_proj`) —
   fixed to use `qkv_proj`.
 
-- [ ] **Stage 2 — `ops/` emitter layer**
+- [ ] **Stage 2 — `ops/` emitter layer** *(code complete, needs validation
+  run)*
   Move `forward_nodes` / `add_rope_node` / `add_qkv_slice_node` and the raw
   `add_node` blocks of `build_prefill_layer` / `build_decode_layer` into one
   emitter per op (meta buffer as parameter). Prefill/decode builders become
   ~20-line lists of emitter calls. `sampling.rs` split happens here.
+  Landed as: `ops/{matmul,norm,embedding,rope,head_move,attention,cache,
+  elementwise,loss}.rs` — one emitter per kernel owning its binding layout
+  and grid formula, `foo(shape)` = const meta / `foo_with(shape, meta)` =
+  caller-owned persistent meta; `ops::attention::causal_attention` is the
+  composite shared verbatim by train and prefill; zero raw `add_node` calls
+  left under `nn/` outside `ops/`. Deliberate leftovers: `diagnose.rs`
+  (kernel-level tests want raw nodes) and `optim/adamw.rs` (its own kernel,
+  moves into `Trainer` in Stage 3).
 
 - [ ] **Stage 3 — weights/engine split**
   Extract `ModelWeights`; `Trainer` takes train_step/clip/AdamW/fused
