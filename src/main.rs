@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use akasha_core::config::*;
 use akasha_core::data::Dataset;
+use akasha_core::nn::InferenceSession;
 use akasha_core::nn::akasha_model::AkashaModel;
 use akasha_core::tokenizer::AkashaTokenizer;
 use wilupgu::{Backend, Tensor, WgpuBackend};
@@ -40,10 +41,12 @@ fn build_model<B: Backend>(ctx: Arc<B>) -> AkashaModel<B> {
 
 fn run_chat<B: Backend>(ctx: Arc<B>) {
     let tokenizer = AkashaTokenizer::from_pretrained();
-    let model = build_model(ctx);
+    let model = build_model(ctx.clone());
     model
         .load_weights("checkpoints/model_final.bin")
         .expect("Failed to load checkpoints/model_final.bin -- train the model first");
+
+    let mut session = InferenceSession::new(ctx, Arc::new(model), DIM, NUM_HEADS, SEQ_LEN);
 
     println!("Model loaded. Type a prompt (Ctrl+C to exit):\n");
     loop {
@@ -58,7 +61,9 @@ fn run_chat<B: Backend>(ctx: Arc<B>) {
             continue;
         }
         let tokens = tokenizer.encode(input);
-        let output = model.generate(&tokenizer, &tokens, 200, 0.8);
+
+        session.take_cache();
+        let output = session.generate(&tokenizer, &tokens, 200, 0.8);
         println!("{}\n", output);
     }
 }
@@ -150,6 +155,21 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let is_chat = args.iter().any(|a| a == "--chat");
+    #[allow(unused_variables)]
+    let force_cpu = args.iter().any(|a| a == "--cpu");
+
+    #[cfg(feature = "cpu")]
+    if force_cpu {
+        use wilupgu::CpuBackend;
+        println!("[wilupgu] CPU backend selected");
+        let ctx = Arc::new(CpuBackend::new());
+        if is_chat {
+            run_chat(ctx);
+        } else {
+            run_training(ctx);
+        }
+        return;
+    }
 
     #[cfg(feature = "cuda")]
     {

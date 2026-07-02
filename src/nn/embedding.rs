@@ -12,6 +12,31 @@ pub struct Embedding<B: Backend> {
 }
 
 impl<B: Backend> Embedding<B> {
+    pub(crate) fn forward_nodes(
+        graph: &mut ComputeGraph<B>,
+        table: &Arc<Tensor<B>>,
+        tokens: &Arc<Tensor<B>>,
+        output: &Arc<Tensor<B>>,
+        vocab_size: u32,
+        dim: u32,
+        seq_len: u32,
+    ) {
+        let ctx = tokens.ctx.clone();
+        let meta_data = vec![vocab_size, dim, seq_len];
+        let t_meta = Arc::new(Tensor::init_from_cpu(ctx, &meta_data));
+
+        graph.add_node(
+            "Embedding",
+            &[
+                Binding::new(0, &tokens.buffer, TensorMode::Input),
+                Binding::new(1, &table.buffer, TensorMode::Input),
+                Binding::new(2, &output.buffer, TensorMode::Output),
+                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
+            ],
+            [(dim + 255) / 256, seq_len, 1],
+        );
+    }
+
     pub fn new(
         ctx: Arc<B>,
         vocab_size: u32,
@@ -39,15 +64,14 @@ impl<B: Backend> Embedding<B> {
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        forward_graph.add_node(
-            "Embedding",
-            &[
-                Binding::new(0, &tokens_buffer.buffer, TensorMode::Input),
-                Binding::new(1, &table.buffer, TensorMode::Input),
-                Binding::new(2, &out_buffer.buffer, TensorMode::Output),
-                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [(dim + 255) / 256, seq_len, 1],
+        Self::forward_nodes(
+            &mut forward_graph,
+            &table,
+            tokens_buffer,
+            &out_buffer,
+            vocab_size,
+            dim,
+            seq_len,
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());

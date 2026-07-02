@@ -19,7 +19,7 @@ use crate::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM};
 const ADAM_BETA1: Real = 0.9;
 const ADAM_BETA2: Real = 0.95;
 
-fn sample_token(logits: &[Real], temperature: f32) -> u32 {
+pub(crate) fn sample_token(logits: &[Real], temperature: f32) -> u32 {
     let scaled: Vec<f64> = logits
         .iter()
         .map(|&x| (x as f64) / temperature as f64)
@@ -58,16 +58,8 @@ fn collect_trainable_params<B: Backend>(
             layer.norm_1.grad_weight.clone(),
         ));
         params.push((
-            layer.q_proj.weight.clone(),
-            layer.q_proj.grad_weight.clone(),
-        ));
-        params.push((
-            layer.k_proj.weight.clone(),
-            layer.k_proj.grad_weight.clone(),
-        ));
-        params.push((
-            layer.v_proj.weight.clone(),
-            layer.v_proj.grad_weight.clone(),
+            layer.qkv_proj.weight.clone(),
+            layer.qkv_proj.grad_weight.clone(),
         ));
         params.push((
             layer.out_proj.weight.clone(),
@@ -294,9 +286,8 @@ impl<B: Backend> AkashaModel<B> {
         let mut forward_graphs: Vec<&ComputeGraph<B>> = vec![&embedding.forward_graph];
         for layer in &layers {
             forward_graphs.push(&layer.norm_1.forward_graph);
-            forward_graphs.push(&layer.q_proj.forward_graph);
-            forward_graphs.push(&layer.k_proj.forward_graph);
-            forward_graphs.push(&layer.v_proj.forward_graph);
+            forward_graphs.push(&layer.qkv_proj.forward_graph);
+            forward_graphs.push(&layer.qkv_split_forward);
             forward_graphs.push(&layer.rope_forward);
             forward_graphs.push(&layer.attention.forward_graph);
             forward_graphs.push(&layer.out_proj.forward_graph);
@@ -382,6 +373,7 @@ impl<B: Backend> AkashaModel<B> {
         }
     }
 
+    #[deprecated(note = "use InferenceSession::generate for KV-cached decoding")]
     pub fn generate(
         &self,
         tokenizer: &crate::tokenizer::AkashaTokenizer,

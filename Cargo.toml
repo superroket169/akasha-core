@@ -16,3 +16,4 @@ tokenizers = { version = "0.19", features = ["http"] }
 default = ["vulkan"]
 vulkan = ["wilupgu/vulkan"]
 cuda = ["wilupgu/cuda"]
+cpu = ["wilupgu/cpu"]

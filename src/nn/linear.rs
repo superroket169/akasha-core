@@ -13,6 +13,31 @@ pub struct Linear<B: Backend> {
 }
 
 impl<B: Backend> Linear<B> {
+    pub(crate) fn forward_nodes(
+        graph: &mut ComputeGraph<B>,
+        weight: &Arc<Tensor<B>>,
+        input: &Arc<Tensor<B>>,
+        output: &Arc<Tensor<B>>,
+        seq_len: u32,
+        in_features: u32,
+        out_features: u32,
+    ) {
+        let ctx = input.ctx.clone();
+        let meta_data = vec![seq_len, out_features, in_features];
+        let t_meta = Arc::new(Tensor::init_from_cpu(ctx, &meta_data));
+
+        graph.add_node(
+            "MatMul",
+            &[
+                Binding::new(0, &input.buffer, TensorMode::Input),
+                Binding::new(1, &weight.buffer, TensorMode::Input),
+                Binding::new(2, &output.buffer, TensorMode::Output),
+                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
+            ],
+            [(out_features + 15) / 16, (seq_len + 15) / 16, 1],
+        );
+    }
+
     pub fn new(
         ctx: Arc<B>,
         in_features: u32,
@@ -39,15 +64,14 @@ impl<B: Backend> Linear<B> {
         let grad_input = grad_input.clone();
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        forward_graph.add_node(
-            "MatMul",
-            &[
-                Binding::new(0, &input_buffer.buffer, TensorMode::Input),
-                Binding::new(1, &weight.buffer, TensorMode::Input),
-                Binding::new(2, &out_buffer.buffer, TensorMode::Output),
-                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [(out_features + 15) / 16, (m + 15) / 16, 1],
+        Self::forward_nodes(
+            &mut forward_graph,
+            &weight,
+            input_buffer,
+            &out_buffer,
+            seq_len,
+            in_features,
+            out_features,
         );
 
         let meta_grad_in_data = vec![m, in_features, out_features];

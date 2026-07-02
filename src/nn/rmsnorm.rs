@@ -22,6 +22,35 @@ pub struct RMSNorm<B: Backend> {
 }
 
 impl<B: Backend> RMSNorm<B> {
+    pub(crate) fn forward_nodes(
+        graph: &mut ComputeGraph<B>,
+        weight: &Arc<Tensor<B>>,
+        input: &Arc<Tensor<B>>,
+        output: &Arc<Tensor<B>>,
+        seq_len: u32,
+        dim: u32,
+        eps: f32,
+    ) {
+        let ctx = input.ctx.clone();
+        let meta_data = [Meta {
+            seq_len,
+            size: dim,
+            eps,
+        }];
+        let t_meta = Arc::new(Tensor::init_from_cpu(ctx, &meta_data));
+
+        graph.add_node(
+            "RMSNorm",
+            &[
+                Binding::new(0, &input.buffer, TensorMode::Input),
+                Binding::new(1, &weight.buffer, TensorMode::Input),
+                Binding::new(2, &output.buffer, TensorMode::Output),
+                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
+            ],
+            [seq_len, 1, 1],
+        );
+    }
+
     pub fn new(
         ctx: Arc<B>,
         dim: u32,
@@ -51,19 +80,22 @@ impl<B: Backend> RMSNorm<B> {
             &vec![0.0 as Real; seq_len as usize],
         ));
 
-        let meta_data = [Meta { seq_len, size: dim, eps: 1e-5 }];
+        let meta_data = [Meta {
+            seq_len,
+            size: dim,
+            eps: 1e-5,
+        }];
         let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        forward_graph.add_node(
-            "RMSNorm",
-            &[
-                Binding::new(0, &input_buffer.buffer, TensorMode::Input),
-                Binding::new(1, &weight.buffer, TensorMode::Input),
-                Binding::new(2, &out_buffer.buffer, TensorMode::Output),
-                Binding::new(3, &t_meta.buffer, TensorMode::Meta),
-            ],
-            [seq_len, 1, 1],
+        Self::forward_nodes(
+            &mut forward_graph,
+            &weight,
+            input_buffer,
+            &out_buffer,
+            seq_len,
+            dim,
+            1e-5,
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());

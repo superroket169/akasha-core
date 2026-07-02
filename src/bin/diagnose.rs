@@ -1,12 +1,24 @@
 use std::sync::Arc;
+use std::time::Instant;
 
 use akasha_core::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM};
 use akasha_core::nn::akasha_model::AkashaModel;
 use akasha_core::nn::cross_entropy::CrossEntropy;
 use akasha_core::nn::rmsnorm::RMSNorm;
 use akasha_core::nn::traits::Layer;
+use akasha_core::nn::{Cache, InferenceSession};
 use rand::Rng;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode, WgpuBackend};
+
+fn argmax(logits: &[f32]) -> u32 {
+    logits
+        .iter()
+        .enumerate()
+        .fold((0u32, f32::MIN), |(bi, bv), (i, &v)| {
+            if v > bv { (i as u32, v) } else { (bi, bv) }
+        })
+        .0
+}
 
 fn l2_norm<B: Backend>(t: &Tensor<B>) -> f32 {
     let data: Vec<f32> = t.to_cpu();
@@ -52,17 +64,17 @@ fn check1_param_count<B: Backend>(model: &AkashaModel<B>) -> (bool, u64) {
     (pass, total)
 }
 
-fn check2_grad_flow<B: Backend>(ctx: Arc<B>) -> bool {
-    use akasha_core::config::{DIM, NUM_HEADS, NUM_LAYERS, VOCAB_SIZE};
+fn check2_grad_flow<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
+    use akasha_core::config::{DIM, NUM_HEADS, NUM_LAYERS};
     let seq_len = 16u32;
 
     let input_tokens = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
-        &rand_u32_vec(seq_len as usize, VOCAB_SIZE),
+        &rand_u32_vec(seq_len as usize, vocab_size),
     ));
     let model = AkashaModel::new(
         ctx.clone(),
-        VOCAB_SIZE,
+        vocab_size,
         DIM,
         seq_len,
         NUM_LAYERS,
@@ -75,7 +87,7 @@ fn check2_grad_flow<B: Backend>(ctx: Arc<B>) -> bool {
     model
         .cross_entropy
         .target_tokens
-        .copy_from_cpu(&rand_u32_vec(seq_len as usize, VOCAB_SIZE));
+        .copy_from_cpu(&rand_u32_vec(seq_len as usize, vocab_size));
     model.cross_entropy.set_grad_scale(1.0 / seq_len as f32);
 
     model.forward_fused();
@@ -93,9 +105,7 @@ fn check2_grad_flow<B: Backend>(ctx: Arc<B>) -> bool {
 
     for (i, layer) in model.layers.iter().enumerate() {
         let entries = [
-            ("Q_proj", l2_norm(&layer.q_proj.grad_weight)),
-            ("K_proj", l2_norm(&layer.k_proj.grad_weight)),
-            ("V_proj", l2_norm(&layer.v_proj.grad_weight)),
+            ("QKV_proj", l2_norm(&layer.qkv_proj.grad_weight)),
             ("O_proj", l2_norm(&layer.out_proj.grad_weight)),
             ("FFN_up", l2_norm(&layer.ffn_up.grad_weight)),
             ("FFN_down", l2_norm(&layer.ffn_down.grad_weight)),
@@ -362,17 +372,17 @@ fn check4_rmsnorm_backward<B: Backend>(ctx: Arc<B>) -> bool {
     pass
 }
 
-fn check5_accumulation<B: Backend>(ctx: Arc<B>) -> bool {
-    use akasha_core::config::{DIM, NUM_HEADS, NUM_LAYERS, VOCAB_SIZE};
+fn check5_accumulation<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
+    use akasha_core::config::{DIM, NUM_HEADS, NUM_LAYERS};
     let seq_len = 16u32;
 
     let input_tokens = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
-        &rand_u32_vec(seq_len as usize, VOCAB_SIZE),
+        &rand_u32_vec(seq_len as usize, vocab_size),
     ));
     let model = AkashaModel::new(
         ctx.clone(),
-        VOCAB_SIZE,
+        vocab_size,
         DIM,
         seq_len,
         NUM_LAYERS,
@@ -380,8 +390,8 @@ fn check5_accumulation<B: Backend>(ctx: Arc<B>) -> bool {
         &input_tokens,
     );
 
-    let inputs = rand_u32_vec(seq_len as usize, VOCAB_SIZE);
-    let targets = rand_u32_vec(seq_len as usize, VOCAB_SIZE);
+    let inputs = rand_u32_vec(seq_len as usize, vocab_size);
+    let targets = rand_u32_vec(seq_len as usize, vocab_size);
 
     let w_before: Vec<f32> = model.lm_head.weight.to_cpu();
 
@@ -570,10 +580,8 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
             );
             for (i, layer) in model.layers.iter().enumerate() {
                 println!(
-                    "  [fp-detail] layer {i}: Q={:.6} K={:.6} V={:.6} O={:.6} FFNup={:.6} FFNdown={:.6} Norm1={:.6} Norm2={:.6}",
-                    norm(&layer.q_proj.grad_weight),
-                    norm(&layer.k_proj.grad_weight),
-                    norm(&layer.v_proj.grad_weight),
+                    "  [fp-detail] layer {i}: QKV={:.6} O={:.6} FFNup={:.6} FFNdown={:.6} Norm1={:.6} Norm2={:.6}",
+                    norm(&layer.qkv_proj.grad_weight),
                     norm(&layer.out_proj.grad_weight),
                     norm(&layer.ffn_up.grad_weight),
                     norm(&layer.ffn_down.grad_weight),
@@ -645,6 +653,164 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
     pass
 }
 
+fn check9_kv_cache_equivalence<B: Backend>(ctx: Arc<B>) -> bool {
+    let dim = 64u32;
+    let num_heads = 4u32;
+    let num_layers = 2usize;
+    let vocab_size = 64u32;
+    let seq_len = 16u32;
+    let prompt_len = 4usize;
+    let total_len = 14usize;
+
+    let full_sequence = rand_u32_vec(total_len, vocab_size);
+    let prompt = &full_sequence[..prompt_len];
+
+    let input_tokens = Arc::new(Tensor::init_from_cpu(
+        ctx.clone(),
+        &vec![0u32; seq_len as usize],
+    ));
+    let model = AkashaModel::new(
+        ctx.clone(),
+        vocab_size,
+        dim,
+        seq_len,
+        num_layers,
+        num_heads,
+        &input_tokens,
+    );
+
+    let mut logits_a: Vec<Vec<f32>> = Vec::new();
+    let seq_len_us = seq_len as usize;
+    let vocab_us = vocab_size as usize;
+    for cur_len in prompt_len..full_sequence.len() {
+        let (start, pred_pos) = if cur_len >= seq_len_us {
+            (cur_len - seq_len_us, seq_len_us - 1)
+        } else {
+            (0, cur_len - 1)
+        };
+        let mut window = vec![0u32; seq_len_us];
+        let slice = &full_sequence[start..cur_len];
+        window[..slice.len()].copy_from_slice(slice);
+        model.input_tokens.copy_from_cpu(&window);
+        model.forward_fused();
+        let logits = model.lm_head.out_buffer.to_cpu();
+        logits_a.push(logits[pred_pos * vocab_us..(pred_pos + 1) * vocab_us].to_vec());
+    }
+
+    // ---- KV-cache prefill + decode ----
+    let model_arc = Arc::new(model);
+    let mut session = InferenceSession::new(ctx.clone(), model_arc, dim, num_heads, seq_len);
+    session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
+
+    let mut logits_b: Vec<Vec<f32>> = vec![session.prefill(prompt)];
+    for &t in &full_sequence[prompt_len..full_sequence.len() - 1] {
+        logits_b.push(session.decode_step(t));
+    }
+
+    assert_eq!(logits_a.len(), logits_b.len(), "step count mismatch");
+    let max_diff = logits_a
+        .iter()
+        .zip(logits_b.iter())
+        .flat_map(|(a, b)| a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()))
+        .fold(0.0f32, f32::max);
+
+    let pass = max_diff < 1e-3;
+    println!(
+        "CHECK 9: KV-cache decode vs naive sliding-window forward, {} teacher-forced steps, max logit diff = {max_diff:.6} -> {}",
+        logits_a.len(),
+        if pass { "PASS" } else { "FAIL" }
+    );
+    pass
+}
+
+fn check10_kv_cache_speed<B: Backend>(ctx: Arc<B>) {
+    let dim = 64u32;
+    let num_heads = 4u32;
+    let num_layers = 2usize;
+    let vocab_size = 64u32;
+    let seq_len = 64u32;
+    let prompt_len = 4usize;
+    let n_new_tokens = 50usize;
+
+    let prompt = rand_u32_vec(prompt_len, vocab_size);
+
+    // ---- naive sliding-window path ----
+    let input_tokens_a = Arc::new(Tensor::init_from_cpu(
+        ctx.clone(),
+        &vec![0u32; seq_len as usize],
+    ));
+    let model_a = AkashaModel::new(
+        ctx.clone(),
+        vocab_size,
+        dim,
+        seq_len,
+        num_layers,
+        num_heads,
+        &input_tokens_a,
+    );
+    let mut tokens = prompt.clone();
+    let seq_len_us = seq_len as usize;
+    let vocab_us = vocab_size as usize;
+    let start = Instant::now();
+    for _ in 0..n_new_tokens {
+        let cur_len = tokens.len();
+        let (start_idx, pred_pos) = if cur_len >= seq_len_us {
+            (cur_len - seq_len_us, seq_len_us - 1)
+        } else {
+            (0, cur_len - 1)
+        };
+        let mut window = vec![0u32; seq_len_us];
+        let slice = &tokens[start_idx..];
+        window[..slice.len()].copy_from_slice(slice);
+        model_a.input_tokens.copy_from_cpu(&window);
+        model_a.forward_fused();
+        let logits = model_a.lm_head.out_buffer.to_cpu();
+        let row = &logits[pred_pos * vocab_us..(pred_pos + 1) * vocab_us];
+        tokens.push(argmax(row));
+    }
+    let naive_elapsed = start.elapsed();
+
+    // ---- KV-cache path ----
+    let input_tokens_b = Arc::new(Tensor::init_from_cpu(
+        ctx.clone(),
+        &vec![0u32; seq_len as usize],
+    ));
+    let model_b = Arc::new(AkashaModel::new(
+        ctx.clone(),
+        vocab_size,
+        dim,
+        seq_len,
+        num_layers,
+        num_heads,
+        &input_tokens_b,
+    ));
+    let mut session = InferenceSession::new(ctx.clone(), model_b, dim, num_heads, seq_len);
+    session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
+
+    let start = Instant::now();
+    let mut logits = session.prefill(&prompt);
+    for _ in 0..n_new_tokens - 1 {
+        logits = session.decode_step(argmax(&logits));
+    }
+    let _ = logits;
+    let cached_elapsed = start.elapsed();
+
+    println!(
+        "CHECK 10: KV-cache decode speed (tiny config: dim={dim}, layers={num_layers}, heads={num_heads}, vocab={vocab_size}, seq_len={seq_len}, {n_new_tokens} generated tokens)"
+    );
+    println!(
+        "  naive sliding-window: {naive_elapsed:?} ({:.1} tok/s)",
+        n_new_tokens as f64 / naive_elapsed.as_secs_f64()
+    );
+    println!(
+        "  KV-cache decode:      {cached_elapsed:?} ({:.1} tok/s)",
+        n_new_tokens as f64 / cached_elapsed.as_secs_f64()
+    );
+    println!(
+        "  NOTE: at this tiny scale GPU dispatch overhead dominates -- the production-scale (dim=768, seq_len=512) speedup is expected to be far larger."
+    );
+}
+
 fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
     if std::env::var("DIAGNOSE_ONLY_CHECK8").is_ok() {
         let c8_pass = check8_memorization(ctx.clone());
@@ -655,16 +821,38 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
         return;
     }
 
+    if std::env::var("DIAGNOSE_ONLY_CHECK9").is_ok() {
+        let c9_pass = check9_kv_cache_equivalence(ctx.clone());
+        println!();
+        check10_kv_cache_speed(ctx.clone());
+        println!(
+            "\nCHECK 9 (KV-cache equivalence): {}",
+            if c9_pass { "PASS" } else { "FAIL" }
+        );
+        return;
+    }
+
     println!("\n================= AKASHA TRAINING DIAGNOSTICS =================\n");
 
     use akasha_core::config::{DIM, NUM_HEADS, NUM_LAYERS, SEQ_LEN, VOCAB_SIZE};
+
+    let vocab_size: u32 = std::env::var("DIAGNOSE_VOCAB_SIZE")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(VOCAB_SIZE);
+    if vocab_size != VOCAB_SIZE {
+        println!(
+            "NOTE: DIAGNOSE_VOCAB_SIZE override active -- using vocab_size={vocab_size} instead of {VOCAB_SIZE}\n"
+        );
+    }
+
     let input_tokens = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
         &vec![0u32; SEQ_LEN as usize],
     ));
     let full_model = AkashaModel::new(
         ctx.clone(),
-        VOCAB_SIZE,
+        vocab_size,
         DIM,
         SEQ_LEN,
         NUM_LAYERS,
@@ -674,19 +862,23 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
 
     let (c1_pass, c1_count) = check1_param_count(&full_model);
     println!();
-    let c2_pass = check2_grad_flow(ctx.clone());
+    let c2_pass = check2_grad_flow(ctx.clone(), vocab_size);
     println!();
     let c3_pass = check3_head_gather_scatter(ctx.clone());
     println!();
     let c4_pass = check4_rmsnorm_backward(ctx.clone());
     println!();
-    let c5_pass = check5_accumulation(ctx.clone());
+    let c5_pass = check5_accumulation(ctx.clone(), vocab_size);
     println!();
     let c6_pass = check6_weight_decay_groups(&full_model);
     println!();
     let c7_pass = check7_cross_entropy(ctx.clone());
     println!();
     let c8_pass = check8_memorization(ctx.clone());
+    println!();
+    let c9_pass = check9_kv_cache_equivalence(ctx.clone());
+    println!();
+    check10_kv_cache_speed(ctx.clone());
 
     println!("\n================= SUMMARY =================");
     println!(
@@ -722,6 +914,11 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
         "CHECK 8 (memorization):          {}",
         if c8_pass { "PASS" } else { "FAIL" }
     );
+    println!(
+        "CHECK 9 (KV-cache equivalence):  {}",
+        if c9_pass { "PASS" } else { "FAIL" }
+    );
+    println!("CHECK 10 (KV-cache speed):       informational, see above");
 }
 
 fn main() {

@@ -7,7 +7,7 @@ use super::silu::SiLU;
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, ComputeGraph, fuse_compute_graphs, Tensor, TensorMode};
+use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode, fuse_compute_graphs};
 
 // Helpers
 
@@ -32,7 +32,7 @@ fn add_inplace_node<B: Backend>(
     );
 }
 
-fn add_rope_node<B: Backend>(
+pub(crate) fn add_rope_node<B: Backend>(
     graph: &mut ComputeGraph<B>,
     kernel: &str,
     vec: &Arc<Tensor<B>>,
@@ -50,11 +50,54 @@ fn add_rope_node<B: Backend>(
     );
 }
 
+fn interleave_qkv(dim: u32, q_w: &[Real], k_w: &[Real], v_w: &[Real]) -> Vec<Real> {
+    let dim = dim as usize;
+    let mut combined = Vec::with_capacity(dim * 3 * dim);
+    for r in 0..dim {
+        combined.extend_from_slice(&q_w[r * dim..(r + 1) * dim]);
+        combined.extend_from_slice(&k_w[r * dim..(r + 1) * dim]);
+        combined.extend_from_slice(&v_w[r * dim..(r + 1) * dim]);
+    }
+    combined
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn add_qkv_slice_node<B: Backend>(
+    graph: &mut ComputeGraph<B>,
+    kernel: &str,
+    fused: &Arc<Tensor<B>>,
+    slice: &Arc<Tensor<B>>,
+    dim: u32,
+    seq_len: u32,
+    role_offset: u32,
+) {
+    let meta = Arc::new(Tensor::init_from_cpu(
+        fused.ctx.clone(),
+        &[seq_len, 3 * dim, dim, role_offset],
+    ));
+    let (src, dst) = if kernel == "HeadGather" {
+        (fused, slice)
+    } else {
+        (slice, fused)
+    };
+    graph.add_node(
+        kernel,
+        &[
+            Binding::new(0, &src.buffer, TensorMode::Input),
+            Binding::new(1, &dst.buffer, TensorMode::Output),
+            Binding::new(2, &meta.buffer, TensorMode::Meta),
+        ],
+        [(dim + 15) / 16, (seq_len + 15) / 16, 1],
+    );
+}
+
 pub struct TransformerBlock<B: Backend> {
     pub norm_1: RMSNorm<B>,
-    pub q_proj: Linear<B>,
-    pub k_proj: Linear<B>,
-    pub v_proj: Linear<B>,
+    pub qkv_proj: Linear<B>,
+    pub q_buf: Arc<Tensor<B>>,
+    pub k_buf: Arc<Tensor<B>>,
+    pub v_buf: Arc<Tensor<B>>,
+    pub qkv_split_forward: ComputeGraph<B>,
     pub out_proj: Linear<B>,
     pub attention: SelfAttention<B>,
     pub add_1: Add<B>,
@@ -84,6 +127,7 @@ impl<B: Backend> TransformerBlock<B> {
 
         let zeros_dim = vec![0.0 as Real; dim_size];
         let zeros_hidden = vec![0.0 as Real; hidden_size];
+        let zeros_qkv = vec![0.0 as Real; dim_size * 3];
 
         let g_add2_a = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_add2_b = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
@@ -96,9 +140,8 @@ impl<B: Backend> TransformerBlock<B> {
         let g_attn_q = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_attn_k = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_attn_v = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-        let g_qproj_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-        let g_kproj_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-        let g_vproj_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
+        let g_attn_qkv = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_qkv));
+        let g_qkvproj_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_norm1_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let grad_input = grad_input.clone();
         let elems = seq_len * dim;
@@ -111,7 +154,7 @@ impl<B: Backend> TransformerBlock<B> {
             seq_len,
             &norm_1_w,
             input_tensor,
-            &g_qproj_in,
+            &g_qkvproj_in,
             &g_norm1_in,
         );
 
@@ -120,36 +163,49 @@ impl<B: Backend> TransformerBlock<B> {
         let k_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
         let v_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
         let out_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
+        let qkv_w = interleave_qkv(dim, &q_w, &k_w, &v_w);
 
-        let q_proj = Linear::new(
+        let qkv_proj = Linear::new(
             ctx.clone(),
             dim,
-            dim,
+            dim * 3,
             seq_len,
-            &q_w,
+            &qkv_w,
             &norm_1.out_buffer,
-            &g_attn_q,
-            &g_qproj_in,
+            &g_attn_qkv,
+            &g_qkvproj_in,
         );
-        let k_proj = Linear::new(
-            ctx.clone(),
-            dim,
+
+        let q_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
+        let k_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
+        let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
+        let mut qkv_split_forward = ComputeGraph::new(ctx.clone());
+        add_qkv_slice_node(
+            &mut qkv_split_forward,
+            "HeadGather",
+            &qkv_proj.out_buffer,
+            &q_buf,
             dim,
             seq_len,
-            &k_w,
-            &norm_1.out_buffer,
-            &g_attn_k,
-            &g_kproj_in,
+            0,
         );
-        let v_proj = Linear::new(
-            ctx.clone(),
-            dim,
+        add_qkv_slice_node(
+            &mut qkv_split_forward,
+            "HeadGather",
+            &qkv_proj.out_buffer,
+            &k_buf,
             dim,
             seq_len,
-            &v_w,
-            &norm_1.out_buffer,
-            &g_attn_v,
-            &g_vproj_in,
+            dim,
+        );
+        add_qkv_slice_node(
+            &mut qkv_split_forward,
+            "HeadGather",
+            &qkv_proj.out_buffer,
+            &v_buf,
+            dim,
+            seq_len,
+            2 * dim,
         );
 
         let head_dim = dim / num_heads;
@@ -160,7 +216,7 @@ impl<B: Backend> TransformerBlock<B> {
         add_rope_node(
             &mut rope_forward,
             "RoPE",
-            &q_proj.out_buffer,
+            &q_buf,
             &t_meta_rope,
             dim,
             seq_len,
@@ -168,7 +224,7 @@ impl<B: Backend> TransformerBlock<B> {
         add_rope_node(
             &mut rope_forward,
             "RoPE",
-            &k_proj.out_buffer,
+            &k_buf,
             &t_meta_rope,
             dim,
             seq_len,
@@ -179,9 +235,9 @@ impl<B: Backend> TransformerBlock<B> {
             seq_len,
             dim,
             num_heads,
-            &q_proj.out_buffer,
-            &k_proj.out_buffer,
-            &v_proj.out_buffer,
+            &q_buf,
+            &k_buf,
+            &v_buf,
             &g_outproj_in,
             &g_attn_q,
             &g_attn_k,
@@ -267,20 +323,6 @@ impl<B: Backend> TransformerBlock<B> {
         let mut barrier_1 = ComputeGraph::new(ctx.clone());
         add_inplace_node(&mut barrier_1, &add_2.grad_a, &norm_2.grad_input, elems);
 
-        let mut barrier_2 = ComputeGraph::new(ctx.clone());
-        add_inplace_node(
-            &mut barrier_2,
-            &q_proj.grad_input,
-            &k_proj.grad_input,
-            elems,
-        );
-        add_inplace_node(
-            &mut barrier_2,
-            &q_proj.grad_input,
-            &v_proj.grad_input,
-            elems,
-        );
-
         let mut barrier_3 = ComputeGraph::new(ctx.clone());
         add_inplace_node(&mut barrier_3, &grad_input, &norm_1.grad_input, elems);
 
@@ -302,6 +344,35 @@ impl<B: Backend> TransformerBlock<B> {
             seq_len,
         );
 
+        let mut qkv_gather_backward = ComputeGraph::new(ctx.clone());
+        add_qkv_slice_node(
+            &mut qkv_gather_backward,
+            "HeadScatter",
+            &g_attn_qkv,
+            &g_attn_q,
+            dim,
+            seq_len,
+            0,
+        );
+        add_qkv_slice_node(
+            &mut qkv_gather_backward,
+            "HeadScatter",
+            &g_attn_qkv,
+            &g_attn_k,
+            dim,
+            seq_len,
+            dim,
+        );
+        add_qkv_slice_node(
+            &mut qkv_gather_backward,
+            "HeadScatter",
+            &g_attn_qkv,
+            &g_attn_v,
+            dim,
+            seq_len,
+            2 * dim,
+        );
+
         let backward_graph = fuse_compute_graphs(
             ctx.clone(),
             &[
@@ -315,10 +386,8 @@ impl<B: Backend> TransformerBlock<B> {
                 &out_proj.backward_graph,
                 &attention.backward_graph,
                 &rope_backward,
-                &v_proj.backward_graph,
-                &k_proj.backward_graph,
-                &q_proj.backward_graph,
-                &barrier_2,
+                &qkv_gather_backward,
+                &qkv_proj.backward_graph,
                 &norm_1.backward_graph,
                 &barrier_3,
             ],
@@ -326,9 +395,11 @@ impl<B: Backend> TransformerBlock<B> {
 
         Self {
             norm_1,
-            q_proj,
-            k_proj,
-            v_proj,
+            qkv_proj,
+            q_buf,
+            k_buf,
+            v_buf,
+            qkv_split_forward,
             out_proj,
             attention,
             add_1,
@@ -345,9 +416,7 @@ impl<B: Backend> TransformerBlock<B> {
 
     pub fn zero_grad(&self) {
         zero_tensor(&self.norm_1.grad_weight);
-        zero_tensor(&self.q_proj.grad_weight);
-        zero_tensor(&self.k_proj.grad_weight);
-        zero_tensor(&self.v_proj.grad_weight);
+        zero_tensor(&self.qkv_proj.grad_weight);
         zero_tensor(&self.out_proj.grad_weight);
         zero_tensor(&self.norm_2.grad_weight);
         zero_tensor(&self.ffn_up.grad_weight);
@@ -366,10 +435,8 @@ impl<B: Backend> TransformerBlock<B> {
 impl<B: Backend> Layer for TransformerBlock<B> {
     fn forward(&self) {
         self.norm_1.forward();
-
-        self.q_proj.forward();
-        self.k_proj.forward();
-        self.v_proj.forward();
+        self.qkv_proj.forward();
+        self.qkv_split_forward.execute();
 
         self.rope_forward.execute();
         self.attention.forward();
