@@ -20,14 +20,14 @@ impl<B: Backend> RMSNorm<B> {
         ctx: Arc<B>,
         dim: u32,
         seq_len: u32,
-        weight_data: &[Real],
+        weight: &Arc<Tensor<B>>,
         input_buffer: &Arc<Tensor<B>>,
         grad_output: &Arc<Tensor<B>>,
         grad_input: &Arc<Tensor<B>>,
     ) -> Self {
         assert_eq!(
-            weight_data.len(),
-            dim as usize,
+            weight.size,
+            dim as u64 * std::mem::size_of::<Real>() as u64,
             "RMSNorm weight size mismatch!"
         );
 
@@ -37,7 +37,7 @@ impl<B: Backend> RMSNorm<B> {
             eps: 1e-5,
         };
 
-        let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), weight_data));
+        let weight = weight.clone();
         let zero_dim = vec![0.0 as Real; dim as usize];
         let grad_weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_dim));
 

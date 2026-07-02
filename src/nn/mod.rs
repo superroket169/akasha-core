@@ -1,7 +1,7 @@
 pub mod add;
-pub mod akasha_model;
 pub mod attention;
 pub mod cache;
+pub mod checkpoint;
 pub mod cross_entropy;
 pub mod embedding;
 pub mod inference;
@@ -14,6 +14,7 @@ pub mod rope;
 pub mod sampling;
 pub mod shader_paths;
 pub mod silu;
+pub mod train;
 pub mod traits;
 pub mod weights;
 
@@ -28,3 +29,5 @@ pub use inference::InferenceSession;
 pub use rmsnorm::RMSNorm;
 pub use rope::RoPE;
 pub use silu::SiLU;
+pub use train::Trainer;
+pub use weights::{BlockWeights, ModelWeights};

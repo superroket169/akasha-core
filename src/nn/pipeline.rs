@@ -1,28 +1,16 @@
 use super::add::Add;
 use super::attention::SelfAttention;
-use super::init::{random_normal_vec, xavier_std};
 use super::linear::Linear;
 use super::ops;
 use super::ops::meta::{HeadMoveMeta, RopeMeta};
 use super::rmsnorm::RMSNorm;
 use super::silu::SiLU;
 use super::traits::Layer;
+use super::weights::BlockWeights;
 use crate::Real;
 use crate::config::ModelConfig;
 use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor, fuse_compute_graphs};
-
-/// Three row-major [dim,dim] matrices -> one fused [dim, 3*dim] QKV matrix.
-fn interleave_qkv(dim: u32, q_w: &[Real], k_w: &[Real], v_w: &[Real]) -> Vec<Real> {
-    let dim = dim as usize;
-    let mut combined = Vec::with_capacity(dim * 3 * dim);
-    for r in 0..dim {
-        combined.extend_from_slice(&q_w[r * dim..(r + 1) * dim]);
-        combined.extend_from_slice(&k_w[r * dim..(r + 1) * dim]);
-        combined.extend_from_slice(&v_w[r * dim..(r + 1) * dim]);
-    }
-    combined
-}
 
 /// One dim-wide Q/K/V role slice of a fused [seq_len, 3*dim] QKV buffer.
 pub(crate) fn qkv_slice(seq_len: u32, dim: u32, role_offset: u32) -> HeadMoveMeta {
@@ -58,6 +46,7 @@ impl<B: Backend> TransformerBlock<B> {
     pub fn new(
         ctx: Arc<B>,
         cfg: &ModelConfig,
+        bw: &BlockWeights<B>,
         input_tensor: &Arc<Tensor<B>>,
         grad_output: &Arc<Tensor<B>>,
         grad_input: &Arc<Tensor<B>>,
@@ -93,24 +82,15 @@ impl<B: Backend> TransformerBlock<B> {
         let grad_input = grad_input.clone();
         let elems = seq_len * dim;
 
-        let norm_1_w = random_normal_vec(dim as usize, 1.0, 0.02);
-
         let norm_1 = RMSNorm::new(
             ctx.clone(),
             dim,
             seq_len,
-            &norm_1_w,
+            &bw.norm_1,
             input_tensor,
             &g_qkvproj_in,
             &g_norm1_in,
         );
-
-        let proj_std = xavier_std(dim);
-        let q_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
-        let k_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
-        let v_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
-        let out_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
-        let qkv_w = interleave_qkv(dim, &q_w, &k_w, &v_w);
 
         // one [dim, 3*dim] matmul instead of three [dim,dim] matmuls
         let qkv_proj = Linear::new(
@@ -118,7 +98,7 @@ impl<B: Backend> TransformerBlock<B> {
             dim,
             dim * 3,
             seq_len,
-            &qkv_w,
+            &bw.qkv_proj,
             &norm_1.out_buffer,
             &g_attn_qkv,
             &g_qkvproj_in,
@@ -166,7 +146,7 @@ impl<B: Backend> TransformerBlock<B> {
             dim,
             dim,
             seq_len,
-            &out_w,
+            &bw.out_proj,
             &attention.out_buffer,
             &g_add1_b,
             &g_outproj_in,
@@ -182,27 +162,22 @@ impl<B: Backend> TransformerBlock<B> {
             &g_add1_b,
         );
 
-        let norm_2_w = random_normal_vec(dim as usize, 1.0, 0.02);
         let norm_2 = RMSNorm::new(
             ctx.clone(),
             dim,
             seq_len,
-            &norm_2_w,
+            &bw.norm_2,
             &add_1.in_out_buffer,
             &g_ffnup_in,
             &g_norm2_in,
         );
-
-        let ffn_up_w = random_normal_vec((dim * hidden_dim) as usize, 0.0, xavier_std(dim));
-        let ffn_down_w =
-            random_normal_vec((hidden_dim * dim) as usize, 0.0, xavier_std(hidden_dim));
 
         let ffn_up = Linear::new(
             ctx.clone(),
             dim,
             hidden_dim,
             seq_len,
-            &ffn_up_w,
+            &bw.ffn_up,
             &norm_2.out_buffer,
             &g_silu_in,
             &g_ffnup_in,
@@ -221,7 +196,7 @@ impl<B: Backend> TransformerBlock<B> {
             hidden_dim,
             dim,
             seq_len,
-            &ffn_down_w,
+            &bw.ffn_down,
             &silu.in_out_buffer,
             &g_add2_b,
             &g_ffndown_in,

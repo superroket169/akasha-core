@@ -21,12 +21,12 @@ impl<B: Backend> Linear<B> {
         in_features: u32,
         out_features: u32,
         seq_len: u32,
-        weight_data: &[Real],
+        weight: &Arc<Tensor<B>>,
         input_buffer: &Arc<Tensor<B>>,
         grad_output: &Arc<Tensor<B>>,
         grad_input: &Arc<Tensor<B>>,
     ) -> Self {
-        let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), weight_data));
+        let weight = weight.clone();
 
         let out_size = (seq_len * out_features) as usize;
         let zero_out = vec![0.0 as Real; out_size];

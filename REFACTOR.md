@@ -1,8 +1,11 @@
 # REFACTOR — the great untangling
 
-Status: **Stage 2 code-complete** (2026-07-02) — compiles clean, awaiting
-the standard validation pass (chat run + diagnose.rs). Stage 1 validated
-with a Vulkan-backend chat run.
+Status: **Stages 1–3 complete and validated** (2026-07-02). Stage 3
+validation: diagnose 10/10 PASS (iGPU, `DIAGNOSE_VOCAB_SIZE=4096`), coherent
+chat on both the v1 file and the migrated v2 file. Checkpoint migration ran
+against the real akasha-hall 1.0 file (75/75 tensors bitwise-identical,
+original untouched, `model_final.bin` md5 eb02fd2de56271a1d5181335a6e103f9).
+Next up: Stage 4 (not started).
 
 The KV-cache work made inference fast but turned `inference.rs` /
 `akasha_model.rs` / `pipeline.rs` / `attention.rs` into spaghetti: the same
@@ -196,8 +199,7 @@ same output as before the stage), and `diagnose.rs`.
   earlier fused-QKV change (still touched `q_proj`/`k_proj`/`v_proj`) —
   fixed to use `qkv_proj`.
 
-- [ ] **Stage 2 — `ops/` emitter layer** *(code complete, needs validation
-  run)*
+- [x] **Stage 2 — `ops/` emitter layer**
   Move `forward_nodes` / `add_rope_node` / `add_qkv_slice_node` and the raw
   `add_node` blocks of `build_prefill_layer` / `build_decode_layer` into one
   emitter per op (meta buffer as parameter). Prefill/decode builders become
@@ -211,13 +213,20 @@ same output as before the stage), and `diagnose.rs`.
   (kernel-level tests want raw nodes) and `optim/adamw.rs` (its own kernel,
   moves into `Trainer` in Stage 3).
 
-- [ ] **Stage 3 — weights/engine split**
+- [x] **Stage 3 — weights/engine split**
   Extract `ModelWeights`; `Trainer` takes train_step/clip/AdamW/fused
   graphs; `InferenceSession` depends only on weights. `checkpoint.rs` with
   v1 compat loader + v2 weights-only format + migration tool (see sacred-
   file rules above). `akasha_model.rs` / `pipeline.rs` / `attention.rs`
   dissolve into `weights.rs` + `ops/` + `train.rs`. Riskiest stage — gate on
   diagnose's gradient-flow and memorization checks.
+  Landed as: `weights.rs` (`ModelWeights`/`BlockWeights`, RNG draw order
+  preserved for seed parity), `train.rs` (`Trainer`, ex-`AkashaModel` minus
+  the deprecated sliding-window `generate`), `checkpoint.rs` (v1 sniffed +
+  grads restored on v1 resume; v2 = `AKV2` magic + arch header + weights
+  only), `bin/migrate_checkpoint_v2.rs` (ran against the real file:
+  75/75 tensors bitwise-identical, 1297 MB -> 649 MB, v1 kept). Chat mode
+  now builds zero training state.
 
 - [ ] **Stage 4 — phase typing**
   `GraphBuilder<B, P>` + `FwdPhase`/`CachedPhase` bounds on the emitters

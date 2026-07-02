@@ -1,5 +1,5 @@
 use akasha_core::config::ModelConfig;
-use akasha_core::nn::akasha_model::AkashaModel;
+use akasha_core::nn::{ModelWeights, Trainer};
 use std::collections::HashMap;
 use std::io::{self, Write};
 use std::sync::Arc;
@@ -35,7 +35,7 @@ fn sgd_step<B: Backend>(weight: &Tensor<B>, grad: &Tensor<B>, lr: f32) {
     weight.copy_from_cpu(&updated);
 }
 
-fn sgd_update_all<B: Backend>(model: &AkashaModel<B>, lr: f32) {
+fn sgd_update_all<B: Backend>(model: &Trainer<B>, lr: f32) {
     sgd_step(&model.embedding.table, &model.embedding.grad_table, lr);
     for block in &model.layers {
         sgd_step(&block.norm_1.weight, &block.norm_1.grad_weight, lr);
@@ -113,7 +113,8 @@ fn main() {
 
     let num_heads = 4;
     let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
-    let model = AkashaModel::new(ctx.clone(), &cfg, &t_input_tokens);
+    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let model = Trainer::new(ctx.clone(), weights, &t_input_tokens);
 
     println!("Training (overfitting on the single sentence)...");
     for epoch in 0..epochs {

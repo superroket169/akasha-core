@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use akasha_core::config::*;
 use akasha_core::data::Dataset;
-use akasha_core::nn::InferenceSession;
-use akasha_core::nn::akasha_model::AkashaModel;
+use akasha_core::nn::checkpoint;
+use akasha_core::nn::{InferenceSession, ModelWeights, Trainer};
 use akasha_core::tokenizer::AkashaTokenizer;
 use wilupgu::{Backend, Tensor, WgpuBackend};
 
@@ -23,23 +23,17 @@ fn find_latest_checkpoint(dir: &str) -> Option<(String, usize)> {
         .max_by_key(|(_, step)| *step)
 }
 
-fn build_model<B: Backend>(ctx: Arc<B>) -> AkashaModel<B> {
-    let cfg = ModelConfig::akasha_hall_1();
-    let input_tokens = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0u32; cfg.seq_len as usize],
-    ));
-    AkashaModel::new(ctx, &cfg, &input_tokens)
-}
-
-fn run_chat<B: Backend>(ctx: Arc<B>) {
+fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str) {
     let tokenizer = AkashaTokenizer::from_pretrained();
-    let model = build_model(ctx.clone());
-    model
-        .load_weights("checkpoints/model_final.bin")
-        .expect("Failed to load checkpoints/model_final.bin -- train the model first");
+    let cfg = ModelConfig::akasha_hall_1();
 
-    let mut session = InferenceSession::new(ctx, Arc::new(model), SEQ_LEN);
+    // Weights only -- no Trainer, so chat never allocates grads/AdamW state.
+    let weights = Arc::new(ModelWeights::zeros(ctx.clone(), &cfg));
+    checkpoint::load(&weights, weights_path)
+        .unwrap_or_else(|e| panic!("Failed to load {weights_path}: {e}"));
+    println!("Weights: {weights_path}");
+
+    let mut session = InferenceSession::new(ctx, weights, SEQ_LEN);
 
     println!("Model loaded. Type a prompt (Ctrl+C to exit):\n");
     loop {
@@ -68,8 +62,14 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
     let dataset = Dataset::from_file("data/train.txt", &tokenizer, SEQ_LEN as usize);
     println!("Dataset: {} tokens", dataset.token_count());
 
-    let model = build_model(ctx);
-    println!("Model ready - ~117M parameters (12-head attention)");
+    let cfg = ModelConfig::akasha_hall_1();
+    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let input_tokens = Arc::new(Tensor::init_from_cpu(
+        ctx.clone(),
+        &vec![0u32; cfg.seq_len as usize],
+    ));
+    let model = Trainer::new(ctx, weights, &input_tokens);
+    println!("Model ready - ~162M parameters (12-head attention)");
 
     std::fs::create_dir_all("checkpoints").unwrap();
 
@@ -148,6 +148,13 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let is_chat = args.iter().any(|a| a == "--chat");
+    let weights_path = args
+        .iter()
+        .position(|a| a == "--weights")
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+        .unwrap_or("checkpoints/model_final.bin")
+        .to_string();
     #[allow(unused_variables)]
     let force_cpu = args.iter().any(|a| a == "--cpu");
 
@@ -165,7 +172,7 @@ fn main() {
         println!("[wilupgu] CPU backend selected");
         let ctx = Arc::new(CpuBackend::new());
         if is_chat {
-            run_chat(ctx);
+            run_chat(ctx, &weights_path);
         } else {
             run_training(ctx);
         }
@@ -179,7 +186,7 @@ fn main() {
             println!("[wilupgu] CUDA backend selected");
             let ctx = Arc::new(ctx);
             if is_chat {
-                run_chat(ctx);
+                run_chat(ctx, &weights_path);
             } else {
                 run_training(ctx);
             }
@@ -189,7 +196,7 @@ fn main() {
     println!("[wilupgu] Vulkan backend selected");
     let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
     if is_chat {
-        run_chat(ctx);
+        run_chat(ctx, &weights_path);
     } else {
         run_training(ctx);
     }

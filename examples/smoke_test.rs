@@ -1,5 +1,5 @@
 use akasha_core::config::ModelConfig;
-use akasha_core::nn::akasha_model::AkashaModel;
+use akasha_core::nn::{ModelWeights, Trainer};
 use std::sync::Arc;
 use wilupgu::{Tensor, WgpuBackend};
 
@@ -28,7 +28,8 @@ fn main() {
     println!("Akasha going to vram...");
     let num_heads = 16;
     let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
-    let model = AkashaModel::new(ctx.clone(), &cfg, &t_input_tokens);
+    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let model = Trainer::new(ctx.clone(), weights, &t_input_tokens);
 
     println!("Forward Pass...");
     let start_time = std::time::Instant::now();

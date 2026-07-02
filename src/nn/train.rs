@@ -1,22 +1,20 @@
 use crate::READ_LOSS;
 use crate::Real;
-use std::fs::File;
-use std::io::{BufReader, BufWriter};
+use std::error::Error;
 use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor, fuse_compute_graphs};
 
+use super::checkpoint;
 use super::cross_entropy::CrossEntropy;
 use super::embedding::Embedding;
-use super::init::{random_normal_vec, xavier_std};
 use super::linear::Linear;
 use super::ops::zero_tensor;
 use super::pipeline::TransformerBlock;
 use super::rmsnorm::RMSNorm;
-use super::sampling::sample_token;
 use super::traits::Layer;
-use crate::optim::AdamW;
-
+use super::weights::ModelWeights;
 use crate::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
+use crate::optim::AdamW;
 
 const ADAM_BETA1: Real = 0.9;
 const ADAM_BETA2: Real = 0.95;
@@ -60,9 +58,10 @@ fn collect_trainable_params<B: Backend>(
     params
 }
 
-pub struct AkashaModel<B: Backend> {
+pub struct Trainer<B: Backend> {
     pub ctx: Arc<B>,
     pub cfg: ModelConfig,
+    pub weights: Arc<ModelWeights<B>>,
     pub input_tokens: Arc<Tensor<B>>,
     pub embedding: Embedding<B>,
     pub layers: Vec<TransformerBlock<B>>,
@@ -75,7 +74,141 @@ pub struct AkashaModel<B: Backend> {
     pub fused_backward_graph: ComputeGraph<B>,
 }
 
-impl<B: Backend> AkashaModel<B> {
+impl<B: Backend> Trainer<B> {
+    pub fn new(ctx: Arc<B>, weights: Arc<ModelWeights<B>>, input_tokens: &Arc<Tensor<B>>) -> Self {
+        let cfg = weights.cfg;
+        let ModelConfig {
+            vocab_size,
+            dim,
+            seq_len,
+            num_layers,
+            ..
+        } = cfg;
+
+        let dim_size = (seq_len * dim) as usize;
+        let vocab_out_size = (seq_len * vocab_size) as usize;
+        let zeros_dim = vec![0.0 as Real; dim_size];
+
+        let grad_logits = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; vocab_out_size],
+        ));
+        let g_lmhead_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
+
+        let edges: Vec<Arc<Tensor<B>>> = (0..=num_layers)
+            .map(|_| Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim)))
+            .collect();
+
+        let embedding = Embedding::new(
+            ctx.clone(),
+            vocab_size,
+            dim,
+            seq_len,
+            &weights.embedding,
+            input_tokens,
+            &edges[0],
+        );
+
+        let mut current_input = embedding.out_buffer.clone();
+        let mut layers = Vec::with_capacity(num_layers);
+
+        for i in 0..num_layers {
+            let block = TransformerBlock::new(
+                ctx.clone(),
+                &cfg,
+                &weights.blocks[i],
+                &current_input,
+                &edges[i + 1],
+                &edges[i],
+            );
+            current_input = block.add_2.in_out_buffer.clone();
+            layers.push(block);
+        }
+
+        let last_block = layers.last().expect("At least should be one layer!");
+
+        let final_norm = RMSNorm::new(
+            ctx.clone(),
+            dim,
+            seq_len,
+            &weights.final_norm,
+            &last_block.add_2.in_out_buffer,
+            &g_lmhead_in,
+            &edges[num_layers],
+        );
+
+        let lm_head = Linear::new(
+            ctx.clone(),
+            dim,
+            vocab_size,
+            seq_len,
+            &weights.lm_head,
+            &final_norm.out_buffer,
+            &grad_logits,
+            &g_lmhead_in,
+        );
+
+        let cross_entropy = CrossEntropy::new(
+            ctx.clone(),
+            vocab_size,
+            seq_len,
+            &lm_head.out_buffer,
+            &grad_logits,
+        );
+
+        let trainable_params = collect_trainable_params(&embedding, &layers, &final_norm, &lm_head);
+        let optimizer = AdamW::new(ctx.clone(), &trainable_params);
+
+        // ---- fused forward ----
+        let mut forward_graphs: Vec<&ComputeGraph<B>> = vec![&embedding.forward_graph];
+        for layer in &layers {
+            forward_graphs.push(&layer.norm_1.forward_graph);
+            forward_graphs.push(&layer.qkv_proj.forward_graph);
+            forward_graphs.push(&layer.qkv_split_forward);
+            forward_graphs.push(&layer.rope_forward);
+            forward_graphs.push(&layer.attention.forward_graph);
+            forward_graphs.push(&layer.out_proj.forward_graph);
+            forward_graphs.push(&layer.add_1.forward_graph);
+            forward_graphs.push(&layer.norm_2.forward_graph);
+            forward_graphs.push(&layer.ffn_up.forward_graph);
+            forward_graphs.push(&layer.silu.forward_graph);
+            forward_graphs.push(&layer.ffn_down.forward_graph);
+            forward_graphs.push(&layer.add_2.forward_graph);
+        }
+        forward_graphs.push(&final_norm.forward_graph);
+        forward_graphs.push(&lm_head.forward_graph);
+        forward_graphs.push(&cross_entropy.forward_graph);
+        let fused_forward_graph = fuse_compute_graphs(ctx.clone(), &forward_graphs);
+
+        // ---- fused backward ----
+        let mut backward_graphs: Vec<&ComputeGraph<B>> = vec![
+            &cross_entropy.backward_graph,
+            &lm_head.backward_graph,
+            &final_norm.backward_graph,
+        ];
+        for layer in layers.iter().rev() {
+            backward_graphs.push(&layer.backward_graph);
+        }
+        backward_graphs.push(&embedding.backward_graph);
+        let fused_backward_graph = fuse_compute_graphs(ctx.clone(), &backward_graphs);
+
+        Self {
+            ctx,
+            cfg,
+            weights,
+            input_tokens: input_tokens.clone(),
+            embedding,
+            layers,
+            final_norm,
+            lm_head,
+            grad_logits,
+            cross_entropy,
+            optimizer,
+            fused_forward_graph,
+            fused_backward_graph,
+        }
+    }
+
     pub fn train_step(
         &self,
         input_tokens: &[u32],
@@ -169,135 +302,6 @@ impl<B: Backend> AkashaModel<B> {
         )
     }
 
-    pub fn new(ctx: Arc<B>, cfg: &ModelConfig, input_tokens: &Arc<Tensor<B>>) -> Self {
-        let ModelConfig {
-            vocab_size,
-            dim,
-            seq_len,
-            num_layers,
-            ..
-        } = *cfg;
-
-        let dim_size = (seq_len * dim) as usize;
-        let vocab_out_size = (seq_len * vocab_size) as usize;
-        let zeros_dim = vec![0.0 as Real; dim_size];
-
-        let grad_logits = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; vocab_out_size],
-        ));
-        let g_lmhead_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-
-        let edges: Vec<Arc<Tensor<B>>> = (0..=num_layers)
-            .map(|_| Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim)))
-            .collect();
-
-        let emb_w = random_normal_vec((vocab_size * dim) as usize, 0.0, xavier_std(dim));
-        let embedding = Embedding::new(
-            ctx.clone(),
-            vocab_size,
-            dim,
-            seq_len,
-            &emb_w,
-            input_tokens,
-            &edges[0],
-        );
-
-        let mut current_input = embedding.out_buffer.clone();
-        let mut layers = Vec::with_capacity(num_layers);
-
-        for i in 0..num_layers {
-            let block =
-                TransformerBlock::new(ctx.clone(), cfg, &current_input, &edges[i + 1], &edges[i]);
-            current_input = block.add_2.in_out_buffer.clone();
-            layers.push(block);
-        }
-
-        let last_block = layers.last().expect("At least should be one layer!");
-
-        let final_norm_w = random_normal_vec(dim as usize, 1.0, 0.02);
-        let final_norm = RMSNorm::new(
-            ctx.clone(),
-            dim,
-            seq_len,
-            &final_norm_w,
-            &last_block.add_2.in_out_buffer,
-            &g_lmhead_in,
-            &edges[num_layers],
-        );
-
-        let head_w = random_normal_vec((dim * vocab_size) as usize, 0.0, xavier_std(dim));
-        let lm_head = Linear::new(
-            ctx.clone(),
-            dim,
-            vocab_size,
-            seq_len,
-            &head_w,
-            &final_norm.out_buffer,
-            &grad_logits,
-            &g_lmhead_in,
-        );
-
-        let cross_entropy = CrossEntropy::new(
-            ctx.clone(),
-            vocab_size,
-            seq_len,
-            &lm_head.out_buffer,
-            &grad_logits,
-        );
-
-        let trainable_params = collect_trainable_params(&embedding, &layers, &final_norm, &lm_head);
-        let optimizer = AdamW::new(ctx.clone(), &trainable_params);
-
-        // ---- fused forward ----
-        let mut forward_graphs: Vec<&ComputeGraph<B>> = vec![&embedding.forward_graph];
-        for layer in &layers {
-            forward_graphs.push(&layer.norm_1.forward_graph);
-            forward_graphs.push(&layer.qkv_proj.forward_graph);
-            forward_graphs.push(&layer.qkv_split_forward);
-            forward_graphs.push(&layer.rope_forward);
-            forward_graphs.push(&layer.attention.forward_graph);
-            forward_graphs.push(&layer.out_proj.forward_graph);
-            forward_graphs.push(&layer.add_1.forward_graph);
-            forward_graphs.push(&layer.norm_2.forward_graph);
-            forward_graphs.push(&layer.ffn_up.forward_graph);
-            forward_graphs.push(&layer.silu.forward_graph);
-            forward_graphs.push(&layer.ffn_down.forward_graph);
-            forward_graphs.push(&layer.add_2.forward_graph);
-        }
-        forward_graphs.push(&final_norm.forward_graph);
-        forward_graphs.push(&lm_head.forward_graph);
-        forward_graphs.push(&cross_entropy.forward_graph);
-        let fused_forward_graph = fuse_compute_graphs(ctx.clone(), &forward_graphs);
-
-        // ---- fused backward ----
-        let mut backward_graphs: Vec<&ComputeGraph<B>> = vec![
-            &cross_entropy.backward_graph,
-            &lm_head.backward_graph,
-            &final_norm.backward_graph,
-        ];
-        for layer in layers.iter().rev() {
-            backward_graphs.push(&layer.backward_graph);
-        }
-        backward_graphs.push(&embedding.backward_graph);
-        let fused_backward_graph = fuse_compute_graphs(ctx.clone(), &backward_graphs);
-
-        Self {
-            ctx,
-            cfg: *cfg,
-            input_tokens: input_tokens.clone(),
-            embedding,
-            layers,
-            final_norm,
-            lm_head,
-            grad_logits,
-            cross_entropy,
-            optimizer,
-            fused_forward_graph,
-            fused_backward_graph,
-        }
-    }
-
     pub fn forward(&self) {
         self.embedding.forward();
         for layer in self.layers.iter() {
@@ -339,77 +343,17 @@ impl<B: Backend> AkashaModel<B> {
         }
     }
 
-    #[deprecated(note = "use InferenceSession::generate for KV-cached decoding")]
-    pub fn generate(
-        &self,
-        tokenizer: &crate::tokenizer::AkashaTokenizer,
-        prompt_tokens: &[u32],
-        max_new_tokens: usize,
-        temperature: f32,
-    ) -> String {
-        let seq_len = self.cfg.seq_len as usize;
-        let vocab_size = self.cfg.vocab_size as usize;
-        let mut tokens = prompt_tokens.to_vec();
-        const EOS: u32 = 50256;
+    pub fn save_weights(&self, path: &str) -> Result<(), Box<dyn Error>> {
+        checkpoint::save_v2(&self.weights, path)
+    }
 
-        for _ in 0..max_new_tokens {
-            let cur_len = tokens.len();
-            let (start, pred_pos) = if cur_len >= seq_len {
-                (cur_len - seq_len, seq_len - 1)
-            } else {
-                (0, cur_len - 1)
-            };
-
-            let mut window = vec![0u32; seq_len];
-            let slice = &tokens[start..];
-            window[..slice.len()].copy_from_slice(slice);
-
-            self.input_tokens.copy_from_cpu(&window);
-            self.forward_fused();
-
-            let logits = self.lm_head.out_buffer.to_cpu();
-            let row = &logits[pred_pos * vocab_size..(pred_pos + 1) * vocab_size];
-            let next = sample_token(row, temperature);
-            tokens.push(next);
-
-            if next == EOS {
-                break;
+    pub fn load_weights(&self, path: &str) -> Result<(), Box<dyn Error>> {
+        let loaded = checkpoint::load(&self.weights, path)?;
+        if let Some(grads) = loaded.v1_grads {
+            for ((_, grad_tensor), grad_data) in self.trainable_params().iter().zip(grads.iter()) {
+                grad_tensor.copy_from_cpu(grad_data);
             }
         }
-
-        tokenizer.decode(&tokens[prompt_tokens.len()..])
-    }
-
-    pub fn save_weights(&self, path: &str) -> bincode::Result<()> {
-        let params: Vec<(Vec<Real>, Vec<Real>)> = self
-            .trainable_params()
-            .iter()
-            .map(|(weight, grad)| (weight.to_cpu(), grad.to_cpu()))
-            .collect();
-
-        let file = File::create(path)?;
-        let mut writer = BufWriter::new(file);
-        bincode::serialize_into(&mut writer, &params)?;
-        Ok(())
-    }
-
-    pub fn load_weights(&self, path: &str) -> bincode::Result<()> {
-        let file = File::open(path)?;
-        let mut reader = BufReader::new(file);
-        let params: Vec<(Vec<Real>, Vec<Real>)> = bincode::deserialize_from(&mut reader)?;
-
-        let targets = self.trainable_params();
-        assert_eq!(
-            params.len(),
-            targets.len(),
-            "load_weights: saved parameter count doesn't match this model's architecture"
-        );
-
-        for ((weight, grad), (w_data, g_data)) in targets.iter().zip(params.iter()) {
-            weight.copy_from_cpu(w_data);
-            grad.copy_from_cpu(g_data);
-        }
-
         Ok(())
     }
 }

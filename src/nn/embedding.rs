@@ -19,13 +19,13 @@ impl<B: Backend> Embedding<B> {
         vocab_size: u32,
         dim: u32,
         seq_len: u32,
-        table_data: &[Real],
+        table: &Arc<Tensor<B>>,
         tokens_buffer: &Arc<Tensor<B>>,
         grad_output: &Arc<Tensor<B>>,
     ) -> Self {
         assert_eq!(
-            table_data.len(),
-            (vocab_size * dim) as usize,
+            table.size,
+            (vocab_size * dim) as u64 * std::mem::size_of::<Real>() as u64,
             "Dict size mismatch!"
         );
 
@@ -35,7 +35,7 @@ impl<B: Backend> Embedding<B> {
             seq_len,
         };
 
-        let table = Arc::new(Tensor::init_from_cpu(ctx.clone(), table_data));
+        let table = table.clone();
         let zero_table = vec![0.0 as Real; (vocab_size * dim) as usize];
         let grad_table = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_table));
 

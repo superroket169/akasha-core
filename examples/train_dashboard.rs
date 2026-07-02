@@ -1,5 +1,5 @@
 use akasha_core::config::ModelConfig;
-use akasha_core::nn::akasha_model::AkashaModel;
+use akasha_core::nn::{ModelWeights, Trainer};
 use akasha_core::tokenizer::Tokenizer;
 use std::collections::VecDeque;
 use std::io::{self, Write};
@@ -104,7 +104,7 @@ impl Dashboard {
 }
 
 fn run_epochs<B: Backend>(
-    model: &AkashaModel<B>,
+    model: &Trainer<B>,
     dashboard: &mut Dashboard,
     corpus_tokens: &[u32],
     pad_id: u32,
@@ -146,7 +146,7 @@ fn run_epochs<B: Backend>(
 }
 
 fn generate<B: Backend>(
-    model: &AkashaModel<B>,
+    model: &Trainer<B>,
     tokenizer: &Tokenizer,
     prompt: &str,
     seq_len: usize,
@@ -239,7 +239,8 @@ fn main() {
         &corpus_tokens[..NUM_WORDS as usize],
     ));
     let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, NUM_WORDS);
-    let model = AkashaModel::new(ctx.clone(), &cfg, &t_input_tokens);
+    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let model = Trainer::new(ctx.clone(), weights, &t_input_tokens);
 
     if let Some(path) = load_path {
         match model.load_weights(path) {

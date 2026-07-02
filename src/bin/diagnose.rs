@@ -2,10 +2,11 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use akasha_core::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
-use akasha_core::nn::akasha_model::AkashaModel;
 use akasha_core::nn::cross_entropy::CrossEntropy;
 use akasha_core::nn::rmsnorm::RMSNorm;
+use akasha_core::nn::train::Trainer;
 use akasha_core::nn::traits::Layer;
+use akasha_core::nn::weights::ModelWeights;
 use akasha_core::nn::{Cache, InferenceSession};
 use rand::Rng;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode, WgpuBackend};
@@ -44,7 +45,7 @@ fn rand_f32_vec(n: usize, scale: f32) -> Vec<f32> {
     (0..n).map(|_| rng.gen_range(-scale..scale)).collect()
 }
 
-fn check1_param_count<B: Backend>(model: &AkashaModel<B>) -> (bool, u64) {
+fn check1_param_count<B: Backend>(model: &Trainer<B>) -> (bool, u64) {
     let total: u64 = model
         .trainable_params()
         .iter()
@@ -73,7 +74,8 @@ fn check2_grad_flow<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
         &rand_u32_vec(seq_len as usize, vocab_size),
     ));
     let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, seq_len);
-    let model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
+    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let model = Trainer::new(ctx.clone(), weights, &input_tokens);
 
     model.zero_grad();
     model.zero_transient_grads();
@@ -305,6 +307,7 @@ fn check4_rmsnorm_backward<B: Backend>(ctx: Arc<B>) -> bool {
     let w_data = rand_f32_vec(dim as usize, 1.0);
 
     let x_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &x_data));
+    let w_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &w_data));
     let grad_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![1.0f32; n]));
     let grad_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![0.0f32; n]));
 
@@ -312,7 +315,7 @@ fn check4_rmsnorm_backward<B: Backend>(ctx: Arc<B>) -> bool {
         ctx.clone(),
         dim,
         seq_len,
-        &w_data,
+        &w_buf,
         &x_buf,
         &grad_out,
         &grad_in,
@@ -374,7 +377,8 @@ fn check5_accumulation<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
         &rand_u32_vec(seq_len as usize, vocab_size),
     ));
     let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, seq_len);
-    let model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
+    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let model = Trainer::new(ctx.clone(), weights, &input_tokens);
 
     let inputs = rand_u32_vec(seq_len as usize, vocab_size);
     let targets = rand_u32_vec(seq_len as usize, vocab_size);
@@ -417,7 +421,7 @@ fn check5_accumulation<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
     pass
 }
 
-fn check6_weight_decay_groups<B: Backend>(model: &AkashaModel<B>) -> bool {
+fn check6_weight_decay_groups<B: Backend>(model: &Trainer<B>) -> bool {
     let params = model.trainable_params();
     let emb_in_group = params
         .iter()
@@ -491,7 +495,8 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
         &vec![0u32; seq_len as usize],
     ));
     let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
-    let model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
+    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let model = Trainer::new(ctx.clone(), weights, &input_tokens);
 
     let inputs = rand_u32_vec(batch_size * seq_len as usize, vocab_size);
     let targets = rand_u32_vec(batch_size * seq_len as usize, vocab_size);
@@ -649,7 +654,8 @@ fn check9_kv_cache_equivalence<B: Backend>(ctx: Arc<B>) -> bool {
         &vec![0u32; seq_len as usize],
     ));
     let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
-    let model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
+    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let model = Trainer::new(ctx.clone(), weights, &input_tokens);
 
     let mut logits_a: Vec<Vec<f32>> = Vec::new();
     let seq_len_us = seq_len as usize;
@@ -670,8 +676,7 @@ fn check9_kv_cache_equivalence<B: Backend>(ctx: Arc<B>) -> bool {
     }
 
     // ---- KV-cache prefill + decode ----
-    let model_arc = Arc::new(model);
-    let mut session = InferenceSession::new(ctx.clone(), model_arc, seq_len);
+    let mut session = InferenceSession::new(ctx.clone(), model.weights.clone(), seq_len);
     session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
 
     let mut logits_b: Vec<Vec<f32>> = vec![session.prefill(prompt)];
@@ -712,7 +717,8 @@ fn check10_kv_cache_speed<B: Backend>(ctx: Arc<B>) {
         &vec![0u32; seq_len as usize],
     ));
     let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
-    let model_a = AkashaModel::new(ctx.clone(), &cfg, &input_tokens_a);
+    let weights_a = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let model_a = Trainer::new(ctx.clone(), weights_a, &input_tokens_a);
     let mut tokens = prompt.clone();
     let seq_len_us = seq_len as usize;
     let vocab_us = vocab_size as usize;
@@ -736,12 +742,8 @@ fn check10_kv_cache_speed<B: Backend>(ctx: Arc<B>) {
     let naive_elapsed = start.elapsed();
 
     // ---- KV-cache path ----
-    let input_tokens_b = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0u32; seq_len as usize],
-    ));
-    let model_b = Arc::new(AkashaModel::new(ctx.clone(), &cfg, &input_tokens_b));
-    let mut session = InferenceSession::new(ctx.clone(), model_b, seq_len);
+    let weights_b = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+    let mut session = InferenceSession::new(ctx.clone(), weights_b, seq_len);
     session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
 
     let start = Instant::now();
@@ -803,15 +805,22 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
         );
     }
 
-    let input_tokens = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0u32; SEQ_LEN as usize],
-    ));
-    let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, SEQ_LEN);
-    let full_model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
+    let (c1_pass, c1_count, c6_pass) = {
+        let input_tokens = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0u32; SEQ_LEN as usize],
+        ));
+        let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, SEQ_LEN);
+        let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+        let full_model = Trainer::new(ctx.clone(), weights, &input_tokens);
 
-    let (c1_pass, c1_count) = check1_param_count(&full_model);
-    println!();
+        let (c1_pass, c1_count) = check1_param_count(&full_model);
+        println!();
+        let c6_pass = check6_weight_decay_groups(&full_model);
+        println!();
+        (c1_pass, c1_count, c6_pass)
+    };
+
     let c2_pass = check2_grad_flow(ctx.clone(), vocab_size);
     println!();
     let c3_pass = check3_head_gather_scatter(ctx.clone());
@@ -819,8 +828,6 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
     let c4_pass = check4_rmsnorm_backward(ctx.clone());
     println!();
     let c5_pass = check5_accumulation(ctx.clone(), vocab_size);
-    println!();
-    let c6_pass = check6_weight_decay_groups(&full_model);
     println!();
     let c7_pass = check7_cross_entropy(ctx.clone());
     println!();

@@ -1,12 +1,12 @@
-use super::akasha_model::AkashaModel;
 use super::cache::Cache;
 use super::ops;
 use super::ops::meta::{
     CacheWriteMeta, EmbeddingMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
     RopeOffsetMeta, SoftmaxRectMeta,
 };
-use super::pipeline::{TransformerBlock, qkv_slice};
+use super::pipeline::qkv_slice;
 use super::sampling::sample_token;
+use super::weights::{BlockWeights, ModelWeights};
 use crate::Real;
 use crate::config::ModelConfig;
 use crate::tokenizer::AkashaTokenizer;
@@ -270,7 +270,7 @@ impl<B: Backend> DecodeScratch<B> {
 fn build_prefill_layer<B: Backend>(
     graph: &mut ComputeGraph<B>,
     ctx: &Arc<B>,
-    layer: &TransformerBlock<B>,
+    bw: &BlockWeights<B>,
     hidden_in: &Arc<Tensor<B>>,
     cache_k: &Arc<Tensor<B>>,
     cache_v: &Arc<Tensor<B>>,
@@ -293,13 +293,7 @@ fn build_prefill_layer<B: Backend>(
 
     // ---- norm_1 + fused q/k/v projection ----
     let norm1_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    ops::norm::rmsnorm(
-        graph,
-        hidden_in,
-        &layer.norm_1.weight,
-        &norm1_out,
-        norm_shape,
-    );
+    ops::norm::rmsnorm(graph, hidden_in, &bw.norm_1, &norm1_out, norm_shape);
 
     let qkv_out = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
@@ -308,7 +302,7 @@ fn build_prefill_layer<B: Backend>(
     ops::matmul::matmul(
         graph,
         &norm1_out,
-        &layer.qkv_proj.weight,
+        &bw.qkv_proj,
         &qkv_out,
         MatMulMeta {
             m: prompt_len,
@@ -351,7 +345,7 @@ fn build_prefill_layer<B: Backend>(
     ops::matmul::matmul_add(
         graph,
         &attn_out,
-        &layer.out_proj.weight,
+        &bw.out_proj,
         hidden_in,
         MatMulMeta {
             m: prompt_len,
@@ -362,13 +356,7 @@ fn build_prefill_layer<B: Backend>(
 
     // ---- FFN + residual ----
     let norm2_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    ops::norm::rmsnorm(
-        graph,
-        hidden_in,
-        &layer.norm_2.weight,
-        &norm2_out,
-        norm_shape,
-    );
+    ops::norm::rmsnorm(graph, hidden_in, &bw.norm_2, &norm2_out, norm_shape);
 
     let ffn_up_out = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
@@ -377,7 +365,7 @@ fn build_prefill_layer<B: Backend>(
     ops::matmul::matmul(
         graph,
         &norm2_out,
-        &layer.ffn_up.weight,
+        &bw.ffn_up,
         &ffn_up_out,
         MatMulMeta {
             m: prompt_len,
@@ -392,7 +380,7 @@ fn build_prefill_layer<B: Backend>(
     ops::matmul::matmul_add(
         graph,
         &ffn_up_out,
-        &layer.ffn_down.weight,
+        &bw.ffn_down,
         hidden_in,
         MatMulMeta {
             m: prompt_len,
@@ -406,7 +394,7 @@ fn build_prefill_layer<B: Backend>(
 
 fn build_decode_layer<B: Backend>(
     graph: &mut ComputeGraph<B>,
-    layer: &TransformerBlock<B>,
+    bw: &BlockWeights<B>,
     scratch: &DecodeScratch<B>,
     cache_k: &Arc<Tensor<B>>,
     cache_v: &Arc<Tensor<B>>,
@@ -432,7 +420,7 @@ fn build_decode_layer<B: Backend>(
     ops::norm::rmsnorm_with(
         graph,
         &scratch.hidden,
-        &layer.norm_1.weight,
+        &bw.norm_1,
         &scratch.norm_out,
         norm_shape,
         &scratch.norm_meta,
@@ -441,7 +429,7 @@ fn build_decode_layer<B: Backend>(
     ops::matmul::matmul_with(
         graph,
         &scratch.norm_out,
-        &layer.qkv_proj.weight,
+        &bw.qkv_proj,
         &scratch.qkv_out,
         MatMulMeta {
             m: 1,
@@ -579,7 +567,7 @@ fn build_decode_layer<B: Backend>(
     ops::matmul::matmul_add_with(
         graph,
         &scratch.attn_out,
-        &layer.out_proj.weight,
+        &bw.out_proj,
         &scratch.hidden,
         MatMulMeta {
             m: 1,
@@ -593,7 +581,7 @@ fn build_decode_layer<B: Backend>(
     ops::norm::rmsnorm_with(
         graph,
         &scratch.hidden,
-        &layer.norm_2.weight,
+        &bw.norm_2,
         &scratch.norm_out,
         norm_shape,
         &scratch.norm_meta,
@@ -602,7 +590,7 @@ fn build_decode_layer<B: Backend>(
     ops::matmul::matmul_with(
         graph,
         &scratch.norm_out,
-        &layer.ffn_up.weight,
+        &bw.ffn_up,
         &scratch.ffn_up_out,
         MatMulMeta {
             m: 1,
@@ -617,7 +605,7 @@ fn build_decode_layer<B: Backend>(
     ops::matmul::matmul_add_with(
         graph,
         &scratch.ffn_up_out,
-        &layer.ffn_down.weight,
+        &bw.ffn_down,
         &scratch.hidden,
         MatMulMeta {
             m: 1,
@@ -630,7 +618,7 @@ fn build_decode_layer<B: Backend>(
 
 pub struct InferenceSession<B: Backend> {
     ctx: Arc<B>,
-    model: Arc<AkashaModel<B>>,
+    weights: Arc<ModelWeights<B>>,
     cfg: ModelConfig,
     max_context_len: u32,
     cache: Option<Cache<B>>,
@@ -639,14 +627,14 @@ pub struct InferenceSession<B: Backend> {
 }
 
 impl<B: Backend> InferenceSession<B> {
-    pub fn new(ctx: Arc<B>, model: Arc<AkashaModel<B>>, max_context_len: u32) -> Self {
-        let cfg = model.cfg;
+    pub fn new(ctx: Arc<B>, weights: Arc<ModelWeights<B>>, max_context_len: u32) -> Self {
+        let cfg = weights.cfg;
         let scratch = DecodeScratch::new(ctx.clone(), &cfg, max_context_len);
         let input_token_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[0u32]));
 
         Self {
             ctx,
-            model,
+            weights,
             cfg,
             max_context_len,
             cache: None,
@@ -657,8 +645,7 @@ impl<B: Backend> InferenceSession<B> {
 
     pub fn replace_cache(&mut self, new: Cache<B>) -> Option<Cache<B>> {
         assert_eq!(
-            new.num_layers,
-            self.model.layers.len(),
+            new.num_layers, self.cfg.num_layers,
             "Cache/model layer count mismatch"
         );
         assert_eq!(new.dim, self.cfg.dim, "Cache/model dim mismatch");
@@ -690,7 +677,7 @@ impl<B: Backend> InferenceSession<B> {
         );
 
         let ctx = self.ctx.clone();
-        let model = self.model.clone();
+        let weights = self.weights.clone();
         let cfg = self.cfg;
         let dim = cfg.dim;
         let vocab_size = cfg.vocab_size;
@@ -706,7 +693,7 @@ impl<B: Backend> InferenceSession<B> {
         ops::embedding::embedding(
             &mut graph,
             &tokens_buf,
-            &model.embedding.table,
+            &weights.embedding,
             &hidden,
             EmbeddingMeta {
                 vocab_size,
@@ -717,11 +704,11 @@ impl<B: Backend> InferenceSession<B> {
 
         {
             let cache = self.cache.as_ref().unwrap();
-            for (i, layer) in model.layers.iter().enumerate() {
+            for (i, bw) in weights.blocks.iter().enumerate() {
                 hidden = build_prefill_layer(
                     &mut graph,
                     &ctx,
-                    layer,
+                    bw,
                     &hidden,
                     &cache.k[i],
                     &cache.v[i],
@@ -738,7 +725,7 @@ impl<B: Backend> InferenceSession<B> {
         ops::norm::rmsnorm(
             &mut graph,
             &hidden,
-            &model.final_norm.weight,
+            &weights.final_norm,
             &final_out,
             NormMeta {
                 seq_len: prompt_len,
@@ -754,7 +741,7 @@ impl<B: Backend> InferenceSession<B> {
         ops::matmul::matmul(
             &mut graph,
             &final_out,
-            &model.lm_head.weight,
+            &weights.lm_head,
             &logits,
             MatMulMeta {
                 m: prompt_len,
@@ -789,7 +776,7 @@ impl<B: Backend> InferenceSession<B> {
         self.input_token_buf.copy_from_cpu(&[token]);
 
         let ctx = self.ctx.clone();
-        let model = self.model.clone();
+        let weights = self.weights.clone();
         let cfg = self.cfg;
         let dim = cfg.dim;
         let vocab_size = cfg.vocab_size;
@@ -801,7 +788,7 @@ impl<B: Backend> InferenceSession<B> {
         ops::embedding::embedding_with(
             &mut graph,
             &self.input_token_buf,
-            &model.embedding.table,
+            &weights.embedding,
             &self.scratch.hidden,
             EmbeddingMeta {
                 vocab_size,
@@ -813,10 +800,10 @@ impl<B: Backend> InferenceSession<B> {
 
         {
             let cache = self.cache.as_ref().unwrap();
-            for (i, layer) in model.layers.iter().enumerate() {
+            for (i, bw) in weights.blocks.iter().enumerate() {
                 build_decode_layer(
                     &mut graph,
-                    layer,
+                    bw,
                     &self.scratch,
                     &cache.k[i],
                     &cache.v[i],
@@ -829,7 +816,7 @@ impl<B: Backend> InferenceSession<B> {
         ops::norm::rmsnorm_with(
             &mut graph,
             &self.scratch.hidden,
-            &model.final_norm.weight,
+            &weights.final_norm,
             &self.scratch.final_norm_out,
             NormMeta {
                 seq_len: 1,
@@ -842,7 +829,7 @@ impl<B: Backend> InferenceSession<B> {
         ops::matmul::matmul_with(
             &mut graph,
             &self.scratch.final_norm_out,
-            &model.lm_head.weight,
+            &weights.lm_head,
             &self.scratch.logits,
             MatMulMeta {
                 m: 1,
@@ -869,7 +856,7 @@ impl<B: Backend> InferenceSession<B> {
         if self.cache.is_none() {
             self.cache = Some(Cache::new(
                 self.ctx.clone(),
-                self.model.layers.len(),
+                self.cfg.num_layers,
                 self.cfg.dim,
                 self.max_context_len,
             ));
