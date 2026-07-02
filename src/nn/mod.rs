@@ -10,9 +10,7 @@ pub mod linear;
 pub mod ops;
 pub mod pipeline;
 pub mod rmsnorm;
-pub mod rope;
 pub mod sampling;
-pub mod shader_paths;
 pub mod silu;
 pub mod train;
 pub mod traits;
@@ -20,14 +18,12 @@ pub mod weights;
 
 pub use linear::Linear;
 pub use traits::Layer;
-pub use traits::Serializable;
 
 pub use add::Add;
 pub use cache::Cache;
 pub use cross_entropy::CrossEntropy;
 pub use inference::InferenceSession;
 pub use rmsnorm::RMSNorm;
-pub use rope::RoPE;
 pub use silu::SiLU;
 pub use train::Trainer;
 pub use weights::{BlockWeights, ModelWeights};
