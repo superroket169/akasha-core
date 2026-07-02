@@ -1,3 +1,4 @@
+use super::ops::meta::{EmbeddingMeta, KernelMeta};
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
@@ -21,9 +22,12 @@ impl<B: Backend> Embedding<B> {
         dim: u32,
         seq_len: u32,
     ) {
-        let ctx = tokens.ctx.clone();
-        let meta_data = vec![vocab_size, dim, seq_len];
-        let t_meta = Arc::new(Tensor::init_from_cpu(ctx, &meta_data));
+        let t_meta = EmbeddingMeta {
+            vocab_size,
+            dim,
+            seq_len,
+        }
+        .upload(&tokens.ctx);
 
         graph.add_node(
             "Embedding",
@@ -56,8 +60,12 @@ impl<B: Backend> Embedding<B> {
         let zero_table = vec![0.0 as Real; (vocab_size * dim) as usize];
         let grad_table = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_table));
 
-        let meta_data = vec![vocab_size, dim, seq_len];
-        let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
+        let t_meta = EmbeddingMeta {
+            vocab_size,
+            dim,
+            seq_len,
+        }
+        .upload(&ctx);
 
         let out_size = (seq_len * dim) as usize;
         let zero_out = vec![0.0 as Real; out_size];

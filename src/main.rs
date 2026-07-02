@@ -24,19 +24,12 @@ fn find_latest_checkpoint(dir: &str) -> Option<(String, usize)> {
 }
 
 fn build_model<B: Backend>(ctx: Arc<B>) -> AkashaModel<B> {
+    let cfg = ModelConfig::akasha_hall_1();
     let input_tokens = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
-        &vec![0u32; SEQ_LEN as usize],
+        &vec![0u32; cfg.seq_len as usize],
     ));
-    AkashaModel::new(
-        ctx,
-        VOCAB_SIZE,
-        DIM,
-        SEQ_LEN,
-        NUM_LAYERS,
-        NUM_HEADS,
-        &input_tokens,
-    )
+    AkashaModel::new(ctx, &cfg, &input_tokens)
 }
 
 fn run_chat<B: Backend>(ctx: Arc<B>) {
@@ -46,7 +39,7 @@ fn run_chat<B: Backend>(ctx: Arc<B>) {
         .load_weights("checkpoints/model_final.bin")
         .expect("Failed to load checkpoints/model_final.bin -- train the model first");
 
-    let mut session = InferenceSession::new(ctx, Arc::new(model), DIM, NUM_HEADS, SEQ_LEN);
+    let mut session = InferenceSession::new(ctx, Arc::new(model), SEQ_LEN);
 
     println!("Model loaded. Type a prompt (Ctrl+C to exit):\n");
     loop {

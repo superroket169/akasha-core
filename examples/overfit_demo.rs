@@ -1,3 +1,4 @@
+use akasha_core::config::ModelConfig;
 use akasha_core::nn::akasha_model::AkashaModel;
 use std::collections::HashMap;
 use std::io::{self, Write};
@@ -38,9 +39,7 @@ fn sgd_update_all<B: Backend>(model: &AkashaModel<B>, lr: f32) {
     sgd_step(&model.embedding.table, &model.embedding.grad_table, lr);
     for block in &model.layers {
         sgd_step(&block.norm_1.weight, &block.norm_1.grad_weight, lr);
-        sgd_step(&block.q_proj.weight, &block.q_proj.grad_weight, lr);
-        sgd_step(&block.k_proj.weight, &block.k_proj.grad_weight, lr);
-        sgd_step(&block.v_proj.weight, &block.v_proj.grad_weight, lr);
+        sgd_step(&block.qkv_proj.weight, &block.qkv_proj.grad_weight, lr);
         sgd_step(&block.out_proj.weight, &block.out_proj.grad_weight, lr);
         sgd_step(&block.norm_2.weight, &block.norm_2.grad_weight, lr);
         sgd_step(&block.ffn_up.weight, &block.ffn_up.grad_weight, lr);
@@ -113,15 +112,8 @@ fn main() {
     let t_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &sentence_tokens));
 
     let num_heads = 4;
-    let model = AkashaModel::new(
-        ctx.clone(),
-        vocab_size,
-        dim,
-        seq_len,
-        num_layers,
-        num_heads,
-        &t_input_tokens,
-    );
+    let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
+    let model = AkashaModel::new(ctx.clone(), &cfg, &t_input_tokens);
 
     println!("Training (overfitting on the single sentence)...");
     for epoch in 0..epochs {

@@ -1,3 +1,4 @@
+use akasha_core::config::ModelConfig;
 use akasha_core::nn::akasha_model::AkashaModel;
 use akasha_core::tokenizer::Tokenizer;
 use std::collections::VecDeque;
@@ -231,15 +232,8 @@ fn main() {
         ctx.clone(),
         &corpus_tokens[..NUM_WORDS as usize],
     ));
-    let model = AkashaModel::new(
-        ctx.clone(),
-        vocab_size,
-        DIM,
-        NUM_WORDS,
-        NUM_LAYERS,
-        NUM_HEADS,
-        &t_input_tokens,
-    );
+    let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, NUM_WORDS);
+    let model = AkashaModel::new(ctx.clone(), &cfg, &t_input_tokens);
 
     if let Some(path) = load_path {
         match model.load_weights(path) {

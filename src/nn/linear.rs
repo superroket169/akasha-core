@@ -1,3 +1,4 @@
+use super::ops::meta::{KernelMeta, MatMulMeta};
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
@@ -22,9 +23,12 @@ impl<B: Backend> Linear<B> {
         in_features: u32,
         out_features: u32,
     ) {
-        let ctx = input.ctx.clone();
-        let meta_data = vec![seq_len, out_features, in_features];
-        let t_meta = Arc::new(Tensor::init_from_cpu(ctx, &meta_data));
+        let t_meta = MatMulMeta {
+            m: seq_len,
+            n: out_features,
+            k: in_features,
+        }
+        .upload(&input.ctx);
 
         graph.add_node(
             "MatMul",
@@ -51,8 +55,12 @@ impl<B: Backend> Linear<B> {
         let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), weight_data));
 
         let m = seq_len;
-        let meta_data = vec![m, out_features, in_features];
-        let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
+        let t_meta = MatMulMeta {
+            m,
+            n: out_features,
+            k: in_features,
+        }
+        .upload(&ctx);
 
         let out_size = (m * out_features) as usize;
         let zero_out = vec![0.0 as Real; out_size];
@@ -74,8 +82,12 @@ impl<B: Backend> Linear<B> {
             out_features,
         );
 
-        let meta_grad_in_data = vec![m, in_features, out_features];
-        let t_meta_grad_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_grad_in_data));
+        let t_meta_grad_in = MatMulMeta {
+            m,
+            n: in_features,
+            k: out_features,
+        }
+        .upload(&ctx);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
 

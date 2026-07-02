@@ -1,14 +1,8 @@
+use super::ops::meta::{CrossEntropyMeta, KernelMeta};
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Meta {
-    vocab_size: u32,
-    num_rows: u32,
-}
 
 pub struct CrossEntropy<B: Backend> {
     pub seq_len: u32,
@@ -47,8 +41,11 @@ impl<B: Backend> CrossEntropy<B> {
         ));
         let grad_logits = grad_logits.clone();
 
-        let meta_data = [Meta { vocab_size, num_rows: seq_len }];
-        let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
+        let t_meta = CrossEntropyMeta {
+            vocab_size,
+            num_rows: seq_len,
+        }
+        .upload(&ctx);
 
         let dispatch_x = (seq_len + 255) / 256;
 

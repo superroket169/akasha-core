@@ -1,15 +1,8 @@
+use super::ops::meta::{KernelMeta, NormMeta};
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Meta {
-    seq_len: u32,
-    size: u32,
-    eps: f32,
-}
 
 pub struct RMSNorm<B: Backend> {
     pub weight: Arc<Tensor<B>>,
@@ -31,13 +24,12 @@ impl<B: Backend> RMSNorm<B> {
         dim: u32,
         eps: f32,
     ) {
-        let ctx = input.ctx.clone();
-        let meta_data = [Meta {
+        let t_meta = NormMeta {
             seq_len,
             size: dim,
             eps,
-        }];
-        let t_meta = Arc::new(Tensor::init_from_cpu(ctx, &meta_data));
+        }
+        .upload(&input.ctx);
 
         graph.add_node(
             "RMSNorm",
@@ -80,12 +72,12 @@ impl<B: Backend> RMSNorm<B> {
             &vec![0.0 as Real; seq_len as usize],
         ));
 
-        let meta_data = [Meta {
+        let t_meta = NormMeta {
             seq_len,
             size: dim,
             eps: 1e-5,
-        }];
-        let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
+        }
+        .upload(&ctx);
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         Self::forward_nodes(

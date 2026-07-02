@@ -14,7 +14,7 @@ use super::rmsnorm::RMSNorm;
 use super::traits::Layer;
 use crate::optim::AdamW;
 
-use crate::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM};
+use crate::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
 
 const ADAM_BETA1: Real = 0.9;
 const ADAM_BETA2: Real = 0.95;
@@ -85,8 +85,7 @@ fn collect_trainable_params<B: Backend>(
 
 pub struct AkashaModel<B: Backend> {
     pub ctx: Arc<B>,
-    pub vocab_size: u32,
-    pub seq_len: u32,
+    pub cfg: ModelConfig,
     pub input_tokens: Arc<Tensor<B>>,
     pub embedding: Embedding<B>,
     pub layers: Vec<TransformerBlock<B>>,
@@ -193,16 +192,14 @@ impl<B: Backend> AkashaModel<B> {
         )
     }
 
-    pub fn new(
-        ctx: Arc<B>,
-        vocab_size: u32,
-        dim: u32,
-        seq_len: u32,
-        num_layers: usize,
-        num_heads: u32,
-        input_tokens: &Arc<Tensor<B>>,
-    ) -> Self {
-        assert!(num_layers >= 1, "At least one layer is required!");
+    pub fn new(ctx: Arc<B>, cfg: &ModelConfig, input_tokens: &Arc<Tensor<B>>) -> Self {
+        let ModelConfig {
+            vocab_size,
+            dim,
+            seq_len,
+            num_layers,
+            ..
+        } = *cfg;
 
         let dim_size = (seq_len * dim) as usize;
         let vocab_out_size = (seq_len * vocab_size) as usize;
@@ -235,9 +232,7 @@ impl<B: Backend> AkashaModel<B> {
         for i in 0..num_layers {
             let block = TransformerBlock::new(
                 ctx.clone(),
-                dim,
-                seq_len,
-                num_heads,
+                cfg,
                 &current_input,
                 &edges[i + 1],
                 &edges[i],
@@ -317,8 +312,7 @@ impl<B: Backend> AkashaModel<B> {
 
         Self {
             ctx,
-            vocab_size,
-            seq_len,
+            cfg: *cfg,
             input_tokens: input_tokens.clone(),
             embedding,
             layers,
@@ -381,8 +375,8 @@ impl<B: Backend> AkashaModel<B> {
         max_new_tokens: usize,
         temperature: f32,
     ) -> String {
-        let seq_len = self.seq_len as usize;
-        let vocab_size = self.vocab_size as usize;
+        let seq_len = self.cfg.seq_len as usize;
+        let vocab_size = self.cfg.vocab_size as usize;
         let mut tokens = prompt_tokens.to_vec();
         const EOS: u32 = 50256;
 

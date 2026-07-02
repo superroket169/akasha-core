@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use akasha_core::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM};
+use akasha_core::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
 use akasha_core::nn::akasha_model::AkashaModel;
 use akasha_core::nn::cross_entropy::CrossEntropy;
 use akasha_core::nn::rmsnorm::RMSNorm;
@@ -72,15 +72,8 @@ fn check2_grad_flow<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
         ctx.clone(),
         &rand_u32_vec(seq_len as usize, vocab_size),
     ));
-    let model = AkashaModel::new(
-        ctx.clone(),
-        vocab_size,
-        DIM,
-        seq_len,
-        NUM_LAYERS,
-        NUM_HEADS,
-        &input_tokens,
-    );
+    let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, seq_len);
+    let model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
 
     model.zero_grad();
     model.zero_transient_grads();
@@ -380,15 +373,8 @@ fn check5_accumulation<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
         ctx.clone(),
         &rand_u32_vec(seq_len as usize, vocab_size),
     ));
-    let model = AkashaModel::new(
-        ctx.clone(),
-        vocab_size,
-        DIM,
-        seq_len,
-        NUM_LAYERS,
-        NUM_HEADS,
-        &input_tokens,
-    );
+    let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, seq_len);
+    let model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
 
     let inputs = rand_u32_vec(seq_len as usize, vocab_size);
     let targets = rand_u32_vec(seq_len as usize, vocab_size);
@@ -504,15 +490,8 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
         ctx.clone(),
         &vec![0u32; seq_len as usize],
     ));
-    let model = AkashaModel::new(
-        ctx.clone(),
-        vocab_size,
-        dim,
-        seq_len,
-        num_layers,
-        num_heads,
-        &input_tokens,
-    );
+    let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
+    let model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
 
     let inputs = rand_u32_vec(batch_size * seq_len as usize, vocab_size);
     let targets = rand_u32_vec(batch_size * seq_len as usize, vocab_size);
@@ -669,15 +648,8 @@ fn check9_kv_cache_equivalence<B: Backend>(ctx: Arc<B>) -> bool {
         ctx.clone(),
         &vec![0u32; seq_len as usize],
     ));
-    let model = AkashaModel::new(
-        ctx.clone(),
-        vocab_size,
-        dim,
-        seq_len,
-        num_layers,
-        num_heads,
-        &input_tokens,
-    );
+    let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
+    let model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
 
     let mut logits_a: Vec<Vec<f32>> = Vec::new();
     let seq_len_us = seq_len as usize;
@@ -699,7 +671,7 @@ fn check9_kv_cache_equivalence<B: Backend>(ctx: Arc<B>) -> bool {
 
     // ---- KV-cache prefill + decode ----
     let model_arc = Arc::new(model);
-    let mut session = InferenceSession::new(ctx.clone(), model_arc, dim, num_heads, seq_len);
+    let mut session = InferenceSession::new(ctx.clone(), model_arc, seq_len);
     session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
 
     let mut logits_b: Vec<Vec<f32>> = vec![session.prefill(prompt)];
@@ -739,15 +711,8 @@ fn check10_kv_cache_speed<B: Backend>(ctx: Arc<B>) {
         ctx.clone(),
         &vec![0u32; seq_len as usize],
     ));
-    let model_a = AkashaModel::new(
-        ctx.clone(),
-        vocab_size,
-        dim,
-        seq_len,
-        num_layers,
-        num_heads,
-        &input_tokens_a,
-    );
+    let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
+    let model_a = AkashaModel::new(ctx.clone(), &cfg, &input_tokens_a);
     let mut tokens = prompt.clone();
     let seq_len_us = seq_len as usize;
     let vocab_us = vocab_size as usize;
@@ -775,16 +740,8 @@ fn check10_kv_cache_speed<B: Backend>(ctx: Arc<B>) {
         ctx.clone(),
         &vec![0u32; seq_len as usize],
     ));
-    let model_b = Arc::new(AkashaModel::new(
-        ctx.clone(),
-        vocab_size,
-        dim,
-        seq_len,
-        num_layers,
-        num_heads,
-        &input_tokens_b,
-    ));
-    let mut session = InferenceSession::new(ctx.clone(), model_b, dim, num_heads, seq_len);
+    let model_b = Arc::new(AkashaModel::new(ctx.clone(), &cfg, &input_tokens_b));
+    let mut session = InferenceSession::new(ctx.clone(), model_b, seq_len);
     session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
 
     let start = Instant::now();
@@ -850,15 +807,8 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
         ctx.clone(),
         &vec![0u32; SEQ_LEN as usize],
     ));
-    let full_model = AkashaModel::new(
-        ctx.clone(),
-        vocab_size,
-        DIM,
-        SEQ_LEN,
-        NUM_LAYERS,
-        NUM_HEADS,
-        &input_tokens,
-    );
+    let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, SEQ_LEN);
+    let full_model = AkashaModel::new(ctx.clone(), &cfg, &input_tokens);
 
     let (c1_pass, c1_count) = check1_param_count(&full_model);
     println!();

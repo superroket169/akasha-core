@@ -4,36 +4,16 @@ use super::cache::Cache;
 use super::embedding::Embedding;
 use super::linear::Linear;
 use super::pipeline::{TransformerBlock, add_qkv_slice_node, add_rope_node};
+use super::ops::meta::{
+    CacheWriteMeta, EmbeddingMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
+    RopeOffsetMeta, SoftmaxRectMeta,
+};
 use super::rmsnorm::RMSNorm;
 use crate::Real;
+use crate::config::ModelConfig;
 use crate::tokenizer::AkashaTokenizer;
 use std::sync::Arc;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct NormMeta {
-    seq_len: u32,
-    size: u32,
-    eps: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct HeadMoveMeta {
-    seq_len: u32,
-    full_dim: u32,
-    head_dim: u32,
-    head_offset: u32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct SoftmaxRectMeta {
-    num_rows: u32,
-    width: u32,
-    scale: f32,
-}
 
 struct DecodeScratch<B: Backend> {
     hidden: Arc<Tensor<B>>,
@@ -53,112 +33,143 @@ struct DecodeScratch<B: Backend> {
     logits: Arc<Tensor<B>>,
 
     // ---- constant Meta buffers: written once here, read forever after ----
-    norm_meta: Arc<Tensor<B>>, // {seq_len:1,size:dim,eps} -- norm_1, norm_2, final_norm
-    qkv_meta: Arc<Tensor<B>>,  // {1,dim,dim} -- out_proj
-    qkv_proj_meta: Arc<Tensor<B>>, // {1,dim,3*dim} -- fused qkv proj matmul
-    qkv_split_meta: Vec<Arc<Tensor<B>>>, // 3x: {seq_len:1,full_dim:3*dim,head_dim:dim,head_offset:0/dim/2*dim}
-    ffnup_meta: Arc<Tensor<B>>,          // {1,ffn_hidden_dim,dim}
-    ffndown_meta: Arc<Tensor<B>>,        // {1,dim,ffn_hidden_dim}
-    emb_meta: Arc<Tensor<B>>,            // {vocab_size,dim,1}
-    lm_meta: Arc<Tensor<B>>,             // {1,vocab_size,dim}
-    q_move_meta: Vec<Arc<Tensor<B>>>,    // per head: {seq_len:1,full_dim:dim,head_dim,head_offset}
+    norm_meta: Arc<Tensor<B>>,     // NormMeta -- norm_1, norm_2, final_norm
+    qkv_meta: Arc<Tensor<B>>,      // MatMulMeta{1,dim,dim} -- out_proj
+    qkv_proj_meta: Arc<Tensor<B>>, // MatMulMeta{1,3*dim,dim} -- fused qkv proj
+    qkv_split_meta: Vec<Arc<Tensor<B>>>, // 3x HeadMoveMeta (q/k/v slice of fused qkv)
+    ffnup_meta: Arc<Tensor<B>>,    // MatMulMeta{1,ffn_hidden,dim}
+    ffndown_meta: Arc<Tensor<B>>,  // MatMulMeta{1,dim,ffn_hidden}
+    emb_meta: Arc<Tensor<B>>,      // EmbeddingMeta (seq_len=1)
+    lm_meta: Arc<Tensor<B>>,       // MatMulMeta{1,vocab_size,dim}
+    q_move_meta: Vec<Arc<Tensor<B>>>, // per head: HeadMoveMeta (seq_len=1)
 
     // ---- dynamic Meta buffers: updated once per decode step ----
-    rope_meta: Arc<Tensor<B>>,            // {1,dim,head_dim,pos}
-    cache_write_meta: Arc<Tensor<B>>,     // {1,dim,pos}
-    qkt_meta: Arc<Tensor<B>>,             // {1,attn_len,head_dim}
-    softmax_meta: Arc<Tensor<B>>,         // {num_rows:1,width:attn_len,scale}
-    av_meta: Arc<Tensor<B>>,              // {1,head_dim,attn_len}
-    cache_move_meta: Vec<Arc<Tensor<B>>>, // per head: {seq_len:attn_len,full_dim:dim,head_dim,head_offset}
+    rope_meta: Arc<Tensor<B>>,        // RopeOffsetMeta (pos advances)
+    cache_write_meta: Arc<Tensor<B>>, // CacheWriteMeta (dst_row_offset advances)
+    qkt_meta: Arc<Tensor<B>>,         // MatMulMeta{1,attn_len,head_dim}
+    softmax_meta: Arc<Tensor<B>>,     // SoftmaxRectMeta (width=attn_len)
+    av_meta: Arc<Tensor<B>>,          // MatMulMeta{1,head_dim,attn_len}
+    cache_move_meta: Vec<Arc<Tensor<B>>>, // per head: HeadMoveMeta (seq_len=attn_len)
 }
 
 impl<B: Backend> DecodeScratch<B> {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        ctx: Arc<B>,
-        dim: u32,
-        num_heads: u32,
-        head_dim: u32,
-        max_context_len: u32,
-        ffn_hidden_dim: u32,
-        vocab_size: u32,
-    ) -> Self {
+    fn new(ctx: Arc<B>, cfg: &ModelConfig, max_context_len: u32) -> Self {
+        let ModelConfig {
+            dim,
+            num_heads,
+            ffn_hidden: ffn_hidden_dim,
+            vocab_size,
+            ..
+        } = *cfg;
+        let head_dim = cfg.head_dim();
         let zeros = |n: usize| vec![0.0 as Real; n];
         let dim1 = zeros(dim as usize);
 
-        let norm_meta = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &[NormMeta {
-                seq_len: 1,
-                size: dim,
-                eps: 1e-5,
-            }],
-        ));
-        let qkv_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[1u32, dim, dim]));
-        let qkv_proj_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[1u32, dim * 3, dim]));
+        let norm_meta = NormMeta {
+            seq_len: 1,
+            size: dim,
+            eps: cfg.norm_eps,
+        }
+        .upload(&ctx);
+        let qkv_meta = MatMulMeta {
+            m: 1,
+            n: dim,
+            k: dim,
+        }
+        .upload(&ctx);
+        let qkv_proj_meta = MatMulMeta {
+            m: 1,
+            n: dim * 3,
+            k: dim,
+        }
+        .upload(&ctx);
         let qkv_split_meta = (0..3u32)
             .map(|i| {
-                Arc::new(Tensor::init_from_cpu(
-                    ctx.clone(),
-                    &[HeadMoveMeta {
-                        seq_len: 1,
-                        full_dim: dim * 3,
-                        head_dim: dim,
-                        head_offset: i * dim,
-                    }],
-                ))
+                HeadMoveMeta {
+                    seq_len: 1,
+                    full_dim: dim * 3,
+                    head_dim: dim,
+                    head_offset: i * dim,
+                }
+                .upload(&ctx)
             })
             .collect();
-        let ffnup_meta = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &[1u32, ffn_hidden_dim, dim],
-        ));
-        let ffndown_meta = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &[1u32, dim, ffn_hidden_dim],
-        ));
-        let emb_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[vocab_size, dim, 1u32]));
-        let lm_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[1u32, vocab_size, dim]));
+        let ffnup_meta = MatMulMeta {
+            m: 1,
+            n: ffn_hidden_dim,
+            k: dim,
+        }
+        .upload(&ctx);
+        let ffndown_meta = MatMulMeta {
+            m: 1,
+            n: dim,
+            k: ffn_hidden_dim,
+        }
+        .upload(&ctx);
+        let emb_meta = EmbeddingMeta {
+            vocab_size,
+            dim,
+            seq_len: 1,
+        }
+        .upload(&ctx);
+        let lm_meta = MatMulMeta {
+            m: 1,
+            n: vocab_size,
+            k: dim,
+        }
+        .upload(&ctx);
         let q_move_meta = (0..num_heads)
             .map(|h| {
-                Arc::new(Tensor::init_from_cpu(
-                    ctx.clone(),
-                    &[HeadMoveMeta {
-                        seq_len: 1,
-                        full_dim: dim,
-                        head_dim,
-                        head_offset: h * head_dim,
-                    }],
-                ))
+                HeadMoveMeta {
+                    seq_len: 1,
+                    full_dim: dim,
+                    head_dim,
+                    head_offset: h * head_dim,
+                }
+                .upload(&ctx)
             })
             .collect();
 
-        let rope_meta = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &[1u32, dim, head_dim, 0],
-        ));
-        let cache_write_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[1u32, dim, 0]));
-        let qkt_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[1u32, 1u32, head_dim]));
-        let softmax_meta = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &[SoftmaxRectMeta {
-                num_rows: 1,
-                width: 1,
-                scale: 1.0,
-            }],
-        ));
-        let av_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[1u32, head_dim, 1u32]));
+        let rope_meta = RopeOffsetMeta {
+            seq_len: 1,
+            dim,
+            head_dim,
+            pos: 0,
+        }
+        .upload(&ctx);
+        let cache_write_meta = CacheWriteMeta {
+            row_count: 1,
+            width: dim,
+            dst_row_offset: 0,
+        }
+        .upload(&ctx);
+        let qkt_meta = MatMulMeta {
+            m: 1,
+            n: 1,
+            k: head_dim,
+        }
+        .upload(&ctx);
+        let softmax_meta = SoftmaxRectMeta {
+            num_rows: 1,
+            width: 1,
+            scale: 1.0,
+        }
+        .upload(&ctx);
+        let av_meta = MatMulMeta {
+            m: 1,
+            n: head_dim,
+            k: 1,
+        }
+        .upload(&ctx);
         let cache_move_meta = (0..num_heads)
             .map(|h| {
-                Arc::new(Tensor::init_from_cpu(
-                    ctx.clone(),
-                    &[HeadMoveMeta {
-                        seq_len: 1,
-                        full_dim: dim,
-                        head_dim,
-                        head_offset: h * head_dim,
-                    }],
-                ))
+                HeadMoveMeta {
+                    seq_len: 1,
+                    full_dim: dim,
+                    head_dim,
+                    head_offset: h * head_dim,
+                }
+                .upload(&ctx)
             })
             .collect();
 
@@ -217,24 +228,51 @@ impl<B: Backend> DecodeScratch<B> {
         }
     }
 
-    fn update_for_step(&self, pos: u32, dim: u32, head_dim: u32, num_heads: u32, scale: f32) {
+    fn update_for_step(&self, pos: u32, cfg: &ModelConfig) {
+        let ModelConfig { dim, num_heads, .. } = *cfg;
+        let head_dim = cfg.head_dim();
+        let scale = 1.0 / (head_dim as f32).sqrt();
         let attn_len = pos + 1;
-        self.rope_meta.copy_from_cpu(&[1u32, dim, head_dim, pos]);
-        self.cache_write_meta.copy_from_cpu(&[1u32, dim, pos]);
-        self.qkt_meta.copy_from_cpu(&[1u32, attn_len, head_dim]);
-        self.softmax_meta.copy_from_cpu(&[SoftmaxRectMeta {
+
+        RopeOffsetMeta {
+            seq_len: 1,
+            dim,
+            head_dim,
+            pos,
+        }
+        .write_to(&self.rope_meta);
+        CacheWriteMeta {
+            row_count: 1,
+            width: dim,
+            dst_row_offset: pos,
+        }
+        .write_to(&self.cache_write_meta);
+        MatMulMeta {
+            m: 1,
+            n: attn_len,
+            k: head_dim,
+        }
+        .write_to(&self.qkt_meta);
+        SoftmaxRectMeta {
             num_rows: 1,
             width: attn_len,
             scale,
-        }]);
-        self.av_meta.copy_from_cpu(&[1u32, head_dim, attn_len]);
+        }
+        .write_to(&self.softmax_meta);
+        MatMulMeta {
+            m: 1,
+            n: head_dim,
+            k: attn_len,
+        }
+        .write_to(&self.av_meta);
         for h in 0..num_heads as usize {
-            self.cache_move_meta[h].copy_from_cpu(&[HeadMoveMeta {
+            HeadMoveMeta {
                 seq_len: attn_len,
                 full_dim: dim,
                 head_dim,
                 head_offset: h as u32 * head_dim,
-            }]);
+            }
+            .write_to(&self.cache_move_meta[h]);
         }
     }
 }
@@ -247,12 +285,16 @@ fn build_prefill_layer<B: Backend>(
     cache_k: &Arc<Tensor<B>>,
     cache_v: &Arc<Tensor<B>>,
     prompt_len: u32,
-    dim: u32,
-    num_heads: u32,
-    head_dim: u32,
+    cfg: &ModelConfig,
 ) -> Arc<Tensor<B>> {
+    let ModelConfig {
+        dim,
+        num_heads,
+        ffn_hidden: ffn_hidden_dim,
+        ..
+    } = *cfg;
+    let head_dim = cfg.head_dim();
     let zeros_dim = vec![0.0 as Real; (prompt_len * dim) as usize];
-    let ffn_hidden_dim = dim * 4;
 
     let norm1_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     RMSNorm::forward_nodes(
@@ -262,7 +304,7 @@ fn build_prefill_layer<B: Backend>(
         &norm1_out,
         prompt_len,
         dim,
-        1e-5,
+        cfg.norm_eps,
     );
 
     let q_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
@@ -293,14 +335,21 @@ fn build_prefill_layer<B: Backend>(
         2 * dim,
     );
 
-    let rope_meta = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &[prompt_len, dim, head_dim],
-    ));
+    let rope_meta = RopeMeta {
+        seq_len: prompt_len,
+        dim,
+        head_dim,
+    }
+    .upload(ctx);
     add_rope_node(graph, "RoPE", &q_buf, &rope_meta, dim, prompt_len);
     add_rope_node(graph, "RoPE", &k_buf, &rope_meta, dim, prompt_len);
 
-    let cache_write_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[prompt_len, dim, 0]));
+    let cache_write_meta = CacheWriteMeta {
+        row_count: prompt_len,
+        width: dim,
+        dst_row_offset: 0,
+    }
+    .upload(ctx);
     graph.add_node(
         "CacheWrite",
         &[
@@ -340,7 +389,12 @@ fn build_prefill_layer<B: Backend>(
         &mut t_scores_heads,
     );
 
-    let outproj_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[prompt_len, dim, dim]));
+    let outproj_meta = MatMulMeta {
+        m: prompt_len,
+        n: dim,
+        k: dim,
+    }
+    .upload(ctx);
     graph.add_node(
         "MatMulAdd",
         &[
@@ -360,7 +414,7 @@ fn build_prefill_layer<B: Backend>(
         &norm2_out,
         prompt_len,
         dim,
-        1e-5,
+        cfg.norm_eps,
     );
 
     let ffn_up_out = Arc::new(Tensor::init_from_cpu(
@@ -384,10 +438,12 @@ fn build_prefill_layer<B: Backend>(
     );
 
     // Fused ffn_down-MatMul + residual-add, same reasoning as out_proj above.
-    let ffndown_meta = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &[prompt_len, dim, ffn_hidden_dim],
-    ));
+    let ffndown_meta = MatMulMeta {
+        m: prompt_len,
+        n: dim,
+        k: ffn_hidden_dim,
+    }
+    .upload(ctx);
     graph.add_node(
         "MatMulAdd",
         &[
@@ -402,7 +458,6 @@ fn build_prefill_layer<B: Backend>(
     hidden_in.clone()
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_decode_layer<B: Backend>(
     graph: &mut ComputeGraph<B>,
     layer: &TransformerBlock<B>,
@@ -410,11 +465,15 @@ fn build_decode_layer<B: Backend>(
     cache_k: &Arc<Tensor<B>>,
     cache_v: &Arc<Tensor<B>>,
     pos: u32,
-    dim: u32,
-    num_heads: u32,
-    head_dim: u32,
-    ffn_hidden_dim: u32,
+    cfg: &ModelConfig,
 ) {
+    let ModelConfig {
+        dim,
+        num_heads,
+        ffn_hidden: ffn_hidden_dim,
+        ..
+    } = *cfg;
+    let head_dim = cfg.head_dim();
     let attn_len = pos + 1;
 
     // ---- norm_1 ----
@@ -628,10 +687,7 @@ fn build_decode_layer<B: Backend>(
 pub struct InferenceSession<B: Backend> {
     ctx: Arc<B>,
     model: Arc<AkashaModel<B>>,
-    dim: u32,
-    num_heads: u32,
-    head_dim: u32,
-    ffn_hidden_dim: u32,
+    cfg: ModelConfig,
     max_context_len: u32,
     cache: Option<Cache<B>>,
     scratch: DecodeScratch<B>,
@@ -639,36 +695,15 @@ pub struct InferenceSession<B: Backend> {
 }
 
 impl<B: Backend> InferenceSession<B> {
-    pub fn new(
-        ctx: Arc<B>,
-        model: Arc<AkashaModel<B>>,
-        dim: u32,
-        num_heads: u32,
-        max_context_len: u32,
-    ) -> Self {
-        assert_eq!(dim % num_heads, 0, "dim must be divisible by num_heads");
-        let head_dim = dim / num_heads;
-        let ffn_hidden_dim = dim * 4;
-        let vocab_size = model.vocab_size;
-
-        let scratch = DecodeScratch::new(
-            ctx.clone(),
-            dim,
-            num_heads,
-            head_dim,
-            max_context_len,
-            ffn_hidden_dim,
-            vocab_size,
-        );
+    pub fn new(ctx: Arc<B>, model: Arc<AkashaModel<B>>, max_context_len: u32) -> Self {
+        let cfg = model.cfg;
+        let scratch = DecodeScratch::new(ctx.clone(), &cfg, max_context_len);
         let input_token_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[0u32]));
 
         Self {
             ctx,
             model,
-            dim,
-            num_heads,
-            head_dim,
-            ffn_hidden_dim,
+            cfg,
             max_context_len,
             cache: None,
             scratch,
@@ -682,7 +717,7 @@ impl<B: Backend> InferenceSession<B> {
             self.model.layers.len(),
             "Cache/model layer count mismatch"
         );
-        assert_eq!(new.dim, self.dim, "Cache/model dim mismatch");
+        assert_eq!(new.dim, self.cfg.dim, "Cache/model dim mismatch");
         assert_eq!(
             new.max_context_len, self.max_context_len,
             "Cache/session max_context_len mismatch"
@@ -712,10 +747,9 @@ impl<B: Backend> InferenceSession<B> {
 
         let ctx = self.ctx.clone();
         let model = self.model.clone();
-        let dim = self.dim;
-        let num_heads = self.num_heads;
-        let head_dim = self.head_dim;
-        let vocab_size = model.vocab_size;
+        let cfg = self.cfg;
+        let dim = cfg.dim;
+        let vocab_size = cfg.vocab_size;
 
         let tokens_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), prompt_tokens));
 
@@ -746,9 +780,7 @@ impl<B: Backend> InferenceSession<B> {
                     &cache.k[i],
                     &cache.v[i],
                     prompt_len,
-                    dim,
-                    num_heads,
-                    head_dim,
+                    &cfg,
                 );
             }
         }
@@ -764,7 +796,7 @@ impl<B: Backend> InferenceSession<B> {
             &final_out,
             prompt_len,
             dim,
-            1e-5,
+            cfg.norm_eps,
         );
 
         let logits = Arc::new(Tensor::init_from_cpu(
@@ -808,15 +840,11 @@ impl<B: Backend> InferenceSession<B> {
 
         let ctx = self.ctx.clone();
         let model = self.model.clone();
-        let dim = self.dim;
-        let num_heads = self.num_heads;
-        let head_dim = self.head_dim;
-        let ffn_hidden_dim = self.ffn_hidden_dim;
-        let vocab_size = model.vocab_size;
-        let scale = 1.0 / (head_dim as f32).sqrt();
+        let cfg = self.cfg;
+        let dim = cfg.dim;
+        let vocab_size = cfg.vocab_size;
 
-        self.scratch
-            .update_for_step(pos, dim, head_dim, num_heads, scale);
+        self.scratch.update_for_step(pos, &cfg);
 
         let mut graph = ComputeGraph::new(ctx.clone());
 
@@ -841,10 +869,7 @@ impl<B: Backend> InferenceSession<B> {
                     &cache.k[i],
                     &cache.v[i],
                     pos,
-                    dim,
-                    num_heads,
-                    head_dim,
-                    ffn_hidden_dim,
+                    &cfg,
                 );
             }
         }
@@ -889,7 +914,7 @@ impl<B: Backend> InferenceSession<B> {
             self.cache = Some(Cache::new(
                 self.ctx.clone(),
                 self.model.layers.len(),
-                self.dim,
+                self.cfg.dim,
                 self.max_context_len,
             ));
         }

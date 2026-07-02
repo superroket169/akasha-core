@@ -2,10 +2,12 @@ use super::add::Add;
 use super::attention::SelfAttention;
 use super::init::{random_normal_vec, xavier_std};
 use super::linear::Linear;
+use super::ops::meta::{HeadMoveMeta, KernelMeta, RopeMeta};
 use super::rmsnorm::RMSNorm;
 use super::silu::SiLU;
 use super::traits::Layer;
 use crate::Real;
+use crate::config::ModelConfig;
 use std::sync::Arc;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode, fuse_compute_graphs};
 
@@ -71,10 +73,13 @@ pub(crate) fn add_qkv_slice_node<B: Backend>(
     seq_len: u32,
     role_offset: u32,
 ) {
-    let meta = Arc::new(Tensor::init_from_cpu(
-        fused.ctx.clone(),
-        &[seq_len, 3 * dim, dim, role_offset],
-    ));
+    let meta = HeadMoveMeta {
+        seq_len,
+        full_dim: 3 * dim,
+        head_dim: dim,
+        head_offset: role_offset,
+    }
+    .upload(&fused.ctx);
     let (src, dst) = if kernel == "HeadGather" {
         (fused, slice)
     } else {
@@ -114,15 +119,19 @@ pub struct TransformerBlock<B: Backend> {
 impl<B: Backend> TransformerBlock<B> {
     pub fn new(
         ctx: Arc<B>,
-        dim: u32,
-        seq_len: u32,
-        num_heads: u32,
+        cfg: &ModelConfig,
         input_tensor: &Arc<Tensor<B>>,
         grad_output: &Arc<Tensor<B>>,
         grad_input: &Arc<Tensor<B>>,
     ) -> Self {
+        let ModelConfig {
+            dim,
+            seq_len,
+            num_heads,
+            ffn_hidden: hidden_dim,
+            ..
+        } = *cfg;
         let dim_size = (seq_len * dim) as usize;
-        let hidden_dim = dim * 4;
         let hidden_size = (seq_len * hidden_dim) as usize;
 
         let zeros_dim = vec![0.0 as Real; dim_size];
@@ -208,9 +217,12 @@ impl<B: Backend> TransformerBlock<B> {
             2 * dim,
         );
 
-        let head_dim = dim / num_heads;
-        let rope_meta_data = vec![seq_len, dim, head_dim];
-        let t_meta_rope = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rope_meta_data));
+        let t_meta_rope = RopeMeta {
+            seq_len,
+            dim,
+            head_dim: cfg.head_dim(),
+        }
+        .upload(&ctx);
 
         let mut rope_forward = ComputeGraph::new(ctx.clone());
         add_rope_node(

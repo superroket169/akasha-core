@@ -1,23 +1,8 @@
+use super::ops::meta::{AttnScaleMeta, HeadMoveMeta, KernelMeta, MatMulMeta, ZeroMeta};
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct AttnScaleMeta {
-    seq_len: u32,
-    scale: f32,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct HeadMoveMeta {
-    seq_len: u32,
-    full_dim: u32,
-    head_dim: u32,
-    head_offset: u32,
-}
 
 pub struct SelfAttention<B: Backend> {
     pub out_buffer: Arc<Tensor<B>>,
@@ -48,10 +33,7 @@ impl<B: Backend> SelfAttention<B> {
         let head_size = (seq_len * head_dim) as usize;
         let scores_size = (seq_len * seq_len) as usize;
 
-        let t_meta_seq = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &[AttnScaleMeta { seq_len, scale }],
-        ));
+        let t_meta_seq = AttnScaleMeta { seq_len, scale }.upload(&ctx);
 
         let grid_seq16 = (seq_len + 15) / 16;
         let grid_hd16 = (head_dim + 15) / 16;
@@ -64,16 +46,13 @@ impl<B: Backend> SelfAttention<B> {
         ));
 
         for h in 0..num_heads {
-            let head_offset = h * head_dim;
-            let t_meta_head = Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &[HeadMoveMeta {
-                    seq_len,
-                    full_dim: dim,
-                    head_dim,
-                    head_offset,
-                }],
-            ));
+            let t_meta_head = HeadMoveMeta {
+                seq_len,
+                full_dim: dim,
+                head_dim,
+                head_offset: h * head_dim,
+            }
+            .upload(&ctx);
 
             let q_head = Arc::new(Tensor::init_from_cpu(
                 ctx.clone(),
@@ -105,11 +84,13 @@ impl<B: Backend> SelfAttention<B> {
                 );
             }
 
-            // ---- scores = Q_h @ K_h^T, meta {M=seq,N=seq,K=head_dim} ----
-            let meta_qkt = Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &[seq_len, seq_len, head_dim],
-            ));
+            // ---- scores = Q_h @ K_h^T ----
+            let meta_qkt = MatMulMeta {
+                m: seq_len,
+                n: seq_len,
+                k: head_dim,
+            }
+            .upload(&ctx);
             graph.add_node(
                 "MatMulTrp",
                 &[
@@ -130,11 +111,13 @@ impl<B: Backend> SelfAttention<B> {
                 [grid_softmax, 1, 1],
             );
 
-            // ---- out_h = scores @ V_h, meta {M=seq,N=head_dim,K=seq} ----
-            let meta_out = Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &[seq_len, head_dim, seq_len],
-            ));
+            // ---- out_h = scores @ V_h ----
+            let meta_out = MatMulMeta {
+                m: seq_len,
+                n: head_dim,
+                k: seq_len,
+            }
+            .upload(&ctx);
             graph.add_node(
                 "MatMul",
                 &[
@@ -189,10 +172,7 @@ impl<B: Backend> SelfAttention<B> {
         let head_size = (seq_len * head_dim) as usize;
         let scores_size = (seq_len * seq_len) as usize;
 
-        let t_meta_seq = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &[AttnScaleMeta { seq_len, scale }],
-        ));
+        let t_meta_seq = AttnScaleMeta { seq_len, scale }.upload(&ctx);
 
         let grid_seq16 = (seq_len + 15) / 16;
         let grid_hd16 = (head_dim + 15) / 16;
@@ -246,19 +226,19 @@ impl<B: Backend> SelfAttention<B> {
             ctx.clone(),
             &vec![0.0 as Real; scores_size],
         ));
-        let zero_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[(seq_len * head_dim)]));
+        let zero_meta = ZeroMeta {
+            len: seq_len * head_dim,
+        }
+        .upload(&ctx);
 
         for h in 0..num_heads {
-            let head_offset = h * head_dim;
-            let t_meta_head = Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &[HeadMoveMeta {
-                    seq_len,
-                    full_dim: dim,
-                    head_dim,
-                    head_offset,
-                }],
-            ));
+            let t_meta_head = HeadMoveMeta {
+                seq_len,
+                full_dim: dim,
+                head_dim,
+                head_offset: h * head_dim,
+            }
+            .upload(&ctx);
 
             backward_graph.add_node(
                 "HeadGather",
@@ -279,10 +259,12 @@ impl<B: Backend> SelfAttention<B> {
                 ],
                 [grid_zero_head, 1, 1],
             );
-            let meta_dv = Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &[seq_len, head_dim, seq_len],
-            ));
+            let meta_dv = MatMulMeta {
+                m: seq_len,
+                n: head_dim,
+                k: seq_len,
+            }
+            .upload(&ctx);
             backward_graph.add_node(
                 "MatMulWeightBwd",
                 &[
@@ -294,11 +276,13 @@ impl<B: Backend> SelfAttention<B> {
                 [(head_dim + 15) / 16, grid_seq16, 1],
             );
 
-            // dY_h = dOut_h @ V_h^T, meta {M=seq,N=seq,K=head_dim}
-            let meta_dy = Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &[seq_len, seq_len, head_dim],
-            ));
+            // dY_h = dOut_h @ V_h^T
+            let meta_dy = MatMulMeta {
+                m: seq_len,
+                n: seq_len,
+                k: head_dim,
+            }
+            .upload(&ctx);
             backward_graph.add_node(
                 "MatMulTrp",
                 &[
@@ -321,10 +305,12 @@ impl<B: Backend> SelfAttention<B> {
                 [grid_softmax, 1, 1],
             );
 
-            let meta_dq = Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &[seq_len, head_dim, seq_len],
-            ));
+            let meta_dq = MatMulMeta {
+                m: seq_len,
+                n: head_dim,
+                k: seq_len,
+            }
+            .upload(&ctx);
             backward_graph.add_node(
                 "MatMul",
                 &[
@@ -344,10 +330,12 @@ impl<B: Backend> SelfAttention<B> {
                 ],
                 [grid_zero_head, 1, 1],
             );
-            let meta_dk = Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &[seq_len, head_dim, seq_len],
-            ));
+            let meta_dk = MatMulMeta {
+                m: seq_len,
+                n: head_dim,
+                k: seq_len,
+            }
+            .upload(&ctx);
             backward_graph.add_node(
                 "MatMulWeightBwd",
                 &[

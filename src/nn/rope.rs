@@ -1,3 +1,4 @@
+use super::ops::meta::{KernelMeta, RopeMeta};
 use super::traits::Layer;
 use crate::Real;
 use std::sync::Arc;
@@ -18,9 +19,15 @@ impl<B: Backend> RoPE<B> {
         input_buffer: &Arc<Tensor<B>>,
         grad_output: &Arc<Tensor<B>>,
     ) -> Self {
+        // FIXME: (stage 5): hardcoded head_dim -- this legacy struct is unused by
+        // the model (pipeline.rs emits RoPE nodes directly); will be removed
         let head_dim = 64u32;
-        let meta_data = vec![seq_len, dim, head_dim];
-        let t_meta = Arc::new(Tensor::init_from_cpu(ctx.clone(), &meta_data));
+        let t_meta = RopeMeta {
+            seq_len,
+            dim,
+            head_dim,
+        }
+        .upload(&ctx);
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
 

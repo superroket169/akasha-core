@@ -7,6 +7,7 @@ pub mod embedding;
 pub mod inference;
 pub mod init;
 pub mod linear;
+pub mod ops;
 pub mod pipeline;
 pub mod rmsnorm;
 pub mod rope;
