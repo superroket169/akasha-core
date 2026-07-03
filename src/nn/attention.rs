@@ -42,7 +42,7 @@ impl<B: Backend> SelfAttention<B> {
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut backward_graph = ComputeGraph::new(ctx.clone());
 
-        let saved = ops::attention::causal_attention(
+        let saved = ops::causal_attention(
             &mut forward_graph,
             q_buf,
             k_buf,
@@ -89,16 +89,11 @@ impl<B: Backend> SelfAttention<B> {
             };
             let scores_h = &saved.scores_heads[h as usize];
 
-            ops::head_move::head_gather(
-                &mut backward_graph,
-                grad_output,
-                &grad_out_head,
-                head_move,
-            );
+            ops::head_gather(&mut backward_graph, grad_output, &grad_out_head, head_move);
 
             // dV_h = Y^T @ dOut_h  (accumulating MatMulWeightBwd -- zero first)
-            ops::elementwise::zero(&mut backward_graph, &grad_v_head, seq_len * head_dim);
-            ops::matmul::matmul_weight_bwd(
+            ops::zero(&mut backward_graph, &grad_v_head, seq_len * head_dim);
+            ops::matmul_weight_bwd(
                 &mut backward_graph,
                 scores_h,
                 &grad_out_head,
@@ -111,7 +106,7 @@ impl<B: Backend> SelfAttention<B> {
             );
 
             // dY_h = dOut_h @ V_h^T
-            ops::matmul::matmul_trp(
+            ops::matmul_trp(
                 &mut backward_graph,
                 &grad_out_head,
                 &saved.v_heads[h as usize],
@@ -123,7 +118,7 @@ impl<B: Backend> SelfAttention<B> {
                 },
             );
 
-            ops::attention::softmax_bwd(
+            ops::softmax_bwd(
                 &mut backward_graph,
                 scores_h,
                 &grad_y,
@@ -132,7 +127,7 @@ impl<B: Backend> SelfAttention<B> {
             );
 
             // dQ_h = dRaw @ K_h
-            ops::matmul::matmul(
+            ops::matmul(
                 &mut backward_graph,
                 &grad_raw,
                 &saved.k_heads[h as usize],
@@ -145,8 +140,8 @@ impl<B: Backend> SelfAttention<B> {
             );
 
             // dK_h = dRaw^T @ Q_h  (accumulating -- zero first)
-            ops::elementwise::zero(&mut backward_graph, &grad_k_head, seq_len * head_dim);
-            ops::matmul::matmul_weight_bwd(
+            ops::zero(&mut backward_graph, &grad_k_head, seq_len * head_dim);
+            ops::matmul_weight_bwd(
                 &mut backward_graph,
                 &grad_raw,
                 &saved.q_heads[h as usize],
@@ -163,7 +158,7 @@ impl<B: Backend> SelfAttention<B> {
                 (&grad_k_head, grad_k),
                 (&grad_v_head, grad_v),
             ] {
-                ops::head_move::head_scatter(&mut backward_graph, src, dst, head_move);
+                ops::head_scatter(&mut backward_graph, src, dst, head_move);
             }
         }
 

@@ -52,7 +52,7 @@ impl<B: Backend> RMSNorm<B> {
         ));
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::norm::rmsnorm(
+        ops::rmsnorm(
             &mut forward_graph,
             input_buffer,
             &weight,
@@ -61,7 +61,7 @@ impl<B: Backend> RMSNorm<B> {
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        ops::norm::rmsnorm_bwd(
+        ops::rmsnorm_bwd(
             &mut backward_graph,
             grad_output,
             input_buffer,

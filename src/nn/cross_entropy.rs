@@ -48,7 +48,7 @@ impl<B: Backend> CrossEntropy<B> {
         };
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::loss::cross_entropy(
+        ops::cross_entropy(
             &mut forward_graph,
             logits,
             &target_tokens,
@@ -58,7 +58,7 @@ impl<B: Backend> CrossEntropy<B> {
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        ops::loss::cross_entropy_bwd(
+        ops::cross_entropy_bwd(
             &mut backward_graph,
             &probs,
             &target_tokens,

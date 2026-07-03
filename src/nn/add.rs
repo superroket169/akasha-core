@@ -25,11 +25,11 @@ impl<B: Backend> Add<B> {
         let grad_b = grad_b.clone();
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::elementwise::residual_add(&mut forward_graph, buf_a, buf_b, length);
+        ops::residual_add(&mut forward_graph, buf_a, buf_b, length);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        ops::elementwise::residual_add(&mut backward_graph, &grad_a, grad_output, length);
-        ops::elementwise::residual_add(&mut backward_graph, &grad_b, grad_output, length);
+        ops::residual_add(&mut backward_graph, &grad_a, grad_output, length);
+        ops::residual_add(&mut backward_graph, &grad_b, grad_output, length);
 
         Self {
             in_out_buffer: buf_a.clone(),

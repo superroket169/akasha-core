@@ -109,7 +109,7 @@ impl<B: Backend> TransformerBlock<B> {
         let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let mut qkv_split_forward = ComputeGraph::new(ctx.clone());
         for (buf, off) in [(&q_buf, 0), (&k_buf, dim), (&v_buf, 2 * dim)] {
-            ops::head_move::head_gather(
+            ops::head_gather(
                 &mut qkv_split_forward,
                 &qkv_proj.out_buffer,
                 buf,
@@ -124,8 +124,8 @@ impl<B: Backend> TransformerBlock<B> {
         };
 
         let mut rope_forward = ComputeGraph::new(ctx.clone());
-        ops::rope::rope(&mut rope_forward, &q_buf, rope_shape);
-        ops::rope::rope(&mut rope_forward, &k_buf, rope_shape);
+        ops::rope(&mut rope_forward, &q_buf, rope_shape);
+        ops::rope(&mut rope_forward, &k_buf, rope_shape);
 
         let attention = SelfAttention::new(
             ctx.clone(),
@@ -213,19 +213,19 @@ impl<B: Backend> TransformerBlock<B> {
         );
 
         let mut barrier_1 = ComputeGraph::new(ctx.clone());
-        ops::elementwise::add_inplace_bwd(&mut barrier_1, &add_2.grad_a, &norm_2.grad_input, elems);
+        ops::add_inplace_bwd(&mut barrier_1, &add_2.grad_a, &norm_2.grad_input, elems);
 
         let mut barrier_3 = ComputeGraph::new(ctx.clone());
-        ops::elementwise::add_inplace_bwd(&mut barrier_3, &grad_input, &norm_1.grad_input, elems);
+        ops::add_inplace_bwd(&mut barrier_3, &grad_input, &norm_1.grad_input, elems);
 
         let mut rope_backward = ComputeGraph::new(ctx.clone());
-        ops::rope::rope_bwd(&mut rope_backward, &g_attn_q, rope_shape);
-        ops::rope::rope_bwd(&mut rope_backward, &g_attn_k, rope_shape);
+        ops::rope_bwd(&mut rope_backward, &g_attn_q, rope_shape);
+        ops::rope_bwd(&mut rope_backward, &g_attn_k, rope_shape);
 
         // dL/dQ + dL/dK + dL/dV -> one fused grad_output for qkv_proj's backward
         let mut qkv_gather_backward = ComputeGraph::new(ctx.clone());
         for (buf, off) in [(&g_attn_q, 0), (&g_attn_k, dim), (&g_attn_v, 2 * dim)] {
-            ops::head_move::head_scatter(
+            ops::head_scatter(
                 &mut qkv_gather_backward,
                 buf,
                 &g_attn_qkv,

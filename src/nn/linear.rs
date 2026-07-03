@@ -38,7 +38,7 @@ impl<B: Backend> Linear<B> {
         let grad_input = grad_input.clone();
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::matmul::matmul(
+        ops::matmul(
             &mut forward_graph,
             input_buffer,
             &weight,
@@ -51,7 +51,7 @@ impl<B: Backend> Linear<B> {
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        ops::matmul::matmul_weight_bwd(
+        ops::matmul_weight_bwd(
             &mut backward_graph,
             input_buffer,
             grad_output,
@@ -62,7 +62,7 @@ impl<B: Backend> Linear<B> {
                 k: in_features,
             },
         );
-        ops::matmul::matmul_trp(
+        ops::matmul_trp(
             &mut backward_graph,
             grad_output,
             &weight,

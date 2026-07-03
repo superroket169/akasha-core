@@ -1,6 +1,3 @@
-//! Typed meta layouts, one per kernel family. Field order mirrors what the
-//! kernel reads; bare positional `&[u32]` metas are banned (N/K-swap bug).
-
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 

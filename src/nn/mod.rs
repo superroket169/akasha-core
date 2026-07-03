@@ -5,6 +5,7 @@ pub mod checkpoint;
 pub mod cross_entropy;
 pub mod embedding;
 pub mod inference;
+pub mod inference_graphs;
 pub mod init;
 pub mod linear;
 pub mod ops;

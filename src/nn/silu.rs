@@ -21,10 +21,10 @@ impl<B: Backend> SiLU<B> {
         let grad_input = grad_input.clone();
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::elementwise::silu(&mut forward_graph, input_buffer, total_elements);
+        ops::silu(&mut forward_graph, input_buffer, total_elements);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        ops::elementwise::silu_bwd(
+        ops::silu_bwd(
             &mut backward_graph,
             input_buffer,
             grad_output,

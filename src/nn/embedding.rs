@@ -44,7 +44,7 @@ impl<B: Backend> Embedding<B> {
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::embedding::embedding(
+        ops::embedding(
             &mut forward_graph,
             tokens_buffer,
             &table,
@@ -53,7 +53,7 @@ impl<B: Backend> Embedding<B> {
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        ops::embedding::embedding_bwd(
+        ops::embedding_bwd(
             &mut backward_graph,
             tokens_buffer,
             grad_output,
