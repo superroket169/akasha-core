@@ -1,7 +1,9 @@
 # REFACTOR — the great untangling
 
-Status: **Stages 1–3 complete and validated; Stage 4 code-complete**
-(2026-07-03). Stage 3 validation: diagnose 10/10 PASS (iGPU,
+Status: **All five stages code-complete** (2026-07-03); Stages 1-3
+validated, Stages 4-5 verified by a full diagnose run on the iGPU (10/10
+PASS incl. CHECK 9 logit equivalence at max diff 0.000000) -- awaiting one
+final user chat run to close out. Stage 3 validation: diagnose 10/10 PASS (iGPU,
 `DIAGNOSE_VOCAB_SIZE=4096`), coherent chat on both the v1 file and the
 migrated v2 file. Checkpoint migration ran against the real akasha-hall 1.0
 file (75/75 tensors bitwise-identical, original untouched,
@@ -231,7 +233,7 @@ same output as before the stage), and `diagnose.rs`.
   75/75 tensors bitwise-identical, 1297 MB -> 649 MB, v1 kept). Chat mode
   now builds zero training state.
 
-- [ ] **Stage 4 — phase typing** *(code complete, needs validation run)*
+- [x] **Stage 4 — phase typing**
   `GraphBuilder<B, P>` + `FwdPhase`/`CachedPhase` bounds on the emitters
   (small diff — Stage 2 already shaped the signatures).
   Landed as: `Train`/`Prefill`/`Decode` markers with trait hierarchy
@@ -241,11 +243,32 @@ same output as before the stage), and `diagnose.rs`.
   Negative-tested: `cache_write` into a Train graph fails to compile with
   `Train: CachedPhase is not satisfied`. Zero runtime cost (PhantomData).
 
-- [ ] **Stage 5 — API polish**
-  Typestate builders for the two entry points, `AkashaError`, decode-graph-
-  built-once optimization, delete legacy dead code (`rope.rs`'s unused
-  `RoPE` struct with its hardcoded `head_dim=64`, old `weights.rs` format
-  structs, deprecated `AkashaModel::generate`).
+- [x] **Stage 5 — API polish**
+  Landed as:
+  - `AkashaError` (crate root): `prefill`/`decode_step`/`generate` return
+    `Result`; context-full mid-generation ends the reply gracefully instead
+    of panicking. Flow invariants (no cache attached etc.) stay asserts.
+  - **Decode graph built once per attached cache** instead of per token:
+    only two decode kernels have attn_len-dependent grids (cached
+    `HeadGather`, `MatMulTrp`); both WGSL sources verified to bounds-check
+    against the per-step metas, so grids are sized at `max_context_len` and
+    the graph is reused (invalidated on `take_cache`/`replace_cache`).
+    Verified: diagnose CHECK 9 logit equivalence, max diff 0.000000.
+    CPU backend ignores grids (meta-driven loops) -- safe by construction.
+    CUDA kernels not compile-checked on this machine (no toolkit); review
+    their guards before relying on decode there.
+  - File consolidation: the 8 Trainer-only wrapper files folded into
+    `layers.rs`; `init.rs` -> `weights.rs`; `Cache` -> `inference_graphs.rs`;
+    `qkv_slice` -> `HeadMoveMeta::qkv_slice`. src/ is now 20 files.
+  - Dead code deleted earlier in the stage: legacy `RoPE` struct,
+    `shader_paths.rs`, `Serializable`, `migrate_qkv_checkpoint`,
+    deprecated `AkashaModel::generate` (went with Stage 3).
+  - **Deviation -- typestate builders skipped on purpose:** after Stage 3
+    both entry points take three distinctly-typed args
+    (`Trainer::new(ctx, weights, input_tokens)`,
+    `InferenceSession::new(ctx, weights, max_context_len)`); there is no
+    missing-field or argument-order bug left for a typestate to prevent,
+    so a builder would be pure ceremony.
 
 Known debt to carry over (not blocking, tracked in TODO.md): `Layer` trait
 in `traits.rs` is nearly vestigial — decide in Stage 3 whether the unfused

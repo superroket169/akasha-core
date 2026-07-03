@@ -47,9 +47,21 @@ a data problem (too little, too repetitive), not an architecture problem.
 
 ## Short-term
 
-- [ ] Push `wilupgu` (already committed) and commit/push `akasha-core`'s
-  KV-cache branch (`inference.rs`, `cache.rs`, fused-QKV checkpoint migration,
-  all the fixes above).
+- [x] Push `wilupgu` (already committed) and commit/push `akasha-core`'s
+  KV-cache branch — done, including the full 5-stage refactor (see
+  REFACTOR.md).
+- [ ] Proper documentation pass over the refactored codebase: module-level
+  docs, the weights/train/inference mental map, how to add a new kernel
+  (meta struct + emitter + phase bound), checkpoint format spec (v1/v2),
+  and a rewritten readme.
+- [ ] Streaming dataset module — the enabler for continued pretraining
+  (which comes *before* chat fine-tuning: the current run saw only a
+  ~15M-token slice, so the model is heavily undertrained; more/better data
+  is the highest-leverage next step). The module should: split a large raw
+  corpus into chunks, tokenize chunk-by-chunk with a bounded working set
+  (no more 50M-char truncation, no RAM blowups), persist tokenized shards
+  to disk, and serve `random_batch` across shards during training without
+  ever holding the whole corpus in memory.
 - [ ] Update `readme.MD` — still says "Training in progress ... ~3 days ...
   loss 3.86", needs the actual final numbers (440k steps, loss 3.6) and a
   mention of the two working chat backends.
@@ -57,7 +69,8 @@ a data problem (too little, too repetitive), not an architecture problem.
   automated way to score coherence/tone-following beyond manual read-through.
   Even a handful of held-out prompts checked by eye each run would beat
   nothing.
-- [ ] Full fine-tuning for chat/instruction-following (decided over LoRA: model
+- [ ] Full fine-tuning for chat/instruction-following — after the continued
+  pretraining above (decided over LoRA: model
   is small enough that the RTX 4050 already proved it can full-train it, and a
   chat dataset will be much smaller than pretraining data anyway — LoRA's
   efficiency win doesn't matter here, and full-FT reuses the existing
@@ -77,10 +90,6 @@ a data problem (too little, too repetitive), not an architecture problem.
   changes (currently hardcoded at 50257 in a few places) — if it does, this
   is effectively a fresh pretraining run, not something you can hot-swap into
   the current checkpoint.
-- [ ] Chunked/streaming tokenization — `data.rs` currently truncates raw text
-  to 50M characters before tokenizing because `tokenizers`' working-set blew
-  RAM on the full corpus; a real streaming path removes that ceiling and is a
-  prerequisite for meaningfully more training data.
 - [ ] Re-run `diagnose.rs`'s parallel-test suite now that the buffer-pool bug
   is fixed — worth checking whether that's what caused the previously-noted
   intermittent SIGSEGVs in parallel tests, and whether the causal_mask

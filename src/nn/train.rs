@@ -5,13 +5,8 @@ use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor, fuse_compute_graphs};
 
 use super::checkpoint;
-use super::cross_entropy::CrossEntropy;
-use super::embedding::Embedding;
-use super::linear::Linear;
+use super::layers::{CrossEntropy, Embedding, Layer, Linear, RMSNorm, TransformerBlock};
 use super::ops::zero_tensor;
-use super::pipeline::TransformerBlock;
-use super::rmsnorm::RMSNorm;
-use super::traits::Layer;
 use super::weights::ModelWeights;
 use crate::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
 use crate::optim::AdamW;

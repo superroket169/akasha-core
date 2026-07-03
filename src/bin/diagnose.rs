@@ -2,12 +2,9 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use akasha_core::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
-use akasha_core::nn::cross_entropy::CrossEntropy;
-use akasha_core::nn::rmsnorm::RMSNorm;
-use akasha_core::nn::train::Trainer;
-use akasha_core::nn::traits::Layer;
-use akasha_core::nn::weights::ModelWeights;
-use akasha_core::nn::{Cache, InferenceSession};
+use akasha_core::nn::{
+    Cache, CrossEntropy, InferenceSession, Layer, ModelWeights, RMSNorm, Trainer,
+};
 use rand::Rng;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode, WgpuBackend};
 
@@ -679,9 +676,9 @@ fn check9_kv_cache_equivalence<B: Backend>(ctx: Arc<B>) -> bool {
     let mut session = InferenceSession::new(ctx.clone(), model.weights.clone(), seq_len);
     session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
 
-    let mut logits_b: Vec<Vec<f32>> = vec![session.prefill(prompt)];
+    let mut logits_b: Vec<Vec<f32>> = vec![session.prefill(prompt).expect("prefill failed")];
     for &t in &full_sequence[prompt_len..full_sequence.len() - 1] {
-        logits_b.push(session.decode_step(t));
+        logits_b.push(session.decode_step(t).expect("decode_step failed"));
     }
 
     assert_eq!(logits_a.len(), logits_b.len(), "step count mismatch");
@@ -747,9 +744,11 @@ fn check10_kv_cache_speed<B: Backend>(ctx: Arc<B>) {
     session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
 
     let start = Instant::now();
-    let mut logits = session.prefill(&prompt);
+    let mut logits = session.prefill(&prompt).expect("prefill failed");
     for _ in 0..n_new_tokens - 1 {
-        logits = session.decode_step(argmax(&logits));
+        logits = session
+            .decode_step(argmax(&logits))
+            .expect("decode_step failed");
     }
     let _ = logits;
     let cached_elapsed = start.elapsed();

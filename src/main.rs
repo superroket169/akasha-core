@@ -50,8 +50,10 @@ fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str) {
         let tokens = tokenizer.encode(input);
 
         session.take_cache();
-        let output = session.generate(&tokenizer, &tokens, 200, 0.8);
-        println!("{}\n", output);
+        match session.generate(&tokenizer, &tokens, 200, 0.8) {
+            Ok(output) => println!("{}\n", output),
+            Err(e) => eprintln!("generation failed: {e}\n"),
+        }
     }
 }
 

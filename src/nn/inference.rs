@@ -1,13 +1,12 @@
-use super::cache::Cache;
-use super::inference_graphs::{DecodeScratch, build_decode_layer, build_prefill_layer};
+use super::inference_graphs::{Cache, DecodeScratch, build_decode_layer, build_prefill_layer};
 use super::ops;
 use super::ops::GraphBuilder;
 use super::ops::meta::{EmbeddingMeta, MatMulMeta, NormMeta};
 use super::sampling::sample_token;
 use super::weights::ModelWeights;
-use crate::Real;
 use crate::config::ModelConfig;
 use crate::tokenizer::AkashaTokenizer;
+use crate::{AkashaError, Real};
 use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor};
 
@@ -19,6 +18,7 @@ pub struct InferenceSession<B: Backend> {
     cache: Option<Cache<B>>,
     scratch: DecodeScratch<B>,
     input_token_buf: Arc<Tensor<B>>,
+    decode_graph: Option<ComputeGraph<B>>,
 }
 
 impl<B: Backend> InferenceSession<B> {
@@ -35,6 +35,7 @@ impl<B: Backend> InferenceSession<B> {
             cache: None,
             scratch,
             input_token_buf,
+            decode_graph: None,
         }
     }
 
@@ -48,20 +49,26 @@ impl<B: Backend> InferenceSession<B> {
             new.max_context_len, self.max_context_len,
             "Cache/session max_context_len mismatch"
         );
+        self.decode_graph = None;
         std::mem::replace(&mut self.cache, Some(new))
     }
 
     pub fn take_cache(&mut self) -> Option<Cache<B>> {
+        self.decode_graph = None;
         self.cache.take()
     }
 
-    pub fn prefill(&mut self, prompt_tokens: &[u32]) -> Vec<Real> {
+    pub fn prefill(&mut self, prompt_tokens: &[u32]) -> Result<Vec<Real>, AkashaError> {
         let prompt_len = prompt_tokens.len() as u32;
-        assert!(prompt_len >= 1, "prefill: prompt must be non-empty");
-        assert!(
-            prompt_len <= self.max_context_len,
-            "prefill: prompt longer than max_context_len"
-        );
+        if prompt_len == 0 {
+            return Err(AkashaError::EmptyPrompt);
+        }
+        if prompt_len > self.max_context_len {
+            return Err(AkashaError::PromptTooLong {
+                len: prompt_len,
+                max: self.max_context_len,
+            });
+        }
         assert_eq!(
             self.cache
                 .as_ref()
@@ -153,94 +160,96 @@ impl<B: Backend> InferenceSession<B> {
         let result = all_logits[last_row..last_row + vocab_size as usize].to_vec();
 
         self.cache.as_mut().unwrap().cur_len = prompt_len;
-        result
+        Ok(result)
     }
 
-    pub fn decode_step(&mut self, token: u32) -> Vec<Real> {
+    pub fn decode_step(&mut self, token: u32) -> Result<Vec<Real>, AkashaError> {
         let pos = {
             let cache = self
                 .cache
                 .as_ref()
                 .expect("decode_step: no cache attached (call replace_cache first)");
-            assert!(
-                cache.cur_len < self.max_context_len,
-                "decode_step: context full"
-            );
+            if cache.cur_len >= self.max_context_len {
+                return Err(AkashaError::ContextFull {
+                    max: self.max_context_len,
+                });
+            }
             cache.cur_len
         };
 
         self.input_token_buf.copy_from_cpu(&[token]);
+        self.scratch.update_for_step(pos, &self.cfg);
 
-        let ctx = self.ctx.clone();
-        let weights = self.weights.clone();
-        let cfg = self.cfg;
-        let dim = cfg.dim;
-        let vocab_size = cfg.vocab_size;
+        if self.decode_graph.is_none() {
+            let ctx = self.ctx.clone();
+            let weights = self.weights.clone();
+            let cfg = self.cfg;
 
-        self.scratch.update_for_step(pos, &cfg);
+            let mut graph = ComputeGraph::new(ctx.clone());
+            let mut gb = GraphBuilder::decode(&mut graph);
 
-        let mut graph = ComputeGraph::new(ctx.clone());
-        let mut gb = GraphBuilder::decode(&mut graph);
+            ops::embedding_with(
+                &mut gb,
+                &self.input_token_buf,
+                &weights.embedding,
+                &self.scratch.hidden,
+                EmbeddingMeta {
+                    vocab_size: cfg.vocab_size,
+                    dim: cfg.dim,
+                    seq_len: 1,
+                },
+                &self.scratch.emb_meta,
+            );
 
-        ops::embedding_with(
-            &mut gb,
-            &self.input_token_buf,
-            &weights.embedding,
-            &self.scratch.hidden,
-            EmbeddingMeta {
-                vocab_size,
-                dim,
-                seq_len: 1,
-            },
-            &self.scratch.emb_meta,
-        );
-
-        {
-            let cache = self.cache.as_ref().unwrap();
-            for (i, bw) in weights.blocks.iter().enumerate() {
-                build_decode_layer(
-                    &mut gb,
-                    bw,
-                    &self.scratch,
-                    &cache.k[i],
-                    &cache.v[i],
-                    pos,
-                    &cfg,
-                );
+            {
+                let cache = self.cache.as_ref().unwrap();
+                for (i, bw) in weights.blocks.iter().enumerate() {
+                    build_decode_layer(
+                        &mut gb,
+                        bw,
+                        &self.scratch,
+                        &cache.k[i],
+                        &cache.v[i],
+                        self.max_context_len,
+                        &cfg,
+                    );
+                }
             }
+
+            ops::rmsnorm_with(
+                &mut gb,
+                &self.scratch.hidden,
+                &weights.final_norm,
+                &self.scratch.final_norm_out,
+                NormMeta {
+                    seq_len: 1,
+                    size: cfg.dim,
+                    eps: cfg.norm_eps,
+                },
+                &self.scratch.norm_meta,
+            );
+
+            ops::matmul_with(
+                &mut gb,
+                &self.scratch.final_norm_out,
+                &weights.lm_head,
+                &self.scratch.logits,
+                MatMulMeta {
+                    m: 1,
+                    n: cfg.vocab_size,
+                    k: cfg.dim,
+                },
+                &self.scratch.lm_meta,
+            );
+
+            self.decode_graph = Some(graph);
         }
 
-        ops::rmsnorm_with(
-            &mut gb,
-            &self.scratch.hidden,
-            &weights.final_norm,
-            &self.scratch.final_norm_out,
-            NormMeta {
-                seq_len: 1,
-                size: dim,
-                eps: cfg.norm_eps,
-            },
-            &self.scratch.norm_meta,
-        );
-
-        ops::matmul_with(
-            &mut gb,
-            &self.scratch.final_norm_out,
-            &weights.lm_head,
-            &self.scratch.logits,
-            MatMulMeta {
-                m: 1,
-                n: vocab_size,
-                k: dim,
-            },
-            &self.scratch.lm_meta,
-        );
-
-        graph.execute();
+        self.decode_graph.as_ref().unwrap().execute();
 
         self.cache.as_mut().unwrap().cur_len = pos + 1;
 
-        self.scratch.logits.to_cpu()
+        Ok(self.scratch.logits.to_cpu())
     }
 
     pub fn generate(
@@ -249,8 +258,9 @@ impl<B: Backend> InferenceSession<B> {
         prompt_tokens: &[u32],
         max_new_tokens: usize,
         temperature: f32,
-    ) -> String {
+    ) -> Result<String, AkashaError> {
         if self.cache.is_none() {
+            self.decode_graph = None;
             self.cache = Some(Cache::new(
                 self.ctx.clone(),
                 self.cfg.num_layers,
@@ -260,11 +270,11 @@ impl<B: Backend> InferenceSession<B> {
         }
 
         let mut logits = if self.cache.as_ref().unwrap().cur_len == 0 {
-            self.prefill(prompt_tokens)
+            self.prefill(prompt_tokens)?
         } else {
             let mut last = Vec::new();
             for &t in prompt_tokens {
-                last = self.decode_step(t);
+                last = self.decode_step(t)?;
             }
             last
         };
@@ -277,9 +287,14 @@ impl<B: Backend> InferenceSession<B> {
             if next == EOS {
                 break;
             }
-            logits = self.decode_step(next);
+            logits = match self.decode_step(next) {
+                Ok(l) => l,
+                // Out of context mid-generation: return what we have.
+                Err(AkashaError::ContextFull { .. }) => break,
+                Err(e) => return Err(e),
+            };
         }
 
-        tokenizer.decode(&generated)
+        Ok(tokenizer.decode(&generated))
     }
 }

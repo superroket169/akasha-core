@@ -4,7 +4,6 @@ use super::ops::meta::{
     CacheWriteMeta, EmbeddingMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
     RopeOffsetMeta, SoftmaxRectMeta,
 };
-use super::pipeline::qkv_slice;
 use super::weights::BlockWeights;
 use crate::Real;
 use crate::config::ModelConfig;
@@ -80,7 +79,7 @@ impl<B: Backend> DecodeScratch<B> {
         }
         .upload(&ctx);
         let qkv_split_meta = (0..3u32)
-            .map(|i| qkv_slice(1, dim, i * dim).upload(&ctx))
+            .map(|i| HeadMoveMeta::qkv_slice(1, dim, i * dim).upload(&ctx))
             .collect();
         let ffnup_meta = MatMulMeta {
             m: 1,
@@ -313,7 +312,12 @@ pub(crate) fn build_prefill_layer<B: Backend>(
     let k_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     for (buf, off) in [(&q_buf, 0), (&k_buf, dim), (&v_buf, 2 * dim)] {
-        ops::head_gather(gb, &qkv_out, buf, qkv_slice(prompt_len, dim, off));
+        ops::head_gather(
+            gb,
+            &qkv_out,
+            buf,
+            HeadMoveMeta::qkv_slice(prompt_len, dim, off),
+        );
     }
 
     // ---- RoPE + cache write ----
@@ -396,7 +400,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
     scratch: &DecodeScratch<B>,
     cache_k: &Arc<Tensor<B>>,
     cache_v: &Arc<Tensor<B>>,
-    pos: u32,
+    max_attn_len: u32,
     cfg: &ModelConfig,
 ) {
     let ModelConfig {
@@ -406,7 +410,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
         ..
     } = *cfg;
     let head_dim = cfg.head_dim();
-    let attn_len = pos + 1;
+    let attn_len = max_attn_len;
 
     let norm_shape = NormMeta {
         seq_len: 1,
@@ -444,7 +448,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
             gb,
             &scratch.qkv_out,
             dst,
-            qkv_slice(1, dim, i as u32 * dim),
+            HeadMoveMeta::qkv_slice(1, dim, i as u32 * dim),
             &scratch.qkv_split_meta[i],
         );
     }
@@ -454,7 +458,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
         seq_len: 1,
         dim,
         head_dim,
-        pos,
+        pos: 0,
     };
     ops::rope_offset_with(gb, &scratch.q_buf, rope_shape, &scratch.rope_meta);
     ops::rope_offset_with(gb, &scratch.k_buf, rope_shape, &scratch.rope_meta);
@@ -462,7 +466,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
     let cache_shape = CacheWriteMeta {
         row_count: 1,
         width: dim,
-        dst_row_offset: pos,
+        dst_row_offset: 0,
     };
     ops::cache_write_with(
         gb,
@@ -612,4 +616,38 @@ pub(crate) fn build_decode_layer<B: Backend>(
         },
         &scratch.ffndown_meta,
     );
+}
+
+pub struct Cache<B: Backend> {
+    pub num_layers: usize,
+    pub dim: u32,
+    pub max_context_len: u32,
+    pub cur_len: u32,
+    pub k: Vec<Arc<Tensor<B>>>,
+    pub v: Vec<Arc<Tensor<B>>>,
+}
+
+impl<B: Backend> Cache<B> {
+    pub fn new(ctx: Arc<B>, num_layers: usize, dim: u32, max_context_len: u32) -> Self {
+        let zeros = vec![0.0 as Real; (max_context_len * dim) as usize];
+        let k = (0..num_layers)
+            .map(|_| Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros)))
+            .collect();
+        let v = (0..num_layers)
+            .map(|_| Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros)))
+            .collect();
+
+        Self {
+            num_layers,
+            dim,
+            max_context_len,
+            cur_len: 0,
+            k,
+            v,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.cur_len = 0;
+    }
 }

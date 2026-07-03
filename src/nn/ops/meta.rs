@@ -47,6 +47,18 @@ pub struct HeadMoveMeta {
 }
 impl KernelMeta for HeadMoveMeta {}
 
+impl HeadMoveMeta {
+    /// One dim-wide Q/K/V role slice of a fused `[seq_len, 3*dim]` QKV buffer.
+    pub(crate) fn qkv_slice(seq_len: u32, dim: u32, role_offset: u32) -> Self {
+        Self {
+            seq_len,
+            full_dim: 3 * dim,
+            head_dim: dim,
+            head_offset: role_offset,
+        }
+    }
+}
+
 /// CausalSoftmax/SoftmaxBwd: square `[seq_len, seq_len]` scores.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
