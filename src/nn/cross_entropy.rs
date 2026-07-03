@@ -1,4 +1,5 @@
 use super::ops;
+use super::ops::GraphBuilder;
 use super::ops::meta::CrossEntropyMeta;
 use super::traits::Layer;
 use crate::Real;
@@ -48,18 +49,13 @@ impl<B: Backend> CrossEntropy<B> {
         };
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::cross_entropy(
-            &mut forward_graph,
-            logits,
-            &target_tokens,
-            &probs,
-            &losses,
-            shape,
-        );
+        let mut gb = GraphBuilder::train(&mut forward_graph);
+        ops::cross_entropy(&mut gb, logits, &target_tokens, &probs, &losses, shape);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut backward_graph);
         ops::cross_entropy_bwd(
-            &mut backward_graph,
+            &mut gb,
             &probs,
             &target_tokens,
             &d_losses,

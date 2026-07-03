@@ -1,4 +1,5 @@
 use super::ops;
+use super::ops::GraphBuilder;
 use super::ops::meta::NormMeta;
 use super::traits::Layer;
 use crate::Real;
@@ -52,17 +53,13 @@ impl<B: Backend> RMSNorm<B> {
         ));
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::rmsnorm(
-            &mut forward_graph,
-            input_buffer,
-            &weight,
-            &out_buffer,
-            shape,
-        );
+        let mut gb = GraphBuilder::train(&mut forward_graph);
+        ops::rmsnorm(&mut gb, input_buffer, &weight, &out_buffer, shape);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut backward_graph);
         ops::rmsnorm_bwd(
-            &mut backward_graph,
+            &mut gb,
             grad_output,
             input_buffer,
             &weight,

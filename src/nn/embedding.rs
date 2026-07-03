@@ -1,4 +1,5 @@
 use super::ops;
+use super::ops::GraphBuilder;
 use super::ops::meta::EmbeddingMeta;
 use super::traits::Layer;
 use crate::Real;
@@ -44,22 +45,12 @@ impl<B: Backend> Embedding<B> {
         let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::embedding(
-            &mut forward_graph,
-            tokens_buffer,
-            &table,
-            &out_buffer,
-            shape,
-        );
+        let mut gb = GraphBuilder::train(&mut forward_graph);
+        ops::embedding(&mut gb, tokens_buffer, &table, &out_buffer, shape);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        ops::embedding_bwd(
-            &mut backward_graph,
-            tokens_buffer,
-            grad_output,
-            &grad_table,
-            shape,
-        );
+        let mut gb = GraphBuilder::train(&mut backward_graph);
+        ops::embedding_bwd(&mut gb, tokens_buffer, grad_output, &grad_table, shape);
 
         Self {
             table,

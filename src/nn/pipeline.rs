@@ -2,6 +2,7 @@ use super::add::Add;
 use super::attention::SelfAttention;
 use super::linear::Linear;
 use super::ops;
+use super::ops::GraphBuilder;
 use super::ops::meta::{HeadMoveMeta, RopeMeta};
 use super::rmsnorm::RMSNorm;
 use super::silu::SiLU;
@@ -108,9 +109,10 @@ impl<B: Backend> TransformerBlock<B> {
         let k_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let mut qkv_split_forward = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut qkv_split_forward);
         for (buf, off) in [(&q_buf, 0), (&k_buf, dim), (&v_buf, 2 * dim)] {
             ops::head_gather(
-                &mut qkv_split_forward,
+                &mut gb,
                 &qkv_proj.out_buffer,
                 buf,
                 qkv_slice(seq_len, dim, off),
@@ -124,8 +126,9 @@ impl<B: Backend> TransformerBlock<B> {
         };
 
         let mut rope_forward = ComputeGraph::new(ctx.clone());
-        ops::rope(&mut rope_forward, &q_buf, rope_shape);
-        ops::rope(&mut rope_forward, &k_buf, rope_shape);
+        let mut gb = GraphBuilder::train(&mut rope_forward);
+        ops::rope(&mut gb, &q_buf, rope_shape);
+        ops::rope(&mut gb, &k_buf, rope_shape);
 
         let attention = SelfAttention::new(
             ctx.clone(),
@@ -213,24 +216,23 @@ impl<B: Backend> TransformerBlock<B> {
         );
 
         let mut barrier_1 = ComputeGraph::new(ctx.clone());
-        ops::add_inplace_bwd(&mut barrier_1, &add_2.grad_a, &norm_2.grad_input, elems);
+        let mut gb = GraphBuilder::train(&mut barrier_1);
+        ops::add_inplace_bwd(&mut gb, &add_2.grad_a, &norm_2.grad_input, elems);
 
         let mut barrier_3 = ComputeGraph::new(ctx.clone());
-        ops::add_inplace_bwd(&mut barrier_3, &grad_input, &norm_1.grad_input, elems);
+        let mut gb = GraphBuilder::train(&mut barrier_3);
+        ops::add_inplace_bwd(&mut gb, &grad_input, &norm_1.grad_input, elems);
 
         let mut rope_backward = ComputeGraph::new(ctx.clone());
-        ops::rope_bwd(&mut rope_backward, &g_attn_q, rope_shape);
-        ops::rope_bwd(&mut rope_backward, &g_attn_k, rope_shape);
+        let mut gb = GraphBuilder::train(&mut rope_backward);
+        ops::rope_bwd(&mut gb, &g_attn_q, rope_shape);
+        ops::rope_bwd(&mut gb, &g_attn_k, rope_shape);
 
         // dL/dQ + dL/dK + dL/dV -> one fused grad_output for qkv_proj's backward
         let mut qkv_gather_backward = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut qkv_gather_backward);
         for (buf, off) in [(&g_attn_q, 0), (&g_attn_k, dim), (&g_attn_v, 2 * dim)] {
-            ops::head_scatter(
-                &mut qkv_gather_backward,
-                buf,
-                &g_attn_qkv,
-                qkv_slice(seq_len, dim, off),
-            );
+            ops::head_scatter(&mut gb, buf, &g_attn_qkv, qkv_slice(seq_len, dim, off));
         }
 
         let backward_graph = fuse_compute_graphs(

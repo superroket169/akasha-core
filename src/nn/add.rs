@@ -1,4 +1,5 @@
 use super::ops;
+use super::ops::GraphBuilder;
 use super::traits::Layer;
 use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor};
@@ -25,11 +26,13 @@ impl<B: Backend> Add<B> {
         let grad_b = grad_b.clone();
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::residual_add(&mut forward_graph, buf_a, buf_b, length);
+        let mut gb = GraphBuilder::train(&mut forward_graph);
+        ops::residual_add(&mut gb, buf_a, buf_b, length);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
-        ops::residual_add(&mut backward_graph, &grad_a, grad_output, length);
-        ops::residual_add(&mut backward_graph, &grad_b, grad_output, length);
+        let mut gb = GraphBuilder::train(&mut backward_graph);
+        ops::residual_add(&mut gb, &grad_a, grad_output, length);
+        ops::residual_add(&mut gb, &grad_b, grad_output, length);
 
         Self {
             in_out_buffer: buf_a.clone(),

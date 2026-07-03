@@ -1,6 +1,7 @@
 use super::cache::Cache;
 use super::inference_graphs::{DecodeScratch, build_decode_layer, build_prefill_layer};
 use super::ops;
+use super::ops::GraphBuilder;
 use super::ops::meta::{EmbeddingMeta, MatMulMeta, NormMeta};
 use super::sampling::sample_token;
 use super::weights::ModelWeights;
@@ -79,13 +80,14 @@ impl<B: Backend> InferenceSession<B> {
         let tokens_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), prompt_tokens));
 
         let mut graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::prefill(&mut graph);
 
         let mut hidden = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
             &vec![0.0 as Real; (prompt_len * dim) as usize],
         ));
         ops::embedding(
-            &mut graph,
+            &mut gb,
             &tokens_buf,
             &weights.embedding,
             &hidden,
@@ -100,7 +102,7 @@ impl<B: Backend> InferenceSession<B> {
             let cache = self.cache.as_ref().unwrap();
             for (i, bw) in weights.blocks.iter().enumerate() {
                 hidden = build_prefill_layer(
-                    &mut graph,
+                    &mut gb,
                     &ctx,
                     bw,
                     &hidden,
@@ -117,7 +119,7 @@ impl<B: Backend> InferenceSession<B> {
             &vec![0.0 as Real; (prompt_len * dim) as usize],
         ));
         ops::rmsnorm(
-            &mut graph,
+            &mut gb,
             &hidden,
             &weights.final_norm,
             &final_out,
@@ -133,7 +135,7 @@ impl<B: Backend> InferenceSession<B> {
             &vec![0.0 as Real; (prompt_len * vocab_size) as usize],
         ));
         ops::matmul(
-            &mut graph,
+            &mut gb,
             &final_out,
             &weights.lm_head,
             &logits,
@@ -178,9 +180,10 @@ impl<B: Backend> InferenceSession<B> {
         self.scratch.update_for_step(pos, &cfg);
 
         let mut graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::decode(&mut graph);
 
         ops::embedding_with(
-            &mut graph,
+            &mut gb,
             &self.input_token_buf,
             &weights.embedding,
             &self.scratch.hidden,
@@ -196,7 +199,7 @@ impl<B: Backend> InferenceSession<B> {
             let cache = self.cache.as_ref().unwrap();
             for (i, bw) in weights.blocks.iter().enumerate() {
                 build_decode_layer(
-                    &mut graph,
+                    &mut gb,
                     bw,
                     &self.scratch,
                     &cache.k[i],
@@ -208,7 +211,7 @@ impl<B: Backend> InferenceSession<B> {
         }
 
         ops::rmsnorm_with(
-            &mut graph,
+            &mut gb,
             &self.scratch.hidden,
             &weights.final_norm,
             &self.scratch.final_norm_out,
@@ -221,7 +224,7 @@ impl<B: Backend> InferenceSession<B> {
         );
 
         ops::matmul_with(
-            &mut graph,
+            &mut gb,
             &self.scratch.final_norm_out,
             &weights.lm_head,
             &self.scratch.logits,

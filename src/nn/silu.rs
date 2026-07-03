@@ -1,4 +1,5 @@
 use super::ops;
+use super::ops::GraphBuilder;
 use super::traits::Layer;
 use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor};
@@ -21,11 +22,13 @@ impl<B: Backend> SiLU<B> {
         let grad_input = grad_input.clone();
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
-        ops::silu(&mut forward_graph, input_buffer, total_elements);
+        let mut gb = GraphBuilder::train(&mut forward_graph);
+        ops::silu(&mut gb, input_buffer, total_elements);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut backward_graph);
         ops::silu_bwd(
-            &mut backward_graph,
+            &mut gb,
             input_buffer,
             grad_output,
             &grad_input,

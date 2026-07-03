@@ -1,4 +1,5 @@
 use super::ops;
+use super::ops::GraphBuilder;
 use super::ops::meta::{
     CacheWriteMeta, EmbeddingMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
     RopeOffsetMeta, SoftmaxRectMeta,
@@ -8,7 +9,7 @@ use super::weights::BlockWeights;
 use crate::Real;
 use crate::config::ModelConfig;
 use std::sync::Arc;
-use wilupgu::{Backend, ComputeGraph, Tensor};
+use wilupgu::{Backend, Tensor};
 
 pub(crate) struct DecodeScratch<B: Backend> {
     pub(crate) hidden: Arc<Tensor<B>>,
@@ -265,7 +266,7 @@ impl<B: Backend> DecodeScratch<B> {
 }
 
 pub(crate) fn build_prefill_layer<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, ops::Prefill>,
     ctx: &Arc<B>,
     bw: &BlockWeights<B>,
     hidden_in: &Arc<Tensor<B>>,
@@ -290,14 +291,14 @@ pub(crate) fn build_prefill_layer<B: Backend>(
 
     // ---- norm_1 + fused q/k/v projection ----
     let norm1_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    ops::rmsnorm(graph, hidden_in, &bw.norm_1, &norm1_out, norm_shape);
+    ops::rmsnorm(gb, hidden_in, &bw.norm_1, &norm1_out, norm_shape);
 
     let qkv_out = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
         &vec![0.0 as Real; (prompt_len * dim * 3) as usize],
     ));
     ops::matmul(
-        graph,
+        gb,
         &norm1_out,
         &bw.qkv_proj,
         &qkv_out,
@@ -312,7 +313,7 @@ pub(crate) fn build_prefill_layer<B: Backend>(
     let k_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     for (buf, off) in [(&q_buf, 0), (&k_buf, dim), (&v_buf, 2 * dim)] {
-        ops::head_gather(graph, &qkv_out, buf, qkv_slice(prompt_len, dim, off));
+        ops::head_gather(gb, &qkv_out, buf, qkv_slice(prompt_len, dim, off));
     }
 
     // ---- RoPE + cache write ----
@@ -321,26 +322,26 @@ pub(crate) fn build_prefill_layer<B: Backend>(
         dim,
         head_dim,
     };
-    ops::rope(graph, &q_buf, rope_shape);
-    ops::rope(graph, &k_buf, rope_shape);
+    ops::rope(gb, &q_buf, rope_shape);
+    ops::rope(gb, &k_buf, rope_shape);
 
     let cache_shape = CacheWriteMeta {
         row_count: prompt_len,
         width: dim,
         dst_row_offset: 0,
     };
-    ops::cache_write(graph, &k_buf, cache_k, cache_shape);
-    ops::cache_write(graph, &v_buf, cache_v, cache_shape);
+    ops::cache_write(gb, &k_buf, cache_k, cache_shape);
+    ops::cache_write(gb, &v_buf, cache_v, cache_shape);
 
     // ---- attention ----
     let attn_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     let _saved = ops::causal_attention(
-        graph, &q_buf, &k_buf, &v_buf, &attn_out, prompt_len, dim, num_heads,
+        gb, &q_buf, &k_buf, &v_buf, &attn_out, prompt_len, dim, num_heads,
     );
 
     // out_proj fused with the residual add: writes into hidden_in
     ops::matmul_add(
-        graph,
+        gb,
         &attn_out,
         &bw.out_proj,
         hidden_in,
@@ -353,14 +354,14 @@ pub(crate) fn build_prefill_layer<B: Backend>(
 
     // ---- FFN + residual ----
     let norm2_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    ops::rmsnorm(graph, hidden_in, &bw.norm_2, &norm2_out, norm_shape);
+    ops::rmsnorm(gb, hidden_in, &bw.norm_2, &norm2_out, norm_shape);
 
     let ffn_up_out = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
         &vec![0.0 as Real; (prompt_len * ffn_hidden_dim) as usize],
     ));
     ops::matmul(
-        graph,
+        gb,
         &norm2_out,
         &bw.ffn_up,
         &ffn_up_out,
@@ -371,11 +372,11 @@ pub(crate) fn build_prefill_layer<B: Backend>(
         },
     );
 
-    ops::silu(graph, &ffn_up_out, prompt_len * ffn_hidden_dim);
+    ops::silu(gb, &ffn_up_out, prompt_len * ffn_hidden_dim);
 
     // ffn_down fused with the residual add
     ops::matmul_add(
-        graph,
+        gb,
         &ffn_up_out,
         &bw.ffn_down,
         hidden_in,
@@ -390,7 +391,7 @@ pub(crate) fn build_prefill_layer<B: Backend>(
 }
 
 pub(crate) fn build_decode_layer<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, ops::Decode>,
     bw: &BlockWeights<B>,
     scratch: &DecodeScratch<B>,
     cache_k: &Arc<Tensor<B>>,
@@ -415,7 +416,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
 
     // ---- norm_1 + fused q/k/v projection ----
     ops::rmsnorm_with(
-        graph,
+        gb,
         &scratch.hidden,
         &bw.norm_1,
         &scratch.norm_out,
@@ -424,7 +425,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
     );
 
     ops::matmul_with(
-        graph,
+        gb,
         &scratch.norm_out,
         &bw.qkv_proj,
         &scratch.qkv_out,
@@ -440,7 +441,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
         .enumerate()
     {
         ops::head_gather_with(
-            graph,
+            gb,
             &scratch.qkv_out,
             dst,
             qkv_slice(1, dim, i as u32 * dim),
@@ -455,8 +456,8 @@ pub(crate) fn build_decode_layer<B: Backend>(
         head_dim,
         pos,
     };
-    ops::rope_offset_with(graph, &scratch.q_buf, rope_shape, &scratch.rope_meta);
-    ops::rope_offset_with(graph, &scratch.k_buf, rope_shape, &scratch.rope_meta);
+    ops::rope_offset_with(gb, &scratch.q_buf, rope_shape, &scratch.rope_meta);
+    ops::rope_offset_with(gb, &scratch.k_buf, rope_shape, &scratch.rope_meta);
 
     let cache_shape = CacheWriteMeta {
         row_count: 1,
@@ -464,14 +465,14 @@ pub(crate) fn build_decode_layer<B: Backend>(
         dst_row_offset: pos,
     };
     ops::cache_write_with(
-        graph,
+        gb,
         &scratch.k_buf,
         cache_k,
         cache_shape,
         &scratch.cache_write_meta,
     );
     ops::cache_write_with(
-        graph,
+        gb,
         &scratch.v_buf,
         cache_v,
         cache_shape,
@@ -493,21 +494,21 @@ pub(crate) fn build_decode_layer<B: Backend>(
         };
 
         ops::head_gather_with(
-            graph,
+            gb,
             &scratch.q_buf,
             &scratch.q_head,
             q_move,
             &scratch.q_move_meta[h],
         );
         ops::head_gather_with(
-            graph,
+            gb,
             cache_k,
             &scratch.k_head,
             cache_move,
             &scratch.cache_move_meta[h],
         );
         ops::head_gather_with(
-            graph,
+            gb,
             cache_v,
             &scratch.v_head,
             cache_move,
@@ -515,7 +516,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
         );
 
         ops::matmul_trp_with(
-            graph,
+            gb,
             &scratch.q_head,
             &scratch.k_head,
             &scratch.scores,
@@ -528,7 +529,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
         );
 
         ops::softmax_rect_with(
-            graph,
+            gb,
             &scratch.scores,
             SoftmaxRectMeta {
                 num_rows: 1,
@@ -539,7 +540,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
         );
 
         ops::matmul_with(
-            graph,
+            gb,
             &scratch.scores,
             &scratch.v_head,
             &scratch.out_head,
@@ -552,7 +553,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
         );
 
         ops::head_scatter_with(
-            graph,
+            gb,
             &scratch.out_head,
             &scratch.attn_out,
             q_move,
@@ -562,7 +563,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
 
     // ---- out_proj + residual ----
     ops::matmul_add_with(
-        graph,
+        gb,
         &scratch.attn_out,
         &bw.out_proj,
         &scratch.hidden,
@@ -576,7 +577,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
 
     // ---- FFN + residual ----
     ops::rmsnorm_with(
-        graph,
+        gb,
         &scratch.hidden,
         &bw.norm_2,
         &scratch.norm_out,
@@ -585,7 +586,7 @@ pub(crate) fn build_decode_layer<B: Backend>(
     );
 
     ops::matmul_with(
-        graph,
+        gb,
         &scratch.norm_out,
         &bw.ffn_up,
         &scratch.ffn_up_out,
@@ -597,10 +598,10 @@ pub(crate) fn build_decode_layer<B: Backend>(
         &scratch.ffnup_meta,
     );
 
-    ops::silu(graph, &scratch.ffn_up_out, ffn_hidden_dim);
+    ops::silu(gb, &scratch.ffn_up_out, ffn_hidden_dim);
 
     ops::matmul_add_with(
-        graph,
+        gb,
         &scratch.ffn_up_out,
         &bw.ffn_down,
         &scratch.hidden,

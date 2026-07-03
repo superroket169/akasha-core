@@ -1,11 +1,14 @@
 # REFACTOR — the great untangling
 
-Status: **Stages 1–3 complete and validated** (2026-07-02). Stage 3
-validation: diagnose 10/10 PASS (iGPU, `DIAGNOSE_VOCAB_SIZE=4096`), coherent
-chat on both the v1 file and the migrated v2 file. Checkpoint migration ran
-against the real akasha-hall 1.0 file (75/75 tensors bitwise-identical,
-original untouched, `model_final.bin` md5 eb02fd2de56271a1d5181335a6e103f9).
-Next up: Stage 4 (not started).
+Status: **Stages 1–3 complete and validated; Stage 4 code-complete**
+(2026-07-03). Stage 3 validation: diagnose 10/10 PASS (iGPU,
+`DIAGNOSE_VOCAB_SIZE=4096`), coherent chat on both the v1 file and the
+migrated v2 file. Checkpoint migration ran against the real akasha-hall 1.0
+file (75/75 tensors bitwise-identical, original untouched,
+`model_final.bin` md5 eb02fd2de56271a1d5181335a6e103f9). File reorg done
+along the way: `ops/` = `meta.rs` + `emit.rs`; `inference_graphs.rs` split
+out; dead code (`rope.rs`, `shader_paths.rs`, `Serializable`,
+`migrate_qkv_checkpoint`) deleted; src/ 40 -> 30 files.
 
 The KV-cache work made inference fast but turned `inference.rs` /
 `akasha_model.rs` / `pipeline.rs` / `attention.rs` into spaghetti: the same
@@ -228,9 +231,15 @@ same output as before the stage), and `diagnose.rs`.
   75/75 tensors bitwise-identical, 1297 MB -> 649 MB, v1 kept). Chat mode
   now builds zero training state.
 
-- [ ] **Stage 4 — phase typing**
+- [ ] **Stage 4 — phase typing** *(code complete, needs validation run)*
   `GraphBuilder<B, P>` + `FwdPhase`/`CachedPhase` bounds on the emitters
   (small diff — Stage 2 already shaped the signatures).
+  Landed as: `Train`/`Prefill`/`Decode` markers with trait hierarchy
+  `Phase <- FwdPhase <- {FullSeqPhase, CachedPhase}` in `ops/mod.rs`;
+  every emitter is bound to its real phase set (train-only bwd emitters
+  take `GraphBuilder<_, Train>` concretely, decode-only take `Decode`).
+  Negative-tested: `cache_write` into a Train graph fails to compile with
+  `Train: CachedPhase is not satisfied`. Zero runtime cost (PhantomData).
 
 - [ ] **Stage 5 — API polish**
   Typestate builders for the two entry points, `AkashaError`, decode-graph-

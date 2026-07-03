@@ -1,4 +1,5 @@
 use super::ops;
+use super::ops::GraphBuilder;
 use super::ops::meta::MatMulMeta;
 use super::traits::Layer;
 use crate::Real;
@@ -38,8 +39,9 @@ impl<B: Backend> Linear<B> {
         let grad_input = grad_input.clone();
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut forward_graph);
         ops::matmul(
-            &mut forward_graph,
+            &mut gb,
             input_buffer,
             &weight,
             &out_buffer,
@@ -51,8 +53,9 @@ impl<B: Backend> Linear<B> {
         );
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut backward_graph);
         ops::matmul_weight_bwd(
-            &mut backward_graph,
+            &mut gb,
             input_buffer,
             grad_output,
             &grad_weight,
@@ -63,7 +66,7 @@ impl<B: Backend> Linear<B> {
             },
         );
         ops::matmul_trp(
-            &mut backward_graph,
+            &mut gb,
             grad_output,
             &weight,
             &grad_input,

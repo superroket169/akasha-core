@@ -2,9 +2,10 @@ use super::meta::{
     AttnScaleMeta, CacheWriteMeta, CrossEntropyMeta, EmbeddingMeta, HeadMoveMeta, KernelMeta,
     MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta, SoftmaxRectMeta, ZeroMeta,
 };
+use super::{CachedPhase, Decode, FullSeqPhase, FwdPhase, GraphBuilder, Phase, Train};
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
+use wilupgu::{Backend, Binding, Tensor, TensorMode};
 
 // ---- matmul ----
 
@@ -13,15 +14,15 @@ fn grid_nm(shape: MatMulMeta) -> [u32; 3] {
 }
 
 /// `C[m,n] = A[m,k] @ B[k,n]`
-pub(crate) fn matmul_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn matmul_with<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,
     b: &Arc<Tensor<B>>,
     c: &Arc<Tensor<B>>,
     shape: MatMulMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "MatMul",
         &[
             Binding::new(0, &a.buffer, TensorMode::Input),
@@ -33,27 +34,27 @@ pub(crate) fn matmul_with<B: Backend>(
     );
 }
 
-pub(crate) fn matmul<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn matmul<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,
     b: &Arc<Tensor<B>>,
     c: &Arc<Tensor<B>>,
     shape: MatMulMeta,
 ) {
     let meta = shape.upload(&a.ctx);
-    matmul_with(graph, a, b, c, shape, &meta);
+    matmul_with(gb, a, b, c, shape, &meta);
 }
 
 /// `C[m,n] = A[m,k] @ B[n,k]^T`
-pub(crate) fn matmul_trp_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn matmul_trp_with<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,
     b: &Arc<Tensor<B>>,
     c: &Arc<Tensor<B>>,
     shape: MatMulMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "MatMulTrp",
         &[
             Binding::new(0, &a.buffer, TensorMode::Input),
@@ -65,27 +66,27 @@ pub(crate) fn matmul_trp_with<B: Backend>(
     );
 }
 
-pub(crate) fn matmul_trp<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn matmul_trp<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,
     b: &Arc<Tensor<B>>,
     c: &Arc<Tensor<B>>,
     shape: MatMulMeta,
 ) {
     let meta = shape.upload(&a.ctx);
-    matmul_trp_with(graph, a, b, c, shape, &meta);
+    matmul_trp_with(gb, a, b, c, shape, &meta);
 }
 
 /// `C[m,n] += A[m,k] @ B[k,n]` (fused residual, `c` is InOut)
-pub(crate) fn matmul_add_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn matmul_add_with<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,
     b: &Arc<Tensor<B>>,
     c: &Arc<Tensor<B>>,
     shape: MatMulMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "MatMulAdd",
         &[
             Binding::new(0, &a.buffer, TensorMode::Input),
@@ -97,27 +98,27 @@ pub(crate) fn matmul_add_with<B: Backend>(
     );
 }
 
-pub(crate) fn matmul_add<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn matmul_add<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,
     b: &Arc<Tensor<B>>,
     c: &Arc<Tensor<B>>,
     shape: MatMulMeta,
 ) {
     let meta = shape.upload(&a.ctx);
-    matmul_add_with(graph, a, b, c, shape, &meta);
+    matmul_add_with(gb, a, b, c, shape, &meta);
 }
 
 /// `dW[k,n] += A[m,k]^T @ dY[m,n]` -- accumulates, zero `grad_weight` first.
 pub(crate) fn matmul_weight_bwd<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Train>,
     input: &Arc<Tensor<B>>,
     grad_output: &Arc<Tensor<B>>,
     grad_weight: &Arc<Tensor<B>>,
     shape: MatMulMeta,
 ) {
     let meta = shape.upload(&input.ctx);
-    graph.add_node(
+    gb.graph.add_node(
         "MatMulWeightBwd",
         &[
             Binding::new(0, &input.buffer, TensorMode::Input),
@@ -131,15 +132,15 @@ pub(crate) fn matmul_weight_bwd<B: Backend>(
 
 // ---- norm ----
 
-pub(crate) fn rmsnorm_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn rmsnorm_with<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     input: &Arc<Tensor<B>>,
     weight: &Arc<Tensor<B>>,
     output: &Arc<Tensor<B>>,
     shape: NormMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "RMSNorm",
         &[
             Binding::new(0, &input.buffer, TensorMode::Input),
@@ -151,21 +152,21 @@ pub(crate) fn rmsnorm_with<B: Backend>(
     );
 }
 
-pub(crate) fn rmsnorm<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn rmsnorm<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     input: &Arc<Tensor<B>>,
     weight: &Arc<Tensor<B>>,
     output: &Arc<Tensor<B>>,
     shape: NormMeta,
 ) {
     let meta = shape.upload(&input.ctx);
-    rmsnorm_with(graph, input, weight, output, shape, &meta);
+    rmsnorm_with(gb, input, weight, output, shape, &meta);
 }
 
 /// Both backward nodes (input grad + weight grad, linked by `rsqrt_cache`).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn rmsnorm_bwd<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Train>,
     grad_output: &Arc<Tensor<B>>,
     input: &Arc<Tensor<B>>,
     weight: &Arc<Tensor<B>>,
@@ -176,7 +177,7 @@ pub(crate) fn rmsnorm_bwd<B: Backend>(
 ) {
     let meta = shape.upload(&input.ctx);
 
-    graph.add_node(
+    gb.graph.add_node(
         "RMSNormBwd",
         &[
             Binding::new(0, &grad_output.buffer, TensorMode::Input),
@@ -189,7 +190,7 @@ pub(crate) fn rmsnorm_bwd<B: Backend>(
         [shape.seq_len, 1, 1],
     );
 
-    graph.add_node(
+    gb.graph.add_node(
         "RMSNormWeightBwd",
         &[
             Binding::new(0, &grad_output.buffer, TensorMode::Input),
@@ -208,15 +209,15 @@ fn grid_embedding(shape: EmbeddingMeta) -> [u32; 3] {
     [(shape.dim + 255) / 256, shape.seq_len, 1]
 }
 
-pub(crate) fn embedding_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn embedding_with<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     tokens: &Arc<Tensor<B>>,
     table: &Arc<Tensor<B>>,
     output: &Arc<Tensor<B>>,
     shape: EmbeddingMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "Embedding",
         &[
             Binding::new(0, &tokens.buffer, TensorMode::Input),
@@ -228,26 +229,26 @@ pub(crate) fn embedding_with<B: Backend>(
     );
 }
 
-pub(crate) fn embedding<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn embedding<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     tokens: &Arc<Tensor<B>>,
     table: &Arc<Tensor<B>>,
     output: &Arc<Tensor<B>>,
     shape: EmbeddingMeta,
 ) {
     let meta = shape.upload(&tokens.ctx);
-    embedding_with(graph, tokens, table, output, shape, &meta);
+    embedding_with(gb, tokens, table, output, shape, &meta);
 }
 
 pub(crate) fn embedding_bwd<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Train>,
     tokens: &Arc<Tensor<B>>,
     grad_output: &Arc<Tensor<B>>,
     grad_table: &Arc<Tensor<B>>,
     shape: EmbeddingMeta,
 ) {
     let meta = shape.upload(&tokens.ctx);
-    graph.add_node(
+    gb.graph.add_node(
         "EmbeddingBwd",
         &[
             Binding::new(0, &tokens.buffer, TensorMode::Input),
@@ -261,14 +262,14 @@ pub(crate) fn embedding_bwd<B: Backend>(
 
 // ---- rope ----
 
-fn inout_meta_node<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+fn inout_meta_node<B: Backend, P: Phase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     kernel: &str,
     buf: &Arc<Tensor<B>>,
     meta: &Arc<Tensor<B>>,
     grid: [u32; 3],
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         kernel,
         &[
             Binding::new(0, &buf.buffer, TensorMode::InOut),
@@ -282,28 +283,32 @@ fn grid_full(shape: RopeMeta) -> [u32; 3] {
     [(shape.dim / 2 + 15) / 16, (shape.seq_len + 15) / 16, 1]
 }
 
-pub(crate) fn rope<B: Backend>(graph: &mut ComputeGraph<B>, buf: &Arc<Tensor<B>>, shape: RopeMeta) {
+pub(crate) fn rope<B: Backend, P: FullSeqPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    buf: &Arc<Tensor<B>>,
+    shape: RopeMeta,
+) {
     let meta = shape.upload(&buf.ctx);
-    inout_meta_node(graph, "RoPE", buf, &meta, grid_full(shape));
+    inout_meta_node(gb, "RoPE", buf, &meta, grid_full(shape));
 }
 
 pub(crate) fn rope_bwd<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Train>,
     grad: &Arc<Tensor<B>>,
     shape: RopeMeta,
 ) {
     let meta = shape.upload(&grad.ctx);
-    inout_meta_node(graph, "RoPEBwd", grad, &meta, grid_full(shape));
+    inout_meta_node(gb, "RoPEBwd", grad, &meta, grid_full(shape));
 }
 
 pub(crate) fn rope_offset_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Decode>,
     buf: &Arc<Tensor<B>>,
     shape: RopeOffsetMeta,
     meta: &Arc<Tensor<B>>,
 ) {
     inout_meta_node(
-        graph,
+        gb,
         "RoPEOffset",
         buf,
         meta,
@@ -317,15 +322,15 @@ fn grid_head(shape: HeadMoveMeta) -> [u32; 3] {
     [(shape.head_dim + 15) / 16, (shape.seq_len + 15) / 16, 1]
 }
 
-fn move_node<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+fn move_node<B: Backend, P: Phase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     kernel: &str,
     src: &Arc<Tensor<B>>,
     dst: &Arc<Tensor<B>>,
     shape: HeadMoveMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         kernel,
         &[
             Binding::new(0, &src.buffer, TensorMode::Input),
@@ -337,57 +342,57 @@ fn move_node<B: Backend>(
 }
 
 /// wide `src` -> compact `dst`
-pub(crate) fn head_gather_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn head_gather_with<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     src: &Arc<Tensor<B>>,
     dst: &Arc<Tensor<B>>,
     shape: HeadMoveMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    move_node(graph, "HeadGather", src, dst, shape, meta);
+    move_node(gb, "HeadGather", src, dst, shape, meta);
 }
 
-pub(crate) fn head_gather<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn head_gather<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     src: &Arc<Tensor<B>>,
     dst: &Arc<Tensor<B>>,
     shape: HeadMoveMeta,
 ) {
     let meta = shape.upload(&src.ctx);
-    head_gather_with(graph, src, dst, shape, &meta);
+    head_gather_with(gb, src, dst, shape, &meta);
 }
 
 /// compact `src` -> wide `dst`
-pub(crate) fn head_scatter_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn head_scatter_with<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     src: &Arc<Tensor<B>>,
     dst: &Arc<Tensor<B>>,
     shape: HeadMoveMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    move_node(graph, "HeadScatter", src, dst, shape, meta);
+    move_node(gb, "HeadScatter", src, dst, shape, meta);
 }
 
-pub(crate) fn head_scatter<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn head_scatter<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     src: &Arc<Tensor<B>>,
     dst: &Arc<Tensor<B>>,
     shape: HeadMoveMeta,
 ) {
     let meta = shape.upload(&src.ctx);
-    head_scatter_with(graph, src, dst, shape, &meta);
+    head_scatter_with(gb, src, dst, shape, &meta);
 }
 
 // ---- attention ----
 
 /// Fused causal-mask + scale + softmax, in place.
-pub(crate) fn causal_softmax<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn causal_softmax<B: Backend, P: FullSeqPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     scores: &Arc<Tensor<B>>,
     shape: AttnScaleMeta,
 ) {
     let meta = shape.upload(&scores.ctx);
-    graph.add_node(
+    gb.graph.add_node(
         "CausalSoftmax",
         &[
             Binding::new(0, &scores.buffer, TensorMode::InOut),
@@ -399,12 +404,12 @@ pub(crate) fn causal_softmax<B: Backend>(
 
 /// Scaled softmax, in place; no mask (decode cache only contains past).
 pub(crate) fn softmax_rect_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Decode>,
     scores: &Arc<Tensor<B>>,
     shape: SoftmaxRectMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "SoftmaxRect",
         &[
             Binding::new(0, &scores.buffer, TensorMode::InOut),
@@ -415,14 +420,14 @@ pub(crate) fn softmax_rect_with<B: Backend>(
 }
 
 pub(crate) fn softmax_bwd<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Train>,
     y: &Arc<Tensor<B>>,
     grad_y: &Arc<Tensor<B>>,
     grad_raw: &Arc<Tensor<B>>,
     shape: AttnScaleMeta,
 ) {
     let meta = shape.upload(&y.ctx);
-    graph.add_node(
+    gb.graph.add_node(
         "SoftmaxBwd",
         &[
             Binding::new(0, &y.buffer, TensorMode::Input),
@@ -443,8 +448,8 @@ pub(crate) struct CausalAttnBuffers<B: Backend> {
 }
 
 /// Multi-head causal attention forward, shared verbatim by train and prefill.
-pub(crate) fn causal_attention<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn causal_attention<B: Backend, P: FullSeqPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     q_buf: &Arc<Tensor<B>>,
     k_buf: &Arc<Tensor<B>>,
     v_buf: &Arc<Tensor<B>>,
@@ -499,12 +504,12 @@ pub(crate) fn causal_attention<B: Backend>(
             &vec![0.0 as Real; scores_size],
         ));
 
-        head_gather(graph, q_buf, &q_head, head_move);
-        head_gather(graph, k_buf, &k_head, head_move);
-        head_gather(graph, v_buf, &v_head, head_move);
+        head_gather(gb, q_buf, &q_head, head_move);
+        head_gather(gb, k_buf, &k_head, head_move);
+        head_gather(gb, v_buf, &v_head, head_move);
 
         matmul_trp(
-            graph,
+            gb,
             &q_head,
             &k_head,
             &t_scores,
@@ -515,10 +520,10 @@ pub(crate) fn causal_attention<B: Backend>(
             },
         );
 
-        causal_softmax(graph, &t_scores, AttnScaleMeta { seq_len, scale });
+        causal_softmax(gb, &t_scores, AttnScaleMeta { seq_len, scale });
 
         matmul(
-            graph,
+            gb,
             &t_scores,
             &v_head,
             &out_head,
@@ -529,7 +534,7 @@ pub(crate) fn causal_attention<B: Backend>(
             },
         );
 
-        head_scatter(graph, &out_head, out_buffer, head_move);
+        head_scatter(gb, &out_head, out_buffer, head_move);
 
         bufs.q_heads.push(q_head);
         bufs.k_heads.push(k_head);
@@ -542,14 +547,14 @@ pub(crate) fn causal_attention<B: Backend>(
 
 // ---- cache ----
 
-pub(crate) fn cache_write_with<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn cache_write_with<B: Backend, P: CachedPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     src: &Arc<Tensor<B>>,
     cache: &Arc<Tensor<B>>,
     shape: CacheWriteMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "CacheWrite",
         &[
             Binding::new(0, &src.buffer, TensorMode::Input),
@@ -560,14 +565,14 @@ pub(crate) fn cache_write_with<B: Backend>(
     );
 }
 
-pub(crate) fn cache_write<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn cache_write<B: Backend, P: CachedPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     src: &Arc<Tensor<B>>,
     cache: &Arc<Tensor<B>>,
     shape: CacheWriteMeta,
 ) {
     let meta = shape.upload(&src.ctx);
-    cache_write_with(graph, src, cache, shape, &meta);
+    cache_write_with(gb, src, cache, shape, &meta);
 }
 
 // ---- elementwise ----
@@ -576,8 +581,12 @@ fn grid256(len: u32) -> [u32; 3] {
     [(len + 255) / 256, 1, 1]
 }
 
-pub(crate) fn silu<B: Backend>(graph: &mut ComputeGraph<B>, buf: &Arc<Tensor<B>>, len: u32) {
-    graph.add_node(
+pub(crate) fn silu<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    buf: &Arc<Tensor<B>>,
+    len: u32,
+) {
+    gb.graph.add_node(
         "SiLU",
         &[Binding::new(0, &buf.buffer, TensorMode::InOut)],
         grid256(len),
@@ -586,13 +595,13 @@ pub(crate) fn silu<B: Backend>(graph: &mut ComputeGraph<B>, buf: &Arc<Tensor<B>>
 
 /// `input` is the pre-activation buffer saved by the forward pass.
 pub(crate) fn silu_bwd<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Train>,
     input: &Arc<Tensor<B>>,
     grad_output: &Arc<Tensor<B>>,
     grad_input: &Arc<Tensor<B>>,
     len: u32,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "SiLUBwd",
         &[
             Binding::new(0, &input.buffer, TensorMode::Input),
@@ -604,13 +613,13 @@ pub(crate) fn silu_bwd<B: Backend>(
 }
 
 /// `target += source`
-pub(crate) fn residual_add<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+pub(crate) fn residual_add<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
     target: &Arc<Tensor<B>>,
     source: &Arc<Tensor<B>>,
     len: u32,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "ResidualAdd",
         &[
             Binding::new(0, &target.buffer, TensorMode::InOut),
@@ -620,14 +629,14 @@ pub(crate) fn residual_add<B: Backend>(
     );
 }
 
-/// `target += source`, backward-graph kernel (keeps a fusion barrier).
+/// `target += source`, backward-gb kernel (keeps a fusion barrier).
 pub(crate) fn add_inplace_bwd<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Train>,
     target: &Arc<Tensor<B>>,
     source: &Arc<Tensor<B>>,
     len: u32,
 ) {
-    graph.add_node(
+    gb.graph.add_node(
         "BwdAddInplace",
         &[
             Binding::new(0, &target.buffer, TensorMode::InOut),
@@ -637,10 +646,14 @@ pub(crate) fn add_inplace_bwd<B: Backend>(
     );
 }
 
-/// On-device zeroing, as a graph node.
-pub(crate) fn zero<B: Backend>(graph: &mut ComputeGraph<B>, buf: &Arc<Tensor<B>>, len: u32) {
+/// On-device zeroing, as a gb node.
+pub(crate) fn zero<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    buf: &Arc<Tensor<B>>,
+    len: u32,
+) {
     let meta = ZeroMeta { len }.upload(&buf.ctx);
-    graph.add_node(
+    gb.graph.add_node(
         "ZeroTensor",
         &[
             Binding::new(0, &buf.buffer, TensorMode::Output),
@@ -653,7 +666,7 @@ pub(crate) fn zero<B: Backend>(graph: &mut ComputeGraph<B>, buf: &Arc<Tensor<B>>
 // ---- loss ----
 
 pub(crate) fn cross_entropy<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Train>,
     logits: &Arc<Tensor<B>>,
     target_tokens: &Arc<Tensor<B>>,
     probs: &Arc<Tensor<B>>,
@@ -661,7 +674,7 @@ pub(crate) fn cross_entropy<B: Backend>(
     shape: CrossEntropyMeta,
 ) {
     let meta = shape.upload(&logits.ctx);
-    graph.add_node(
+    gb.graph.add_node(
         "CrossEntropy",
         &[
             Binding::new(0, &logits.buffer, TensorMode::Input),
@@ -675,7 +688,7 @@ pub(crate) fn cross_entropy<B: Backend>(
 }
 
 pub(crate) fn cross_entropy_bwd<B: Backend>(
-    graph: &mut ComputeGraph<B>,
+    gb: &mut GraphBuilder<'_, B, Train>,
     probs: &Arc<Tensor<B>>,
     target_tokens: &Arc<Tensor<B>>,
     d_losses: &Arc<Tensor<B>>,
@@ -683,7 +696,7 @@ pub(crate) fn cross_entropy_bwd<B: Backend>(
     shape: CrossEntropyMeta,
 ) {
     let meta = shape.upload(&probs.ctx);
-    graph.add_node(
+    gb.graph.add_node(
         "CrossEntropyBwd",
         &[
             Binding::new(0, &probs.buffer, TensorMode::Input),
