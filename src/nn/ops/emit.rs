@@ -3,9 +3,11 @@ use super::meta::{
     MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta, SoftmaxRectMeta, ZeroMeta,
 };
 use super::{CachedPhase, Decode, FullSeqPhase, FwdPhase, GraphBuilder, Phase, Train};
+use crate::shaders;
 use crate::Real;
 use std::sync::Arc;
-use wilupgu::{Backend, Binding, Tensor, TensorMode};
+use wilupgu::builtin;
+use wilupgu::{Backend, Binding, Shader, Tensor, TensorMode};
 
 // ---- matmul ----
 
@@ -23,7 +25,7 @@ pub(crate) fn matmul_with<B: Backend, P: FwdPhase>(
     meta: &Arc<Tensor<B>>,
 ) {
     gb.graph.add_node(
-        "MatMul",
+        &builtin::MATMUL,
         &[
             Binding::new(0, &a.buffer, TensorMode::Input),
             Binding::new(1, &b.buffer, TensorMode::Input),
@@ -55,7 +57,7 @@ pub(crate) fn matmul_trp_with<B: Backend, P: FwdPhase>(
     meta: &Arc<Tensor<B>>,
 ) {
     gb.graph.add_node(
-        "MatMulTrp",
+        &builtin::MATMUL_TRP,
         &[
             Binding::new(0, &a.buffer, TensorMode::Input),
             Binding::new(1, &b.buffer, TensorMode::Input),
@@ -87,7 +89,7 @@ pub(crate) fn matmul_add_with<B: Backend, P: FwdPhase>(
     meta: &Arc<Tensor<B>>,
 ) {
     gb.graph.add_node(
-        "MatMulAdd",
+        &builtin::MATMUL_ADD,
         &[
             Binding::new(0, &a.buffer, TensorMode::Input),
             Binding::new(1, &b.buffer, TensorMode::Input),
@@ -119,7 +121,7 @@ pub(crate) fn matmul_weight_bwd<B: Backend>(
 ) {
     let meta = shape.upload(&input.ctx);
     gb.graph.add_node(
-        "MatMulWeightBwd",
+        &builtin::MATMUL_WEIGHT_BWD,
         &[
             Binding::new(0, &input.buffer, TensorMode::Input),
             Binding::new(1, &grad_output.buffer, TensorMode::Input),
@@ -141,7 +143,7 @@ pub(crate) fn rmsnorm_with<B: Backend, P: FwdPhase>(
     meta: &Arc<Tensor<B>>,
 ) {
     gb.graph.add_node(
-        "RMSNorm",
+        &shaders::RMSNORM,
         &[
             Binding::new(0, &input.buffer, TensorMode::Input),
             Binding::new(1, &weight.buffer, TensorMode::Input),
@@ -178,7 +180,7 @@ pub(crate) fn rmsnorm_bwd<B: Backend>(
     let meta = shape.upload(&input.ctx);
 
     gb.graph.add_node(
-        "RMSNormBwd",
+        &shaders::RMSNORM_BWD,
         &[
             Binding::new(0, &grad_output.buffer, TensorMode::Input),
             Binding::new(1, &input.buffer, TensorMode::Input),
@@ -191,7 +193,7 @@ pub(crate) fn rmsnorm_bwd<B: Backend>(
     );
 
     gb.graph.add_node(
-        "RMSNormWeightBwd",
+        &shaders::RMSNORM_WEIGHT_BWD,
         &[
             Binding::new(0, &grad_output.buffer, TensorMode::Input),
             Binding::new(1, &input.buffer, TensorMode::Input),
@@ -218,7 +220,7 @@ pub(crate) fn embedding_with<B: Backend, P: FwdPhase>(
     meta: &Arc<Tensor<B>>,
 ) {
     gb.graph.add_node(
-        "Embedding",
+        &shaders::EMBEDDING,
         &[
             Binding::new(0, &tokens.buffer, TensorMode::Input),
             Binding::new(1, &table.buffer, TensorMode::Input),
@@ -249,7 +251,7 @@ pub(crate) fn embedding_bwd<B: Backend>(
 ) {
     let meta = shape.upload(&tokens.ctx);
     gb.graph.add_node(
-        "EmbeddingBwd",
+        &shaders::EMBEDDING_BWD,
         &[
             Binding::new(0, &tokens.buffer, TensorMode::Input),
             Binding::new(1, &grad_output.buffer, TensorMode::Input),
@@ -264,13 +266,13 @@ pub(crate) fn embedding_bwd<B: Backend>(
 
 fn inout_meta_node<B: Backend, P: Phase>(
     gb: &mut GraphBuilder<'_, B, P>,
-    kernel: &str,
+    shader: &'static Shader,
     buf: &Arc<Tensor<B>>,
     meta: &Arc<Tensor<B>>,
     grid: [u32; 3],
 ) {
     gb.graph.add_node(
-        kernel,
+        shader,
         &[
             Binding::new(0, &buf.buffer, TensorMode::InOut),
             Binding::new(1, &meta.buffer, TensorMode::Meta),
@@ -289,7 +291,7 @@ pub(crate) fn rope<B: Backend, P: FullSeqPhase>(
     shape: RopeMeta,
 ) {
     let meta = shape.upload(&buf.ctx);
-    inout_meta_node(gb, "RoPE", buf, &meta, grid_full(shape));
+    inout_meta_node(gb, &shaders::ROPE, buf, &meta, grid_full(shape));
 }
 
 pub(crate) fn rope_bwd<B: Backend>(
@@ -298,7 +300,7 @@ pub(crate) fn rope_bwd<B: Backend>(
     shape: RopeMeta,
 ) {
     let meta = shape.upload(&grad.ctx);
-    inout_meta_node(gb, "RoPEBwd", grad, &meta, grid_full(shape));
+    inout_meta_node(gb, &shaders::ROPE_BWD, grad, &meta, grid_full(shape));
 }
 
 pub(crate) fn rope_offset_with<B: Backend>(
@@ -309,7 +311,7 @@ pub(crate) fn rope_offset_with<B: Backend>(
 ) {
     inout_meta_node(
         gb,
-        "RoPEOffset",
+        &shaders::ROPE_OFFSET,
         buf,
         meta,
         [(shape.head_dim / 2 + 15) / 16, 1, 1],
@@ -324,14 +326,14 @@ fn grid_head(shape: HeadMoveMeta) -> [u32; 3] {
 
 fn move_node<B: Backend, P: Phase>(
     gb: &mut GraphBuilder<'_, B, P>,
-    kernel: &str,
+    shader: &'static Shader,
     src: &Arc<Tensor<B>>,
     dst: &Arc<Tensor<B>>,
     shape: HeadMoveMeta,
     meta: &Arc<Tensor<B>>,
 ) {
     gb.graph.add_node(
-        kernel,
+        shader,
         &[
             Binding::new(0, &src.buffer, TensorMode::Input),
             Binding::new(1, &dst.buffer, TensorMode::Output),
@@ -349,7 +351,7 @@ pub(crate) fn head_gather_with<B: Backend, P: FwdPhase>(
     shape: HeadMoveMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    move_node(gb, "HeadGather", src, dst, shape, meta);
+    move_node(gb, &shaders::HEAD_GATHER, src, dst, shape, meta);
 }
 
 pub(crate) fn head_gather<B: Backend, P: FwdPhase>(
@@ -370,7 +372,7 @@ pub(crate) fn head_scatter_with<B: Backend, P: FwdPhase>(
     shape: HeadMoveMeta,
     meta: &Arc<Tensor<B>>,
 ) {
-    move_node(gb, "HeadScatter", src, dst, shape, meta);
+    move_node(gb, &shaders::HEAD_SCATTER, src, dst, shape, meta);
 }
 
 pub(crate) fn head_scatter<B: Backend, P: FwdPhase>(
@@ -393,7 +395,7 @@ pub(crate) fn causal_softmax<B: Backend, P: FullSeqPhase>(
 ) {
     let meta = shape.upload(&scores.ctx);
     gb.graph.add_node(
-        "CausalSoftmax",
+        &shaders::CAUSAL_SOFTMAX,
         &[
             Binding::new(0, &scores.buffer, TensorMode::InOut),
             Binding::new(1, &meta.buffer, TensorMode::Meta),
@@ -410,7 +412,7 @@ pub(crate) fn softmax_rect_with<B: Backend>(
     meta: &Arc<Tensor<B>>,
 ) {
     gb.graph.add_node(
-        "SoftmaxRect",
+        &shaders::SOFTMAX_RECT,
         &[
             Binding::new(0, &scores.buffer, TensorMode::InOut),
             Binding::new(1, &meta.buffer, TensorMode::Meta),
@@ -428,7 +430,7 @@ pub(crate) fn softmax_bwd<B: Backend>(
 ) {
     let meta = shape.upload(&y.ctx);
     gb.graph.add_node(
-        "SoftmaxBwd",
+        &shaders::SOFTMAX_BWD,
         &[
             Binding::new(0, &y.buffer, TensorMode::Input),
             Binding::new(1, &grad_y.buffer, TensorMode::Input),
@@ -555,7 +557,7 @@ pub(crate) fn cache_write_with<B: Backend, P: CachedPhase>(
     meta: &Arc<Tensor<B>>,
 ) {
     gb.graph.add_node(
-        "CacheWrite",
+        &shaders::CACHE_WRITE,
         &[
             Binding::new(0, &src.buffer, TensorMode::Input),
             Binding::new(1, &cache.buffer, TensorMode::InOut),
@@ -587,7 +589,7 @@ pub(crate) fn silu<B: Backend, P: FwdPhase>(
     len: u32,
 ) {
     gb.graph.add_node(
-        "SiLU",
+        &shaders::SILU,
         &[Binding::new(0, &buf.buffer, TensorMode::InOut)],
         grid256(len),
     );
@@ -602,7 +604,7 @@ pub(crate) fn silu_bwd<B: Backend>(
     len: u32,
 ) {
     gb.graph.add_node(
-        "SiLUBwd",
+        &shaders::SILU_BWD,
         &[
             Binding::new(0, &input.buffer, TensorMode::Input),
             Binding::new(1, &grad_output.buffer, TensorMode::Input),
@@ -620,7 +622,7 @@ pub(crate) fn residual_add<B: Backend, P: FwdPhase>(
     len: u32,
 ) {
     gb.graph.add_node(
-        "ResidualAdd",
+        &builtin::RESIDUAL_ADD,
         &[
             Binding::new(0, &target.buffer, TensorMode::InOut),
             Binding::new(1, &source.buffer, TensorMode::Input),
@@ -637,7 +639,7 @@ pub(crate) fn add_inplace_bwd<B: Backend>(
     len: u32,
 ) {
     gb.graph.add_node(
-        "BwdAddInplace",
+        &builtin::BWD_ADD_INPLACE,
         &[
             Binding::new(0, &target.buffer, TensorMode::InOut),
             Binding::new(1, &source.buffer, TensorMode::Input),
@@ -654,7 +656,7 @@ pub(crate) fn zero<B: Backend, P: FwdPhase>(
 ) {
     let meta = ZeroMeta { len }.upload(&buf.ctx);
     gb.graph.add_node(
-        "ZeroTensor",
+        &builtin::ZERO_TENSOR,
         &[
             Binding::new(0, &buf.buffer, TensorMode::Output),
             Binding::new(1, &meta.buffer, TensorMode::Meta),
@@ -675,7 +677,7 @@ pub(crate) fn cross_entropy<B: Backend>(
 ) {
     let meta = shape.upload(&logits.ctx);
     gb.graph.add_node(
-        "CrossEntropy",
+        &shaders::CROSS_ENTROPY,
         &[
             Binding::new(0, &logits.buffer, TensorMode::Input),
             Binding::new(1, &target_tokens.buffer, TensorMode::Input),
@@ -697,7 +699,7 @@ pub(crate) fn cross_entropy_bwd<B: Backend>(
 ) {
     let meta = shape.upload(&probs.ctx);
     gb.graph.add_node(
-        "CrossEntropyBwd",
+        &shaders::CROSS_ENTROPY_BWD,
         &[
             Binding::new(0, &probs.buffer, TensorMode::Input),
             Binding::new(1, &target_tokens.buffer, TensorMode::Input),

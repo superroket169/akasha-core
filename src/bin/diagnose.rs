@@ -5,6 +5,7 @@ use akasha_core::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
 use akasha_core::nn::{
     Cache, CrossEntropy, InferenceSession, Layer, ModelWeights, RMSNorm, Trainer,
 };
+use akasha_core::shaders;
 use rand::Rng;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode, WgpuBackend};
 
@@ -182,7 +183,7 @@ fn check3_head_gather_scatter<B: Backend>(ctx: Arc<B>) -> bool {
         ));
 
         g.add_node(
-            "HeadGather",
+            &shaders::HEAD_GATHER,
             &[
                 Binding::new(0, &input.buffer, TensorMode::Input),
                 Binding::new(1, &head_buf.buffer, TensorMode::Output),
@@ -191,7 +192,7 @@ fn check3_head_gather_scatter<B: Backend>(ctx: Arc<B>) -> bool {
             [(head_dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
         g.add_node(
-            "HeadScatter",
+            &shaders::HEAD_SCATTER,
             &[
                 Binding::new(0, &head_buf.buffer, TensorMode::Input),
                 Binding::new(1, &reconstructed.buffer, TensorMode::Output),
@@ -226,7 +227,7 @@ fn check3_head_gather_scatter<B: Backend>(ctx: Arc<B>) -> bool {
     ));
     let mut g2 = ComputeGraph::new(ctx.clone());
     g2.add_node(
-        "HeadScatter",
+        &shaders::HEAD_SCATTER,
         &[
             Binding::new(0, &ones.buffer, TensorMode::Input),
             Binding::new(1, &analytic_grad.buffer, TensorMode::Output),

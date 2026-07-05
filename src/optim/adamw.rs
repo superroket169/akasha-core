@@ -1,6 +1,7 @@
 use crate::Real;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
+use wilupgu::builtin;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
 const DEFAULT_EPS: Real = 1e-8;
@@ -77,7 +78,7 @@ impl<B: Backend> AdamW<B> {
             ));
 
             graph.add_node(
-                "AdamW",
+                &builtin::ADAMW,
                 &[
                     Binding::new(0, &weight.buffer, TensorMode::InOut),
                     Binding::new(1, &grad.buffer, TensorMode::Input),
