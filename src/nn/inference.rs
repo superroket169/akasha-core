@@ -245,7 +245,7 @@ impl<B: Backend> InferenceSession<B> {
             self.decode_graph = Some(graph);
         }
 
-        self.decode_graph.as_ref().unwrap().execute();
+        self.decode_graph.as_ref().unwrap().execute_captured();
 
         self.cache.as_mut().unwrap().cur_len = pos + 1;
 
