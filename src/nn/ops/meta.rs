@@ -135,3 +135,13 @@ pub struct ZeroMeta {
     pub len: u32,
 }
 impl KernelMeta for ZeroMeta {}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct FlashAttnMeta {
+    pub seq_len: u32,
+    pub dim: u32,
+    pub head_dim: u32,
+    pub scale: f32,
+}
+impl KernelMeta for FlashAttnMeta {}
