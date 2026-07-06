@@ -318,6 +318,42 @@ pub(crate) fn rope_offset_with<B: Backend>(
     );
 }
 
+pub(crate) fn rope_qk<B: Backend, P: FullSeqPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    q_buf: &Arc<Tensor<B>>,
+    k_buf: &Arc<Tensor<B>>,
+    shape: RopeMeta,
+) {
+    let meta = shape.upload(&q_buf.ctx);
+    gb.graph.add_node(
+        &shaders::ROPE_QK,
+        &[
+            Binding::new(0, &q_buf.buffer, TensorMode::InOut),
+            Binding::new(1, &k_buf.buffer, TensorMode::InOut),
+            Binding::new(2, &meta.buffer, TensorMode::Meta),
+        ],
+        grid_full(shape),
+    );
+}
+
+pub(crate) fn rope_bwd_qk<B: Backend>(
+    gb: &mut GraphBuilder<'_, B, Train>,
+    grad_q: &Arc<Tensor<B>>,
+    grad_k: &Arc<Tensor<B>>,
+    shape: RopeMeta,
+) {
+    let meta = shape.upload(&grad_q.ctx);
+    gb.graph.add_node(
+        &shaders::ROPE_BWD_QK,
+        &[
+            Binding::new(0, &grad_q.buffer, TensorMode::InOut),
+            Binding::new(1, &grad_k.buffer, TensorMode::InOut),
+            Binding::new(2, &meta.buffer, TensorMode::Meta),
+        ],
+        grid_full(shape),
+    );
+}
+
 // ---- head_move ----
 
 fn grid_head(shape: HeadMoveMeta) -> [u32; 3] {
@@ -383,6 +419,50 @@ pub(crate) fn head_scatter<B: Backend, P: FwdPhase>(
 ) {
     let meta = shape.upload(&src.ctx);
     head_scatter_with(gb, src, dst, shape, &meta);
+}
+
+pub(crate) fn qkv_split<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    src: &Arc<Tensor<B>>,
+    q_buf: &Arc<Tensor<B>>,
+    k_buf: &Arc<Tensor<B>>,
+    v_buf: &Arc<Tensor<B>>,
+    shape: HeadMoveMeta,
+) {
+    let meta = shape.upload(&src.ctx);
+    gb.graph.add_node(
+        &shaders::QKV_SPLIT,
+        &[
+            Binding::new(0, &src.buffer, TensorMode::Input),
+            Binding::new(1, &q_buf.buffer, TensorMode::Output),
+            Binding::new(2, &k_buf.buffer, TensorMode::Output),
+            Binding::new(3, &v_buf.buffer, TensorMode::Output),
+            Binding::new(4, &meta.buffer, TensorMode::Meta),
+        ],
+        grid_head(shape),
+    );
+}
+
+pub(crate) fn qkv_scatter<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    grad_q: &Arc<Tensor<B>>,
+    grad_k: &Arc<Tensor<B>>,
+    grad_v: &Arc<Tensor<B>>,
+    dst: &Arc<Tensor<B>>,
+    shape: HeadMoveMeta,
+) {
+    let meta = shape.upload(&dst.ctx);
+    gb.graph.add_node(
+        &shaders::QKV_SCATTER,
+        &[
+            Binding::new(0, &grad_q.buffer, TensorMode::Input),
+            Binding::new(1, &grad_k.buffer, TensorMode::Input),
+            Binding::new(2, &grad_v.buffer, TensorMode::Input),
+            Binding::new(3, &dst.buffer, TensorMode::Output),
+            Binding::new(4, &meta.buffer, TensorMode::Meta),
+        ],
+        grid_head(shape),
+    );
 }
 
 // ---- attention ----
@@ -942,6 +1022,209 @@ mod flash_attention_validation {
         assert!(
             dv_diff < tol,
             "dV mismatch ({ctx_msg}): max_abs_diff={dv_diff}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod kernel_fusion_validation {
+    use super::*;
+    use wilupgu::{ComputeGraph, WgpuBackend};
+
+    fn rand_vec(n: usize, seed: u64) -> Vec<Real> {
+        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let bits = ((state >> 40) as u32) & 0x00FF_FFFF;
+                (bits as f32 / 0x00FF_FFFF as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    fn max_abs_diff(a: &[Real], b: &[Real]) -> f32 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn rope_qk_matches_two_rope_calls() {
+        check_rope(8, 8, 4);
+        check_rope(37, 12, 4);
+        check_rope(65, 48, 16);
+    }
+
+    fn check_rope(seq_len: u32, dim: u32, head_dim: u32) {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let n = (seq_len * dim) as usize;
+        let shape = RopeMeta {
+            seq_len,
+            dim,
+            head_dim,
+        };
+
+        let q_data = rand_vec(n, 10);
+        let k_data = rand_vec(n, 20);
+        let dq_data = rand_vec(n, 30);
+        let dk_data = rand_vec(n, 40);
+
+        // ---- forward ----
+        let old_q = Arc::new(Tensor::init_from_cpu(ctx.clone(), &q_data));
+        let old_k = Arc::new(Tensor::init_from_cpu(ctx.clone(), &k_data));
+        let mut old_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut old_graph);
+        rope(&mut gb, &old_q, shape);
+        rope(&mut gb, &old_k, shape);
+        old_graph.execute();
+        ctx.synchronize();
+
+        let new_q = Arc::new(Tensor::init_from_cpu(ctx.clone(), &q_data));
+        let new_k = Arc::new(Tensor::init_from_cpu(ctx.clone(), &k_data));
+        let mut new_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut new_graph);
+        rope_qk(&mut gb, &new_q, &new_k, shape);
+        new_graph.execute();
+        ctx.synchronize();
+
+        let ctx_msg = format!("seq_len={seq_len} dim={dim} head_dim={head_dim}");
+        let q_diff = max_abs_diff(&old_q.to_cpu::<Real>(), &new_q.to_cpu::<Real>());
+        assert!(q_diff < 1e-4, "rope_qk Q mismatch ({ctx_msg}): {q_diff}");
+        let k_diff = max_abs_diff(&old_k.to_cpu::<Real>(), &new_k.to_cpu::<Real>());
+        assert!(k_diff < 1e-4, "rope_qk K mismatch ({ctx_msg}): {k_diff}");
+
+        // ---- backward ----
+        let old_dq = Arc::new(Tensor::init_from_cpu(ctx.clone(), &dq_data));
+        let old_dk = Arc::new(Tensor::init_from_cpu(ctx.clone(), &dk_data));
+        let mut old_bwd = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut old_bwd);
+        rope_bwd(&mut gb, &old_dq, shape);
+        rope_bwd(&mut gb, &old_dk, shape);
+        old_bwd.execute();
+        ctx.synchronize();
+
+        let new_dq = Arc::new(Tensor::init_from_cpu(ctx.clone(), &dq_data));
+        let new_dk = Arc::new(Tensor::init_from_cpu(ctx.clone(), &dk_data));
+        let mut new_bwd = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut new_bwd);
+        rope_bwd_qk(&mut gb, &new_dq, &new_dk, shape);
+        new_bwd.execute();
+        ctx.synchronize();
+
+        let dq_diff = max_abs_diff(&old_dq.to_cpu::<Real>(), &new_dq.to_cpu::<Real>());
+        assert!(
+            dq_diff < 1e-4,
+            "rope_bwd_qk dQ mismatch ({ctx_msg}): {dq_diff}"
+        );
+        let dk_diff = max_abs_diff(&old_dk.to_cpu::<Real>(), &new_dk.to_cpu::<Real>());
+        assert!(
+            dk_diff < 1e-4,
+            "rope_bwd_qk dK mismatch ({ctx_msg}): {dk_diff}"
+        );
+    }
+
+    #[test]
+    fn qkv_split_matches_three_head_gathers() {
+        check_qkv(8, 4);
+        check_qkv(37, 12);
+        check_qkv(65, 48);
+    }
+
+    fn check_qkv(seq_len: u32, dim: u32) {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let n = (seq_len * dim) as usize;
+        let src_data = rand_vec(n * 3, 50);
+        let src = Arc::new(Tensor::init_from_cpu(ctx.clone(), &src_data));
+        let zeros = || Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![0.0 as Real; n]));
+
+        // ---- forward ----
+        let (old_q, old_k, old_v) = (zeros(), zeros(), zeros());
+        let mut old_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut old_graph);
+        for (buf, off) in [(&old_q, 0), (&old_k, dim), (&old_v, 2 * dim)] {
+            head_gather(
+                &mut gb,
+                &src,
+                buf,
+                HeadMoveMeta::qkv_slice(seq_len, dim, off),
+            );
+        }
+        old_graph.execute();
+        ctx.synchronize();
+
+        let (new_q, new_k, new_v) = (zeros(), zeros(), zeros());
+        let mut new_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut new_graph);
+        qkv_split(
+            &mut gb,
+            &src,
+            &new_q,
+            &new_k,
+            &new_v,
+            HeadMoveMeta::qkv_slice(seq_len, dim, 0),
+        );
+        new_graph.execute();
+        ctx.synchronize();
+
+        let ctx_msg = format!("seq_len={seq_len} dim={dim}");
+        assert!(
+            max_abs_diff(&old_q.to_cpu::<Real>(), &new_q.to_cpu::<Real>()) < 1e-6,
+            "qkv_split Q mismatch ({ctx_msg})"
+        );
+        assert!(
+            max_abs_diff(&old_k.to_cpu::<Real>(), &new_k.to_cpu::<Real>()) < 1e-6,
+            "qkv_split K mismatch ({ctx_msg})"
+        );
+        assert!(
+            max_abs_diff(&old_v.to_cpu::<Real>(), &new_v.to_cpu::<Real>()) < 1e-6,
+            "qkv_split V mismatch ({ctx_msg})"
+        );
+
+        // ---- backward ----
+        let grad_q = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 60)));
+        let grad_k = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 70)));
+        let grad_v = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 80)));
+
+        let old_dst = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; n * 3],
+        ));
+        let mut old_bwd = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut old_bwd);
+        for (buf, off) in [(&grad_q, 0), (&grad_k, dim), (&grad_v, 2 * dim)] {
+            head_scatter(
+                &mut gb,
+                buf,
+                &old_dst,
+                HeadMoveMeta::qkv_slice(seq_len, dim, off),
+            );
+        }
+        old_bwd.execute();
+        ctx.synchronize();
+
+        let new_dst = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; n * 3],
+        ));
+        let mut new_bwd = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut new_bwd);
+        qkv_scatter(
+            &mut gb,
+            &grad_q,
+            &grad_k,
+            &grad_v,
+            &new_dst,
+            HeadMoveMeta::qkv_slice(seq_len, dim, 0),
+        );
+        new_bwd.execute();
+        ctx.synchronize();
+
+        assert!(
+            max_abs_diff(&old_dst.to_cpu::<Real>(), &new_dst.to_cpu::<Real>()) < 1e-6,
+            "qkv_scatter mismatch ({ctx_msg})"
         );
     }
 }
