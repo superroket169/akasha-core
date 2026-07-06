@@ -8,8 +8,10 @@ use super::checkpoint;
 use super::layers::{CrossEntropy, Embedding, Layer, Linear, RMSNorm, TransformerBlock};
 use super::ops::zero_tensor;
 use super::weights::ModelWeights;
-use crate::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
-use crate::optim::AdamW;
+use crate::config::{
+    ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, LR_MAX, LR_MIN, MAX_STEPS, ModelConfig, WARMUP_STEPS,
+};
+use crate::optim::{AdamW, AdamWSchedule};
 
 const ADAM_BETA1: Real = 0.9;
 const ADAM_BETA2: Real = 0.95;
@@ -152,7 +154,19 @@ impl<B: Backend> Trainer<B> {
         );
 
         let trainable_params = collect_trainable_params(&embedding, &layers, &final_norm, &lm_head);
-        let optimizer = AdamW::new(ctx.clone(), &trainable_params);
+        let optimizer = AdamW::new(
+            ctx.clone(),
+            &trainable_params,
+            AdamWSchedule {
+                lr_max: LR_MAX,
+                lr_min: LR_MIN,
+                warmup_steps: WARMUP_STEPS as u32,
+                max_steps: MAX_STEPS as u32,
+            },
+            ADAM_BETA1,
+            ADAM_BETA2,
+            ADAM_WEIGHT_DECAY,
+        );
 
         // ---- fused forward ----
         let mut forward_graphs: Vec<&ComputeGraph<B>> = vec![&embedding.forward_graph];
@@ -209,7 +223,6 @@ impl<B: Backend> Trainer<B> {
         input_tokens: &[u32],
         target_tokens: &[u32],
         batch_size: usize,
-        lr: f32,
         step: usize,
         accumulation_steps: usize,
     ) -> Option<f32> {
@@ -258,8 +271,7 @@ impl<B: Backend> Trainer<B> {
 
         if is_last_in_cycle {
             self.clip_grad_norm(GRAD_CLIP_NORM);
-            self.optimizer
-                .step(lr, ADAM_BETA1, ADAM_BETA2, ADAM_WEIGHT_DECAY);
+            self.optimizer.step();
         }
 
         if read_loss {

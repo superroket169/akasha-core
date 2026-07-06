@@ -27,7 +27,6 @@ fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str) {
     let tokenizer = AkashaTokenizer::from_pretrained();
     let cfg = ModelConfig::akasha_hall_1();
 
-    // Weights only -- no Trainer, so chat never allocates grads/AdamW state.
     let weights = Arc::new(ModelWeights::zeros(ctx.clone(), &cfg));
     checkpoint::load(&weights, weights_path)
         .unwrap_or_else(|e| panic!("Failed to load {weights_path}: {e}"));
@@ -97,10 +96,9 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
     println!("{}", "-".repeat(35));
 
     for step in start_step..MAX_STEPS {
-        let lr = cosine_lr(step, WARMUP_STEPS, MAX_STEPS, LR_MAX, LR_MIN);
         let (inputs, targets) = dataset.random_batch(BATCH_SIZE, &mut rng);
 
-        let loss = model.train_step(&inputs, &targets, BATCH_SIZE, lr, step, ACCUMULATION_STEPS);
+        let loss = model.train_step(&inputs, &targets, BATCH_SIZE, step, ACCUMULATION_STEPS);
 
         if let Some(l) = loss {
             if l < best_loss {
@@ -108,6 +106,7 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
             }
 
             if step % LOG_EVERY == 0 {
+                let (_, lr) = model.optimizer.current_schedule();
                 println!("step {:6} | loss {:.4} | lr {:.2e}", step, l, lr);
             }
 

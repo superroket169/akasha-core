@@ -130,7 +130,6 @@ fn run_epochs<B: Backend>(
             &batch_inputs,
             &batch_targets,
             BATCH_SIZE,
-            current_lr,
             dashboard.step,
             ACCUMULATION_STEPS,
         );
