@@ -383,7 +383,7 @@ fn check5_accumulation<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
 
     let w_before: Vec<f32> = model.lm_head.weight.to_cpu();
 
-    model.train_step(&inputs, &targets, 1, 1e-3, 0, 2); // step 0 of a 2-step accumulation cycle
+    model.train_step(&inputs, &targets, 1, 0, 2); // step 0 of a 2-step accumulation cycle
     let w_after_step0: Vec<f32> = model.lm_head.weight.to_cpu();
     let grad_after_step0 = l2_norm(&model.lm_head.grad_weight);
     let delta0: f32 = w_before
@@ -393,7 +393,7 @@ fn check5_accumulation<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
         .sum::<f32>()
         .sqrt();
 
-    model.train_step(&inputs, &targets, 1, 1e-3, 1, 2); // step 1 = accumulation boundary
+    model.train_step(&inputs, &targets, 1, 1, 2); // step 1 = accumulation boundary
     let w_after_step1: Vec<f32> = model.lm_head.weight.to_cpu();
     let delta1: f32 = w_after_step0
         .iter()
@@ -541,7 +541,7 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
         if use_clip {
             model.clip_grad_norm(GRAD_CLIP_NORM);
         }
-        model.optimizer.step(lr, 0.9, 0.95, 0.0);
+        model.optimizer.step();
 
         let avg_loss = total_loss / batch_size as f32;
         final_loss = avg_loss;
