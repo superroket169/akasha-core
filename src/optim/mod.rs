@@ -1,3 +1,3 @@
 pub mod adamw;
 
-pub use adamw::AdamW;
+pub use adamw::{AdamW, AdamWSchedule};

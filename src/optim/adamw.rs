@@ -1,6 +1,5 @@
 use crate::Real;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU32, Ordering};
 use wilupgu::builtin;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode};
 
@@ -15,9 +14,31 @@ struct ParamMeta {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct StepConfig {
+struct ScheduleState {
     step: u32,
     lr: f32,
+}
+
+#[derive(Clone, Copy)]
+pub struct AdamWSchedule {
+    pub lr_max: Real,
+    pub lr_min: Real,
+    pub warmup_steps: u32,
+    pub max_steps: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ScheduleConfig {
+    lr_max: f32,
+    lr_min: f32,
+    warmup_steps: u32,
+    max_steps: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ConstCfg {
     beta1: f32,
     beta2: f32,
     eps: f32,
@@ -29,28 +50,54 @@ fn elem_count<B: Backend>(t: &Tensor<B>) -> usize {
 }
 
 pub struct AdamW<B: Backend> {
-    cfg: Arc<Tensor<B>>,
-    eps: Real,
-    step_count: AtomicU32,
     graph: ComputeGraph<B>,
-    pub moments: Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)>, // (weight, grad)
+    pub moments: Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)>,
+    schedule_state: Arc<Tensor<B>>,
 }
 
 impl<B: Backend> AdamW<B> {
-    pub fn new(ctx: Arc<B>, params: &[(Arc<Tensor<B>>, Arc<Tensor<B>>)]) -> Self {
-        let cfg = Arc::new(Tensor::init_from_cpu(
+    pub fn new(
+        ctx: Arc<B>,
+        params: &[(Arc<Tensor<B>>, Arc<Tensor<B>>)],
+        schedule: AdamWSchedule,
+        beta1: Real,
+        beta2: Real,
+        weight_decay: Real,
+    ) -> Self {
+        let schedule_state = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
-            &[StepConfig {
-                step: 0,
-                lr: 0.0,
-                beta1: 0.0,
-                beta2: 0.0,
+            &[ScheduleState { step: 0, lr: 0.0 }],
+        ));
+        let schedule_cfg = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &[ScheduleConfig {
+                lr_max: schedule.lr_max,
+                lr_min: schedule.lr_min,
+                warmup_steps: schedule.warmup_steps,
+                max_steps: schedule.max_steps,
+            }],
+        ));
+        let const_cfg = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &[ConstCfg {
+                beta1,
+                beta2,
                 eps: DEFAULT_EPS,
-                weight_decay: 0.0,
+                weight_decay,
             }],
         ));
 
         let mut graph = ComputeGraph::new(ctx.clone());
+
+        graph.add_node(
+            &builtin::ADAMW_SCHEDULE,
+            &[
+                Binding::new(0, &schedule_state.buffer, TensorMode::InOut),
+                Binding::new(1, &schedule_cfg.buffer, TensorMode::Meta),
+            ],
+            [1, 1, 1],
+        );
+
         let mut moments = Vec::with_capacity(params.len());
 
         for (weight, grad) in params {
@@ -85,7 +132,8 @@ impl<B: Backend> AdamW<B> {
                     Binding::new(2, &m.buffer, TensorMode::InOut),
                     Binding::new(3, &v.buffer, TensorMode::InOut),
                     Binding::new(4, &param_meta.buffer, TensorMode::Meta),
-                    Binding::new(5, &cfg.buffer, TensorMode::Meta),
+                    Binding::new(5, &schedule_state.buffer, TensorMode::Input),
+                    Binding::new(6, &const_cfg.buffer, TensorMode::Meta),
                 ],
                 [groups_x, groups_y, 1],
             );
@@ -94,26 +142,93 @@ impl<B: Backend> AdamW<B> {
         }
 
         Self {
-            cfg,
-            eps: DEFAULT_EPS,
-            step_count: AtomicU32::new(0),
             graph,
             moments,
+            schedule_state,
         }
     }
 
-    pub fn step(&self, lr: Real, beta1: Real, beta2: Real, weight_decay: Real) {
-        let t = self.step_count.fetch_add(1, Ordering::Relaxed) + 1;
+    pub fn step(&self) {
+        self.graph.execute_captured();
+    }
 
-        self.cfg.copy_from_cpu(&[StepConfig {
-            step: t,
-            lr,
-            beta1,
-            beta2,
-            eps: self.eps,
-            weight_decay,
-        }]);
+    pub fn current_schedule(&self) -> (u32, Real) {
+        let raw: Vec<u32> = self.schedule_state.to_cpu();
+        (raw[0], f32::from_bits(raw[1]))
+    }
+}
 
-        self.graph.execute();
+// test for loss diffs
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::cosine_lr;
+    use wilupgu::WgpuBackend;
+
+    #[test]
+    fn schedule_matches_host_formula_and_updates_weights() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+
+        let weight_data = vec![1.0 as Real, 2.0, 3.0, 4.0];
+        let grad_data = vec![0.1 as Real, -0.2, 0.3, -0.4];
+        let weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), &weight_data));
+        let grad = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_data));
+
+        let (lr_max, lr_min, warmup_steps, max_steps) = (6e-4 as Real, 6e-5 as Real, 5u32, 50u32);
+        let opt = AdamW::new(
+            ctx.clone(),
+            &[(weight.clone(), grad.clone())],
+            AdamWSchedule {
+                lr_max,
+                lr_min,
+                warmup_steps,
+                max_steps,
+            },
+            0.9,
+            0.95,
+            0.01,
+        );
+
+        for expected_step in 1..=15u32 {
+            opt.step();
+            ctx.synchronize();
+
+            let (step, lr) = opt.current_schedule();
+            assert_eq!(step, expected_step, "on-device step counter drifted");
+
+            let expected_lr = cosine_lr(
+                expected_step as usize,
+                warmup_steps as usize,
+                max_steps as usize,
+                lr_max,
+                lr_min,
+            );
+            let diff = (lr - expected_lr).abs();
+            assert!(
+                diff < 1e-6,
+                "step {expected_step}: on-device lr {lr} vs. host cosine_lr {expected_lr} (diff {diff})"
+            );
+        }
+
+        // weight[0]  -> should decrease
+        // weight[1]  -> should increase
+        let final_weights: Vec<Real> = weight.to_cpu();
+        assert!(
+            final_weights[0] < weight_data[0],
+            "weight[0] should have decreased (positive grad): {} -> {}",
+            weight_data[0],
+            final_weights[0]
+        );
+        assert!(
+            final_weights[1] > weight_data[1],
+            "weight[1] should have increased (negative grad): {} -> {}",
+            weight_data[1],
+            final_weights[1]
+        );
+        assert!(
+            final_weights.iter().all(|w| w.is_finite()),
+            "weights contain non-finite values after {} steps",
+            final_weights.len()
+        );
     }
 }
