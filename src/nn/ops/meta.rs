@@ -85,6 +85,7 @@ pub struct RopeMeta {
     pub seq_len: u32,
     pub dim: u32,
     pub head_dim: u32,
+    pub row_offset: u32,
 }
 impl KernelMeta for RopeMeta {}
 
@@ -143,5 +144,6 @@ pub struct FlashAttnMeta {
     pub dim: u32,
     pub head_dim: u32,
     pub scale: f32,
+    pub row_offset: u32,
 }
 impl KernelMeta for FlashAttnMeta {}

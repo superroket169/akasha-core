@@ -949,6 +949,7 @@ mod flash_attention_validation {
             seq_len,
             dim,
             num_heads,
+            1,
             &q_buf,
             &k_buf,
             &v_buf,
@@ -969,6 +970,7 @@ mod flash_attention_validation {
             dim,
             head_dim,
             scale,
+            row_offset: 0,
         };
 
         let mut new_fwd = ComputeGraph::new(ctx.clone());
@@ -1065,6 +1067,7 @@ mod kernel_fusion_validation {
             seq_len,
             dim,
             head_dim,
+            row_offset: 0,
         };
 
         let q_data = rand_vec(n, 10);
