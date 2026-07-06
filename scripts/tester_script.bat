@@ -1,5 +1,5 @@
 @echo off
-setlocal
+setlocal enabledelayedexpansion
 cd /d "%~dp0.."
 
 set PATH=%PATH%;%USERPROFILE%\.cargo\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin;C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3\bin\x64
@@ -7,26 +7,39 @@ set PATH=%PATH%;%USERPROFILE%\.cargo\bin;C:\Program Files\NVIDIA GPU Computing T
 set LOGFILE=test_results.log
 echo [%date% %time%] akasha-core test run > "%LOGFILE%"
 
+set ANY_FAILED=0
+
 echo.
 echo === [1/3] cargo check --lib --features cuda ===
 cargo check --lib --features cuda >> "%LOGFILE%" 2>&1
-if errorlevel 1 goto :fail_check
-echo OK
+if errorlevel 1 (set S1=FAILED& set ANY_FAILED=1& echo FAILED) else (set S1=OK& echo OK)
 
 echo.
 echo === [2/3] cargo test --lib --features cuda -- --test-threads=1 ===
 cargo test --lib --features cuda -- --test-threads=1 >> "%LOGFILE%" 2>&1
-if errorlevel 1 goto :fail_test
-echo OK
+if errorlevel 1 (set S2=FAILED& set ANY_FAILED=1& echo FAILED) else (set S2=OK& echo OK)
 
 echo.
 echo === [3/3] cargo build --release --features cuda --bin akasha-core ===
 cargo build --release --features cuda --bin akasha-core >> "%LOGFILE%" 2>&1
-if errorlevel 1 goto :fail_build
-echo OK
+if errorlevel 1 (set S3=FAILED& set ANY_FAILED=1& echo FAILED) else (set S3=OK& echo OK)
 
 echo.
 echo ============================================
+echo SUMMARY
+echo   [1/3] cargo check --lib --features cuda .......... !S1!
+echo   [2/3] cargo test  --lib --features cuda ........... !S2!
+echo   [3/3] cargo build --release --features cuda ....... !S3!
+echo ============================================
+
+if "!ANY_FAILED!"=="1" (
+    echo ONE OR MORE STEPS FAILED. Full log: %LOGFILE%
+    echo Send the whole log back -- each step's own output is still in there
+    echo even though the script kept going past the failure.
+    pause
+    exit /b 1
+)
+
 echo ALL CHECKS PASSED: compile, existing test suite, release build.
 echo.
 echo IMPORTANT -- read this:
@@ -51,27 +64,5 @@ echo one. That decision needs a human looking at what's actually running,
 echo not a script guessing.
 echo.
 echo Full log: %LOGFILE%
-echo ============================================
 pause
 exit /b 0
-
-:fail_check
-echo.
-echo FAILED at step 1: cargo check --lib --features cuda
-echo Open %LOGFILE% and look at the last ~50 lines for the compiler error.
-pause
-exit /b 1
-
-:fail_test
-echo.
-echo FAILED at step 2: cargo test --lib --features cuda
-echo Open %LOGFILE% and look at the last ~80 lines.
-pause
-exit /b 1
-
-:fail_build
-echo.
-echo FAILED at step 3: cargo build --release --features cuda --bin akasha-core
-echo Open %LOGFILE% and look at the last ~80 lines.
-pause
-exit /b 1
