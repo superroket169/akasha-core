@@ -3,6 +3,7 @@ struct Meta {
     dim: u32,
     head_dim: u32,
     scale: f32,
+    row_offset: u32,
 }
 
 @group(0) @binding(0) var<storage, read> q: array<f32>;
@@ -27,8 +28,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     let head_off = head * m.head_dim;
-    let q_off = row * m.dim + head_off;
-    let o_off = row * m.dim + head_off;
+    let q_off = (m.row_offset + row) * m.dim + head_off;
+    let o_off = (m.row_offset + row) * m.dim + head_off;
     let l_i = l_cache[row * num_heads + head];
 
     var d_i: f32 = 0.0;
@@ -42,7 +43,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     for (var j: u32 = 0u; j <= row; j = j + 1u) {
-        let kv_off = j * m.dim + head_off;
+        let kv_off = (m.row_offset + j) * m.dim + head_off;
 
         var score: f32 = 0.0;
         for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
@@ -62,7 +63,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
     }
 
-    let dq_off = row * m.dim + head_off;
+    let dq_off = (m.row_offset + row) * m.dim + head_off;
     for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
         d_q[dq_off + d] = dq_acc[d] * m.scale;
     }

@@ -2,6 +2,7 @@ struct Meta {
     seq_len: u32,
     dim: u32,
     head_dim: u32,
+    row_offset: u32,
 }
 
 @group(0) @binding(0) var<storage, read_write> d_q: array<f32>;
@@ -20,9 +21,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     let num_heads = m.dim / m.head_dim;
+    let row = m.row_offset + token_idx;
 
     for (var h: u32 = 0u; h < num_heads; h = h + 1u) {
-        let offset = token_idx * m.dim + h * m.head_dim + dim_idx;
+        let offset = row * m.dim + h * m.head_dim + dim_idx;
 
         let freq = 1.0 / pow(10000.0, f32(dim_idx) / f32(m.head_dim));
         let v_angle = f32(token_idx) * freq;

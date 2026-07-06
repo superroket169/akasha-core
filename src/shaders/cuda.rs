@@ -113,15 +113,17 @@ extern "C" __global__ void rope_bwd_kernel(float* d_vec, unsigned int seq_len, u
 
 pub(crate) const ROPE_QK: &str = r#"
 extern "C" __global__ void rope_qk_kernel(
-    float* q, float* k, unsigned int seq_len, unsigned int dim, unsigned int head_dim
+    float* q, float* k, unsigned int seq_len, unsigned int dim, unsigned int head_dim,
+    unsigned int row_offset
 ) {
     unsigned int dim_idx = (blockIdx.x * blockDim.x + threadIdx.x) * 2u;
     unsigned int token_idx = blockIdx.y * blockDim.y + threadIdx.y;
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
     unsigned int num_heads = dim / head_dim;
+    unsigned int row = row_offset + token_idx;
     for (unsigned int h = 0; h < num_heads; h++) {
-        unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
+        unsigned int offset = row * dim + h * head_dim + dim_idx;
         float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
         float v_angle = (float)token_idx * freq;
         float v_cos = cosf(v_angle);
@@ -142,15 +144,17 @@ extern "C" __global__ void rope_qk_kernel(
 
 pub(crate) const ROPE_BWD_QK: &str = r#"
 extern "C" __global__ void rope_bwd_qk_kernel(
-    float* d_q, float* d_k, unsigned int seq_len, unsigned int dim, unsigned int head_dim
+    float* d_q, float* d_k, unsigned int seq_len, unsigned int dim, unsigned int head_dim,
+    unsigned int row_offset
 ) {
     unsigned int dim_idx = (blockIdx.x * blockDim.x + threadIdx.x) * 2u;
     unsigned int token_idx = blockIdx.y * blockDim.y + threadIdx.y;
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
     unsigned int num_heads = dim / head_dim;
+    unsigned int row = row_offset + token_idx;
     for (unsigned int h = 0; h < num_heads; h++) {
-        unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
+        unsigned int offset = row * dim + h * head_dim + dim_idx;
         float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
         float v_angle = (float)token_idx * freq;
         float v_cos = cosf(v_angle);
@@ -526,7 +530,8 @@ extern "C" __global__ void cache_write_kernel(
 pub(crate) const FLASH_ATTENTION: &str = r#"
 extern "C" __global__ void flash_attention_kernel(
     const float* q, const float* k, const float* v, float* out, float* l_cache,
-    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale
+    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale,
+    unsigned int row_offset
 ) {
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int head = blockIdx.y;
@@ -534,7 +539,7 @@ extern "C" __global__ void flash_attention_kernel(
     if (row >= seq_len || head >= num_heads) return;
 
     unsigned int head_off = head * head_dim;
-    unsigned int q_off = row * dim + head_off;
+    unsigned int q_off = (row_offset + row) * dim + head_off;
 
     float acc[128];
     for (unsigned int d = 0; d < head_dim; d++) acc[d] = 0.0f;
@@ -543,7 +548,7 @@ extern "C" __global__ void flash_attention_kernel(
     float row_sum = 0.0f;
 
     for (unsigned int j = 0; j <= row; j++) {
-        unsigned int kv_off = j * dim + head_off;
+        unsigned int kv_off = (row_offset + j) * dim + head_off;
         float score = 0.0f;
         for (unsigned int d = 0; d < head_dim; d++) {
             score += q[q_off + d] * k[kv_off + d];
@@ -561,7 +566,7 @@ extern "C" __global__ void flash_attention_kernel(
         row_max = new_max;
     }
 
-    unsigned int out_off = row * dim + head_off;
+    unsigned int out_off = (row_offset + row) * dim + head_off;
     for (unsigned int d = 0; d < head_dim; d++) {
         out[out_off + d] = acc[d] / row_sum;
     }
@@ -574,7 +579,8 @@ pub(crate) const FLASH_ATTENTION_BWD_DQ: &str = r#"
 extern "C" __global__ void flash_attention_bwd_dq_kernel(
     const float* q, const float* k, const float* v, const float* o, const float* d_o,
     const float* l_cache, float* d_q,
-    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale
+    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale,
+    unsigned int row_offset
 ) {
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int head = blockIdx.y;
@@ -582,8 +588,8 @@ extern "C" __global__ void flash_attention_bwd_dq_kernel(
     if (row >= seq_len || head >= num_heads) return;
 
     unsigned int head_off = head * head_dim;
-    unsigned int q_off = row * dim + head_off;
-    unsigned int o_off = row * dim + head_off;
+    unsigned int q_off = (row_offset + row) * dim + head_off;
+    unsigned int o_off = (row_offset + row) * dim + head_off;
     float l_i = l_cache[row * num_heads + head];
 
     float d_i = 0.0f;
@@ -595,7 +601,7 @@ extern "C" __global__ void flash_attention_bwd_dq_kernel(
     for (unsigned int d = 0; d < head_dim; d++) dq_acc[d] = 0.0f;
 
     for (unsigned int j = 0; j <= row; j++) {
-        unsigned int kv_off = j * dim + head_off;
+        unsigned int kv_off = (row_offset + j) * dim + head_off;
         float score = 0.0f;
         for (unsigned int d = 0; d < head_dim; d++) {
             score += q[q_off + d] * k[kv_off + d];
@@ -614,7 +620,7 @@ extern "C" __global__ void flash_attention_bwd_dq_kernel(
         }
     }
 
-    unsigned int dq_off = row * dim + head_off;
+    unsigned int dq_off = (row_offset + row) * dim + head_off;
     for (unsigned int d = 0; d < head_dim; d++) {
         d_q[dq_off + d] = dq_acc[d] * scale;
     }
@@ -625,7 +631,8 @@ pub(crate) const FLASH_ATTENTION_BWD_DKDV: &str = r#"
 extern "C" __global__ void flash_attention_bwd_dkdv_kernel(
     const float* q, const float* k, const float* v, const float* o, const float* d_o,
     const float* l_cache, float* d_k, float* d_v,
-    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale
+    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale,
+    unsigned int row_offset
 ) {
     unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int head = blockIdx.y;
@@ -633,14 +640,14 @@ extern "C" __global__ void flash_attention_bwd_dkdv_kernel(
     if (col >= seq_len || head >= num_heads) return;
 
     unsigned int head_off = head * head_dim;
-    unsigned int kv_off = col * dim + head_off;
+    unsigned int kv_off = (row_offset + col) * dim + head_off;
 
     float dk_acc[128];
     float dv_acc[128];
     for (unsigned int d = 0; d < head_dim; d++) { dk_acc[d] = 0.0f; dv_acc[d] = 0.0f; }
 
     for (unsigned int i = col; i < seq_len; i++) {
-        unsigned int qo_off = i * dim + head_off;
+        unsigned int qo_off = (row_offset + i) * dim + head_off;
         float l_i = l_cache[i * num_heads + head];
 
         float score = 0.0f;
