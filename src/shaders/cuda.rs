@@ -111,6 +111,64 @@ extern "C" __global__ void rope_bwd_kernel(float* d_vec, unsigned int seq_len, u
 }
 "#;
 
+pub(crate) const ROPE_QK: &str = r#"
+extern "C" __global__ void rope_qk_kernel(
+    float* q, float* k, unsigned int seq_len, unsigned int dim, unsigned int head_dim
+) {
+    unsigned int dim_idx = (blockIdx.x * blockDim.x + threadIdx.x) * 2u;
+    unsigned int token_idx = blockIdx.y * blockDim.y + threadIdx.y;
+    if (token_idx >= seq_len || dim_idx >= head_dim) return;
+
+    unsigned int num_heads = dim / head_dim;
+    for (unsigned int h = 0; h < num_heads; h++) {
+        unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
+        float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
+        float v_angle = (float)token_idx * freq;
+        float v_cos = cosf(v_angle);
+        float v_sin = sinf(v_angle);
+
+        float q0 = q[offset];
+        float q1 = q[offset + 1u];
+        q[offset]      = q0 * v_cos - q1 * v_sin;
+        q[offset + 1u] = q0 * v_sin + q1 * v_cos;
+
+        float k0 = k[offset];
+        float k1 = k[offset + 1u];
+        k[offset]      = k0 * v_cos - k1 * v_sin;
+        k[offset + 1u] = k0 * v_sin + k1 * v_cos;
+    }
+}
+"#;
+
+pub(crate) const ROPE_BWD_QK: &str = r#"
+extern "C" __global__ void rope_bwd_qk_kernel(
+    float* d_q, float* d_k, unsigned int seq_len, unsigned int dim, unsigned int head_dim
+) {
+    unsigned int dim_idx = (blockIdx.x * blockDim.x + threadIdx.x) * 2u;
+    unsigned int token_idx = blockIdx.y * blockDim.y + threadIdx.y;
+    if (token_idx >= seq_len || dim_idx >= head_dim) return;
+
+    unsigned int num_heads = dim / head_dim;
+    for (unsigned int h = 0; h < num_heads; h++) {
+        unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
+        float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
+        float v_angle = (float)token_idx * freq;
+        float v_cos = cosf(v_angle);
+        float v_sin = sinf(v_angle);
+
+        float dq0 = d_q[offset];
+        float dq1 = d_q[offset + 1u];
+        d_q[offset]      = dq0 * v_cos + dq1 * v_sin;
+        d_q[offset + 1u] = -dq0 * v_sin + dq1 * v_cos;
+
+        float dk0 = d_k[offset];
+        float dk1 = d_k[offset + 1u];
+        d_k[offset]      = dk0 * v_cos + dk1 * v_sin;
+        d_k[offset + 1u] = -dk0 * v_sin + dk1 * v_cos;
+    }
+}
+"#;
+
 pub(crate) const ROPE_OFFSET: &str = r#"
 extern "C" __global__ void rope_offset_kernel(
     float* vec, unsigned int seq_len, unsigned int dim, unsigned int head_dim, unsigned int pos_offset
@@ -162,6 +220,46 @@ extern "C" __global__ void head_scatter_kernel(
     unsigned int src_idx = row * head_dim + col;
     unsigned int dst_idx = row * full_dim + head_offset + col;
     dst[dst_idx] = src[src_idx];
+}
+"#;
+
+pub(crate) const QKV_SPLIT: &str = r#"
+extern "C" __global__ void qkv_split_kernel(
+    const float* src, float* q, float* k, float* v,
+    unsigned int seq_len, unsigned int full_dim, unsigned int head_dim, unsigned int head_offset
+) {
+    unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (row >= seq_len || col >= head_dim) return;
+    (void)head_offset;
+
+    unsigned int width = head_dim;
+    unsigned int src_row = row * full_dim;
+    unsigned int dst_idx = row * width + col;
+
+    q[dst_idx] = src[src_row + col];
+    k[dst_idx] = src[src_row + width + col];
+    v[dst_idx] = src[src_row + 2u * width + col];
+}
+"#;
+
+pub(crate) const QKV_SCATTER: &str = r#"
+extern "C" __global__ void qkv_scatter_kernel(
+    const float* q, const float* k, const float* v, float* dst,
+    unsigned int seq_len, unsigned int full_dim, unsigned int head_dim, unsigned int head_offset
+) {
+    unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    if (row >= seq_len || col >= head_dim) return;
+    (void)head_offset;
+
+    unsigned int width = head_dim;
+    unsigned int src_idx = row * width + col;
+    unsigned int dst_row = row * full_dim;
+
+    dst[dst_row + col] = q[src_idx];
+    dst[dst_row + width + col] = k[src_idx];
+    dst[dst_row + 2u * width + col] = v[src_idx];
 }
 "#;
 
@@ -425,6 +523,154 @@ extern "C" __global__ void cache_write_kernel(
 }
 "#;
 
+pub(crate) const FLASH_ATTENTION: &str = r#"
+extern "C" __global__ void flash_attention_kernel(
+    const float* q, const float* k, const float* v, float* out, float* l_cache,
+    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale
+) {
+    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int head = blockIdx.y;
+    unsigned int num_heads = dim / head_dim;
+    if (row >= seq_len || head >= num_heads) return;
+
+    unsigned int head_off = head * head_dim;
+    unsigned int q_off = row * dim + head_off;
+
+    float acc[128];
+    for (unsigned int d = 0; d < head_dim; d++) acc[d] = 0.0f;
+
+    float row_max = -1000000000.0f;
+    float row_sum = 0.0f;
+
+    for (unsigned int j = 0; j <= row; j++) {
+        unsigned int kv_off = j * dim + head_off;
+        float score = 0.0f;
+        for (unsigned int d = 0; d < head_dim; d++) {
+            score += q[q_off + d] * k[kv_off + d];
+        }
+        score *= scale;
+
+        float new_max = fmaxf(row_max, score);
+        float correction = expf(row_max - new_max);
+        float p = expf(score - new_max);
+
+        row_sum = row_sum * correction + p;
+        for (unsigned int d = 0; d < head_dim; d++) {
+            acc[d] = acc[d] * correction + p * v[kv_off + d];
+        }
+        row_max = new_max;
+    }
+
+    unsigned int out_off = row * dim + head_off;
+    for (unsigned int d = 0; d < head_dim; d++) {
+        out[out_off + d] = acc[d] / row_sum;
+    }
+
+    l_cache[row * num_heads + head] = row_max + logf(row_sum);
+}
+"#;
+
+pub(crate) const FLASH_ATTENTION_BWD_DQ: &str = r#"
+extern "C" __global__ void flash_attention_bwd_dq_kernel(
+    const float* q, const float* k, const float* v, const float* o, const float* d_o,
+    const float* l_cache, float* d_q,
+    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale
+) {
+    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int head = blockIdx.y;
+    unsigned int num_heads = dim / head_dim;
+    if (row >= seq_len || head >= num_heads) return;
+
+    unsigned int head_off = head * head_dim;
+    unsigned int q_off = row * dim + head_off;
+    unsigned int o_off = row * dim + head_off;
+    float l_i = l_cache[row * num_heads + head];
+
+    float d_i = 0.0f;
+    for (unsigned int d = 0; d < head_dim; d++) {
+        d_i += d_o[o_off + d] * o[o_off + d];
+    }
+
+    float dq_acc[128];
+    for (unsigned int d = 0; d < head_dim; d++) dq_acc[d] = 0.0f;
+
+    for (unsigned int j = 0; j <= row; j++) {
+        unsigned int kv_off = j * dim + head_off;
+        float score = 0.0f;
+        for (unsigned int d = 0; d < head_dim; d++) {
+            score += q[q_off + d] * k[kv_off + d];
+        }
+        score *= scale;
+        float p = expf(score - l_i);
+
+        float dp = 0.0f;
+        for (unsigned int d = 0; d < head_dim; d++) {
+            dp += d_o[o_off + d] * v[kv_off + d];
+        }
+        float d_s = p * (dp - d_i);
+
+        for (unsigned int d = 0; d < head_dim; d++) {
+            dq_acc[d] += d_s * k[kv_off + d];
+        }
+    }
+
+    unsigned int dq_off = row * dim + head_off;
+    for (unsigned int d = 0; d < head_dim; d++) {
+        d_q[dq_off + d] = dq_acc[d] * scale;
+    }
+}
+"#;
+
+pub(crate) const FLASH_ATTENTION_BWD_DKDV: &str = r#"
+extern "C" __global__ void flash_attention_bwd_dkdv_kernel(
+    const float* q, const float* k, const float* v, const float* o, const float* d_o,
+    const float* l_cache, float* d_k, float* d_v,
+    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale
+) {
+    unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int head = blockIdx.y;
+    unsigned int num_heads = dim / head_dim;
+    if (col >= seq_len || head >= num_heads) return;
+
+    unsigned int head_off = head * head_dim;
+    unsigned int kv_off = col * dim + head_off;
+
+    float dk_acc[128];
+    float dv_acc[128];
+    for (unsigned int d = 0; d < head_dim; d++) { dk_acc[d] = 0.0f; dv_acc[d] = 0.0f; }
+
+    for (unsigned int i = col; i < seq_len; i++) {
+        unsigned int qo_off = i * dim + head_off;
+        float l_i = l_cache[i * num_heads + head];
+
+        float score = 0.0f;
+        for (unsigned int d = 0; d < head_dim; d++) {
+            score += q[qo_off + d] * k[kv_off + d];
+        }
+        score *= scale;
+        float p = expf(score - l_i);
+
+        float d_i = 0.0f;
+        float dp = 0.0f;
+        for (unsigned int d = 0; d < head_dim; d++) {
+            d_i += d_o[qo_off + d] * o[qo_off + d];
+            dp += d_o[qo_off + d] * v[kv_off + d];
+        }
+        float d_s = p * (dp - d_i);
+
+        for (unsigned int d = 0; d < head_dim; d++) {
+            dv_acc[d] += p * d_o[qo_off + d];
+            dk_acc[d] += d_s * q[qo_off + d];
+        }
+    }
+
+    for (unsigned int d = 0; d < head_dim; d++) {
+        d_k[kv_off + d] = dk_acc[d] * scale;
+        d_v[kv_off + d] = dv_acc[d];
+    }
+}
+"#;
+
 // ==========================================================================
 //                        Custom-shape dispatches
 // ==========================================================================
@@ -464,6 +710,24 @@ pub(crate) fn rope_bwd(
     _wg: [u32; 3],
 ) {
     b.launch_rope(bindings, shader_key(s), ROPE_BWD, "rope_bwd_kernel")
+}
+
+pub(crate) fn rope_qk(
+    s: &'static Shader,
+    b: &CudaBackend,
+    bindings: &[CudaBinding],
+    _wg: [u32; 3],
+) {
+    b.launch_rope_qk(bindings, shader_key(s), ROPE_QK, "rope_qk_kernel")
+}
+
+pub(crate) fn rope_bwd_qk(
+    s: &'static Shader,
+    b: &CudaBackend,
+    bindings: &[CudaBinding],
+    _wg: [u32; 3],
+) {
+    b.launch_rope_qk(bindings, shader_key(s), ROPE_BWD_QK, "rope_bwd_qk_kernel")
 }
 
 pub(crate) fn rope_offset(
@@ -601,4 +865,64 @@ pub(crate) fn cache_write(
     _wg: [u32; 3],
 ) {
     b.launch_cache_write(bindings, shader_key(s), CACHE_WRITE, "cache_write_kernel")
+}
+
+pub(crate) fn qkv_split(
+    s: &'static Shader,
+    b: &CudaBackend,
+    bindings: &[CudaBinding],
+    _wg: [u32; 3],
+) {
+    b.launch_qkv_split(bindings, shader_key(s), QKV_SPLIT, "qkv_split_kernel")
+}
+
+pub(crate) fn qkv_scatter(
+    s: &'static Shader,
+    b: &CudaBackend,
+    bindings: &[CudaBinding],
+    _wg: [u32; 3],
+) {
+    b.launch_qkv_scatter(bindings, shader_key(s), QKV_SCATTER, "qkv_scatter_kernel")
+}
+
+pub(crate) fn flash_attention(
+    s: &'static Shader,
+    b: &CudaBackend,
+    bindings: &[CudaBinding],
+    _wg: [u32; 3],
+) {
+    b.launch_flash_attention(
+        bindings,
+        shader_key(s),
+        FLASH_ATTENTION,
+        "flash_attention_kernel",
+    )
+}
+
+pub(crate) fn flash_attention_bwd_dq(
+    s: &'static Shader,
+    b: &CudaBackend,
+    bindings: &[CudaBinding],
+    _wg: [u32; 3],
+) {
+    b.launch_flash_attention_bwd_dq(
+        bindings,
+        shader_key(s),
+        FLASH_ATTENTION_BWD_DQ,
+        "flash_attention_bwd_dq_kernel",
+    )
+}
+
+pub(crate) fn flash_attention_bwd_dkdv(
+    s: &'static Shader,
+    b: &CudaBackend,
+    bindings: &[CudaBinding],
+    _wg: [u32; 3],
+) {
+    b.launch_flash_attention_bwd_dkdv(
+        bindings,
+        shader_key(s),
+        FLASH_ATTENTION_BWD_DKDV,
+        "flash_attention_bwd_dkdv_kernel",
+    )
 }
