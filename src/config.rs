@@ -29,6 +29,7 @@ pub struct ModelConfig {
     pub seq_len: u32,
     pub ffn_hidden: u32,
     pub norm_eps: f32,
+    pub batch_size: u32,
 }
 
 impl ModelConfig {
@@ -43,7 +44,14 @@ impl ModelConfig {
             seq_len,
             ffn_hidden: dim * 4,
             norm_eps: 1e-5,
+            batch_size: 1,
         }
+    }
+
+    pub fn with_batch_size(mut self, batch_size: u32) -> Self {
+        assert!(batch_size >= 1, "batch_size must be >= 1");
+        self.batch_size = batch_size;
+        self
     }
 
     /// The shipped akasha-hall 1.0 architecture (matches the constants above).

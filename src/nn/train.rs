@@ -79,11 +79,13 @@ impl<B: Backend> Trainer<B> {
             dim,
             seq_len,
             num_layers,
+            batch_size,
             ..
         } = cfg;
+        let rows = batch_size * seq_len;
 
-        let dim_size = (seq_len * dim) as usize;
-        let vocab_out_size = (seq_len * vocab_size) as usize;
+        let dim_size = (rows * dim) as usize;
+        let vocab_out_size = (rows * vocab_size) as usize;
         let zeros_dim = vec![0.0 as Real; dim_size];
 
         let grad_logits = Arc::new(Tensor::init_from_cpu(
@@ -100,7 +102,7 @@ impl<B: Backend> Trainer<B> {
             ctx.clone(),
             vocab_size,
             dim,
-            seq_len,
+            rows,
             &weights.embedding,
             input_tokens,
             &edges[0],
@@ -127,7 +129,7 @@ impl<B: Backend> Trainer<B> {
         let final_norm = RMSNorm::new(
             ctx.clone(),
             dim,
-            seq_len,
+            rows,
             &weights.final_norm,
             &last_block.add_2.in_out_buffer,
             &g_lmhead_in,
@@ -138,7 +140,7 @@ impl<B: Backend> Trainer<B> {
             ctx.clone(),
             dim,
             vocab_size,
-            seq_len,
+            rows,
             &weights.lm_head,
             &final_norm.out_buffer,
             &grad_logits,
@@ -148,7 +150,7 @@ impl<B: Backend> Trainer<B> {
         let cross_entropy = CrossEntropy::new(
             ctx.clone(),
             vocab_size,
-            seq_len,
+            rows,
             &lm_head.out_buffer,
             &grad_logits,
         );
@@ -405,5 +407,154 @@ mod fused_ops_integration {
             embed_grad.iter().any(|&g| g != 0.0),
             "embedding grad is all zero -- gradient did not flow back through the fused attention/rope/qkv ops"
         );
+    }
+}
+
+/// Proves the row_offset-based real-batching design
+#[cfg(test)]
+mod batching_validation {
+    use super::*;
+    use crate::nn::weights::BlockWeights;
+    use wilupgu::WgpuBackend;
+
+    fn clone_weights<B: Backend>(w: &ModelWeights<B>, cfg: ModelConfig) -> ModelWeights<B> {
+        ModelWeights {
+            cfg,
+            embedding: w.embedding.clone(),
+            blocks: w
+                .blocks
+                .iter()
+                .map(|b| BlockWeights {
+                    norm_1: b.norm_1.clone(),
+                    qkv_proj: b.qkv_proj.clone(),
+                    out_proj: b.out_proj.clone(),
+                    norm_2: b.norm_2.clone(),
+                    ffn_up: b.ffn_up.clone(),
+                    ffn_down: b.ffn_down.clone(),
+                })
+                .collect(),
+            final_norm: w.final_norm.clone(),
+            lm_head: w.lm_head.clone(),
+        }
+    }
+
+    fn rand_tokens(n: usize, vocab: u32, seed: u64) -> Vec<u32> {
+        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                ((state >> 33) as u32) % vocab
+            })
+            .collect()
+    }
+
+    fn max_abs_diff(a: &[Real], b: &[Real]) -> f32 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn real_batching_matches_sequential_accumulation() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let batch: u32 = 3;
+        let base_cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let seq_len = base_cfg.seq_len as usize;
+        let vocab = base_cfg.vocab_size;
+        let dim = base_cfg.dim as usize;
+        let scale = 1.0 / (batch as usize * seq_len) as Real;
+
+        let cfg_batched = base_cfg.with_batch_size(batch);
+        let weights_batched = Arc::new(ModelWeights::random(ctx.clone(), &cfg_batched));
+        let weights_ref = Arc::new(clone_weights(&weights_batched, base_cfg));
+
+        let all_inputs: Vec<u32> = (0..batch as usize)
+            .flat_map(|b| rand_tokens(seq_len, vocab, 100 + b as u64))
+            .collect();
+        let all_targets: Vec<u32> = (0..batch as usize)
+            .flat_map(|b| rand_tokens(seq_len, vocab, 200 + b as u64))
+            .collect();
+
+        // ---- reference: today's production path -- one batch_size=1
+        // Trainer, called `batch` times sequentially, gradients accumulating
+        // across the loop (no zero_grad in between) exactly like an
+        // accumulation cycle in Trainer::train_step ----
+        let ref_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![0u32; seq_len]));
+        let ref_trainer = Trainer::new(ctx.clone(), weights_ref, &ref_input_tokens);
+        ref_trainer.cross_entropy.set_grad_scale(scale);
+        ref_trainer.zero_grad();
+        let mut ref_total_loss = 0.0 as Real;
+        for b in 0..batch as usize {
+            let window = b * seq_len..(b + 1) * seq_len;
+            ref_trainer
+                .input_tokens
+                .copy_from_cpu(&all_inputs[window.clone()]);
+            ref_trainer
+                .cross_entropy
+                .target_tokens
+                .copy_from_cpu(&all_targets[window]);
+            ref_trainer.zero_transient_grads();
+            ref_trainer.fused_forward_graph.execute_captured();
+            ref_total_loss += ref_trainer.cross_entropy.loss();
+            ref_trainer.backward_fused();
+        }
+        ctx.synchronize();
+        let ref_avg_loss = ref_total_loss / batch as Real;
+
+        // last iteration's (b = batch-1) forward output is what's left in
+        // ref_trainer's buffers -- compare it against the batched trainer's
+        // matching row_offset slice below.
+        let last_block = ref_trainer.layers.last().unwrap();
+        let ref_last_out = last_block.add_2.in_out_buffer.to_cpu::<Real>();
+
+        // ---- new: one batch_size=3 Trainer, ONE execute over all 33 rows ----
+        let rows = batch as usize * seq_len;
+        let batched_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![0u32; rows]));
+        let batched_trainer = Trainer::new(ctx.clone(), weights_batched, &batched_input_tokens);
+        batched_trainer.cross_entropy.set_grad_scale(scale);
+        batched_trainer.zero_grad();
+        batched_trainer.input_tokens.copy_from_cpu(&all_inputs);
+        batched_trainer
+            .cross_entropy
+            .target_tokens
+            .copy_from_cpu(&all_targets);
+        batched_trainer.zero_transient_grads();
+        batched_trainer.fused_forward_graph.execute_captured();
+        let batched_loss = batched_trainer.cross_entropy.loss();
+        batched_trainer.backward_fused();
+        ctx.synchronize();
+
+        assert!(
+            (ref_avg_loss - batched_loss).abs() < 1e-3,
+            "loss mismatch: sequential avg={ref_avg_loss} batched={batched_loss}"
+        );
+
+        let batched_last_block = batched_trainer.layers.last().unwrap();
+        let batched_out_full = batched_last_block.add_2.in_out_buffer.to_cpu::<Real>();
+        let last_window = (batch as usize - 1) * seq_len * dim..batch as usize * seq_len * dim;
+        let batched_last_out = &batched_out_full[last_window];
+        let out_diff = max_abs_diff(&ref_last_out, batched_last_out);
+        assert!(
+            out_diff < 1e-3,
+            "forward residual-stream mismatch at last batch item: max_abs_diff={out_diff}"
+        );
+
+        let ref_params = ref_trainer.trainable_params();
+        let batched_params = batched_trainer.trainable_params();
+        assert_eq!(ref_params.len(), batched_params.len());
+        for (i, ((_, ref_grad), (_, batched_grad))) in
+            ref_params.iter().zip(batched_params.iter()).enumerate()
+        {
+            let a = ref_grad.to_cpu::<Real>();
+            let b = batched_grad.to_cpu::<Real>();
+            let diff = max_abs_diff(&a, &b);
+            assert!(
+                diff < 1e-3,
+                "grad mismatch at trainable_params()[{i}]: max_abs_diff={diff}"
+            );
+        }
     }
 }

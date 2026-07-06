@@ -370,6 +370,7 @@ impl<B: Backend> SelfAttention<B> {
         seq_len: u32,
         dim: u32,
         num_heads: u32,
+        batch_size: u32,
         q_buf: &Arc<Tensor<B>>,
         k_buf: &Arc<Tensor<B>>,
         v_buf: &Arc<Tensor<B>>,
@@ -382,7 +383,7 @@ impl<B: Backend> SelfAttention<B> {
         let head_dim = dim / num_heads;
         let scale = 1.0 / (head_dim as f32).sqrt();
 
-        let out_size = (seq_len * dim) as usize;
+        let out_size = (batch_size * seq_len * dim) as usize;
         let out_buffer = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
             &vec![0.0 as Real; out_size],
@@ -391,29 +392,42 @@ impl<B: Backend> SelfAttention<B> {
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut backward_graph = ComputeGraph::new(ctx.clone());
 
-        let shape = FlashAttnMeta {
-            seq_len,
-            dim,
-            head_dim,
-            scale,
-        };
-
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        let saved = ops::flash_attention(&mut gb, q_buf, k_buf, v_buf, &out_buffer, shape);
+        let saved: Vec<_> = (0..batch_size)
+            .map(|b| {
+                let shape = FlashAttnMeta {
+                    seq_len,
+                    dim,
+                    head_dim,
+                    scale,
+                    row_offset: b * seq_len,
+                };
+                ops::flash_attention(&mut gb, q_buf, k_buf, v_buf, &out_buffer, shape)
+            })
+            .collect();
 
         let mut gb = GraphBuilder::train(&mut backward_graph);
-        ops::flash_attention_bwd(
-            &mut gb,
-            q_buf,
-            k_buf,
-            v_buf,
-            &saved,
-            grad_output,
-            grad_q,
-            grad_k,
-            grad_v,
-            shape,
-        );
+        for (b, saved_b) in saved.iter().enumerate() {
+            let shape = FlashAttnMeta {
+                seq_len,
+                dim,
+                head_dim,
+                scale,
+                row_offset: b as u32 * seq_len,
+            };
+            ops::flash_attention_bwd(
+                &mut gb,
+                q_buf,
+                k_buf,
+                v_buf,
+                saved_b,
+                grad_output,
+                grad_q,
+                grad_k,
+                grad_v,
+                shape,
+            );
+        }
 
         Self {
             out_buffer,
@@ -555,10 +569,13 @@ impl<B: Backend> TransformerBlock<B> {
             seq_len,
             num_heads,
             ffn_hidden: hidden_dim,
+            batch_size,
             ..
         } = *cfg;
-        let dim_size = (seq_len * dim) as usize;
-        let hidden_size = (seq_len * hidden_dim) as usize;
+
+        let rows = batch_size * seq_len;
+        let dim_size = (rows * dim) as usize;
+        let hidden_size = (rows * hidden_dim) as usize;
 
         let zeros_dim = vec![0.0 as Real; dim_size];
         let zeros_hidden = vec![0.0 as Real; hidden_size];
@@ -579,12 +596,12 @@ impl<B: Backend> TransformerBlock<B> {
         let g_qkvproj_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let g_norm1_in = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let grad_input = grad_input.clone();
-        let elems = seq_len * dim;
+        let elems = rows * dim;
 
         let norm_1 = RMSNorm::new(
             ctx.clone(),
             dim,
-            seq_len,
+            rows,
             &bw.norm_1,
             input_tensor,
             &g_qkvproj_in,
@@ -596,7 +613,7 @@ impl<B: Backend> TransformerBlock<B> {
             ctx.clone(),
             dim,
             dim * 3,
-            seq_len,
+            rows,
             &bw.qkv_proj,
             &norm_1.out_buffer,
             &g_attn_qkv,
@@ -614,24 +631,29 @@ impl<B: Backend> TransformerBlock<B> {
             &q_buf,
             &k_buf,
             &v_buf,
-            HeadMoveMeta::qkv_slice(seq_len, dim, 0),
+            HeadMoveMeta::qkv_slice(rows, dim, 0),
         );
 
-        let rope_shape = RopeMeta {
-            seq_len,
-            dim,
-            head_dim: cfg.head_dim(),
-        };
+        let head_dim = cfg.head_dim();
 
         let mut rope_forward = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut rope_forward);
-        ops::rope_qk(&mut gb, &q_buf, &k_buf, rope_shape);
+        for b in 0..batch_size {
+            let rope_shape = RopeMeta {
+                seq_len,
+                dim,
+                head_dim,
+                row_offset: b * seq_len,
+            };
+            ops::rope_qk(&mut gb, &q_buf, &k_buf, rope_shape);
+        }
 
         let attention = SelfAttention::new(
             ctx.clone(),
             seq_len,
             dim,
             num_heads,
+            batch_size,
             &q_buf,
             &k_buf,
             &v_buf,
@@ -645,7 +667,7 @@ impl<B: Backend> TransformerBlock<B> {
             ctx.clone(),
             dim,
             dim,
-            seq_len,
+            rows,
             &bw.out_proj,
             &attention.out_buffer,
             &g_add1_b,
@@ -654,7 +676,7 @@ impl<B: Backend> TransformerBlock<B> {
 
         let add_1 = Add::new(
             ctx.clone(),
-            dim * seq_len,
+            dim * rows,
             input_tensor,
             &out_proj.out_buffer,
             &g_add2_a,
@@ -665,7 +687,7 @@ impl<B: Backend> TransformerBlock<B> {
         let norm_2 = RMSNorm::new(
             ctx.clone(),
             dim,
-            seq_len,
+            rows,
             &bw.norm_2,
             &add_1.in_out_buffer,
             &g_ffnup_in,
@@ -676,7 +698,7 @@ impl<B: Backend> TransformerBlock<B> {
             ctx.clone(),
             dim,
             hidden_dim,
-            seq_len,
+            rows,
             &bw.ffn_up,
             &norm_2.out_buffer,
             &g_silu_in,
@@ -685,7 +707,7 @@ impl<B: Backend> TransformerBlock<B> {
 
         let silu = SiLU::new(
             ctx.clone(),
-            (seq_len * hidden_dim) as u32,
+            (rows * hidden_dim) as u32,
             &ffn_up.out_buffer,
             &g_ffndown_in,
             &g_silu_in,
@@ -695,7 +717,7 @@ impl<B: Backend> TransformerBlock<B> {
             ctx.clone(),
             hidden_dim,
             dim,
-            seq_len,
+            rows,
             &bw.ffn_down,
             &silu.in_out_buffer,
             &g_add2_b,
@@ -704,7 +726,7 @@ impl<B: Backend> TransformerBlock<B> {
 
         let add_2 = Add::new(
             ctx.clone(),
-            dim * seq_len,
+            dim * rows,
             &add_1.in_out_buffer,
             &ffn_down.out_buffer,
             grad_output,
@@ -722,7 +744,15 @@ impl<B: Backend> TransformerBlock<B> {
 
         let mut rope_backward = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut rope_backward);
-        ops::rope_bwd_qk(&mut gb, &g_attn_q, &g_attn_k, rope_shape);
+        for b in 0..batch_size {
+            let rope_shape = RopeMeta {
+                seq_len,
+                dim,
+                head_dim,
+                row_offset: b * seq_len,
+            };
+            ops::rope_bwd_qk(&mut gb, &g_attn_q, &g_attn_k, rope_shape);
+        }
 
         // dL/dQ + dL/dK + dL/dV -> one fused grad_output for qkv_proj's backward
         let mut qkv_gather_backward = ComputeGraph::new(ctx.clone());
@@ -733,7 +763,7 @@ impl<B: Backend> TransformerBlock<B> {
             &g_attn_k,
             &g_attn_v,
             &g_attn_qkv,
-            HeadMoveMeta::qkv_slice(seq_len, dim, 0),
+            HeadMoveMeta::qkv_slice(rows, dim, 0),
         );
 
         let backward_graph = fuse_compute_graphs(

@@ -325,6 +325,7 @@ pub(crate) fn build_prefill_layer<B: Backend>(
         seq_len: prompt_len,
         dim,
         head_dim,
+        row_offset: 0,
     };
     ops::rope(gb, &q_buf, rope_shape);
     ops::rope(gb, &k_buf, rope_shape);
