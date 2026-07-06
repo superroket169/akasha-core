@@ -1,10 +1,10 @@
 use super::meta::{
-    AttnScaleMeta, CacheWriteMeta, CrossEntropyMeta, EmbeddingMeta, HeadMoveMeta, KernelMeta,
-    MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta, SoftmaxRectMeta, ZeroMeta,
+    AttnScaleMeta, CacheWriteMeta, CrossEntropyMeta, EmbeddingMeta, FlashAttnMeta, HeadMoveMeta,
+    KernelMeta, MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta, SoftmaxRectMeta, ZeroMeta,
 };
 use super::{CachedPhase, Decode, FullSeqPhase, FwdPhase, GraphBuilder, Phase, Train};
-use crate::shaders;
 use crate::Real;
+use crate::shaders;
 use std::sync::Arc;
 use wilupgu::builtin;
 use wilupgu::{Backend, Binding, Shader, Tensor, TensorMode};
@@ -547,6 +547,109 @@ pub(crate) fn causal_attention<B: Backend, P: FullSeqPhase>(
     bufs
 }
 
+// ---- flash attention  ----
+
+fn grid_flash(shape: FlashAttnMeta) -> [u32; 3] {
+    let num_heads = shape.dim / shape.head_dim;
+    [(shape.seq_len + 63) / 64, num_heads, 1]
+}
+
+pub(crate) struct FlashAttnBuffers<B: Backend> {
+    pub out: Arc<Tensor<B>>,
+    pub l_cache: Arc<Tensor<B>>,
+}
+
+pub(crate) fn flash_attention<B: Backend, P: FullSeqPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    q_buf: &Arc<Tensor<B>>,
+    k_buf: &Arc<Tensor<B>>,
+    v_buf: &Arc<Tensor<B>>,
+    out_buffer: &Arc<Tensor<B>>,
+    shape: FlashAttnMeta,
+) -> FlashAttnBuffers<B> {
+    assert!(
+        shape.head_dim <= 128,
+        "flash_attention: head_dim must be <= 128 (fixed kernel accumulator size)"
+    );
+    assert_eq!(
+        shape.dim % shape.head_dim,
+        0,
+        "flash_attention: dim must be divisible by head_dim"
+    );
+
+    let ctx = q_buf.ctx.clone();
+    let num_heads = shape.dim / shape.head_dim;
+    let l_size = (shape.seq_len * num_heads) as usize;
+    let l_cache = Arc::new(Tensor::init_from_cpu(ctx, &vec![0.0 as Real; l_size]));
+    let meta = shape.upload(&q_buf.ctx);
+
+    gb.graph.add_node(
+        &shaders::FLASH_ATTENTION,
+        &[
+            Binding::new(0, &q_buf.buffer, TensorMode::Input),
+            Binding::new(1, &k_buf.buffer, TensorMode::Input),
+            Binding::new(2, &v_buf.buffer, TensorMode::Input),
+            Binding::new(3, &out_buffer.buffer, TensorMode::Output),
+            Binding::new(4, &l_cache.buffer, TensorMode::Output),
+            Binding::new(5, &meta.buffer, TensorMode::Meta),
+        ],
+        grid_flash(shape),
+    );
+
+    FlashAttnBuffers {
+        out: out_buffer.clone(),
+        l_cache,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn flash_attention_bwd<B: Backend>(
+    gb: &mut GraphBuilder<'_, B, Train>,
+    q_buf: &Arc<Tensor<B>>,
+    k_buf: &Arc<Tensor<B>>,
+    v_buf: &Arc<Tensor<B>>,
+    saved: &FlashAttnBuffers<B>,
+    grad_output: &Arc<Tensor<B>>,
+    grad_q: &Arc<Tensor<B>>,
+    grad_k: &Arc<Tensor<B>>,
+    grad_v: &Arc<Tensor<B>>,
+    shape: FlashAttnMeta,
+) {
+    let meta = shape.upload(&q_buf.ctx);
+    let grid = grid_flash(shape);
+
+    gb.graph.add_node(
+        &shaders::FLASH_ATTENTION_BWD_DQ,
+        &[
+            Binding::new(0, &q_buf.buffer, TensorMode::Input),
+            Binding::new(1, &k_buf.buffer, TensorMode::Input),
+            Binding::new(2, &v_buf.buffer, TensorMode::Input),
+            Binding::new(3, &saved.out.buffer, TensorMode::Input),
+            Binding::new(4, &grad_output.buffer, TensorMode::Input),
+            Binding::new(5, &saved.l_cache.buffer, TensorMode::Input),
+            Binding::new(6, &grad_q.buffer, TensorMode::Output),
+            Binding::new(7, &meta.buffer, TensorMode::Meta),
+        ],
+        grid,
+    );
+
+    gb.graph.add_node(
+        &shaders::FLASH_ATTENTION_BWD_DKDV,
+        &[
+            Binding::new(0, &q_buf.buffer, TensorMode::Input),
+            Binding::new(1, &k_buf.buffer, TensorMode::Input),
+            Binding::new(2, &v_buf.buffer, TensorMode::Input),
+            Binding::new(3, &saved.out.buffer, TensorMode::Input),
+            Binding::new(4, &grad_output.buffer, TensorMode::Input),
+            Binding::new(5, &saved.l_cache.buffer, TensorMode::Input),
+            Binding::new(6, &grad_k.buffer, TensorMode::Output),
+            Binding::new(7, &grad_v.buffer, TensorMode::Output),
+            Binding::new(8, &meta.buffer, TensorMode::Meta),
+        ],
+        grid,
+    );
+}
+
 // ---- cache ----
 
 pub(crate) fn cache_write_with<B: Backend, P: CachedPhase>(
@@ -709,4 +812,136 @@ pub(crate) fn cross_entropy_bwd<B: Backend>(
         ],
         [(shape.num_rows + 255) / 256, 1, 1],
     );
+}
+
+// Flash Attention (new) vs "causal_attention" + "SelfAttention"
+#[cfg(test)]
+mod flash_attention_validation {
+    use super::*;
+    use crate::nn::layers::{Layer, SelfAttention};
+    use wilupgu::{ComputeGraph, WgpuBackend};
+
+    fn rand_vec(n: usize, seed: u64) -> Vec<Real> {
+        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let bits = ((state >> 40) as u32) & 0x00FF_FFFF;
+                (bits as f32 / 0x00FF_FFFF as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    fn max_abs_diff(a: &[Real], b: &[Real]) -> f32 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn flash_attention_matches_causal_attention() {
+        check(8, 2, 4);
+        check(37, 3, 16);
+        check(65, 12, 64);
+    }
+
+    fn check(seq_len: u32, num_heads: u32, head_dim: u32) {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+
+        let dim: u32 = num_heads * head_dim;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let n = (seq_len * dim) as usize;
+
+        let q_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 1)));
+        let k_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 2)));
+        let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 3)));
+        let grad_output = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 4)));
+
+        let zeros = || Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![0.0 as Real; n]));
+
+        // ---- reference: existing causal_attention + SelfAttention's inline backward ----
+        let (old_grad_q, old_grad_k, old_grad_v) = (zeros(), zeros(), zeros());
+        let old_attn = SelfAttention::new(
+            ctx.clone(),
+            seq_len,
+            dim,
+            num_heads,
+            &q_buf,
+            &k_buf,
+            &v_buf,
+            &grad_output,
+            &old_grad_q,
+            &old_grad_k,
+            &old_grad_v,
+        );
+        old_attn.forward();
+        old_attn.backward();
+        ctx.synchronize();
+
+        // ---- new: flash_attention + flash_attention_bwd ----
+        let new_out = zeros();
+        let (new_grad_q, new_grad_k, new_grad_v) = (zeros(), zeros(), zeros());
+        let shape = FlashAttnMeta {
+            seq_len,
+            dim,
+            head_dim,
+            scale,
+        };
+
+        let mut new_fwd = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut new_fwd);
+        let saved = flash_attention(&mut gb, &q_buf, &k_buf, &v_buf, &new_out, shape);
+        new_fwd.execute();
+        ctx.synchronize();
+
+        let mut new_bwd = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut new_bwd);
+        flash_attention_bwd(
+            &mut gb,
+            &q_buf,
+            &k_buf,
+            &v_buf,
+            &saved,
+            &grad_output,
+            &new_grad_q,
+            &new_grad_k,
+            &new_grad_v,
+            shape,
+        );
+        new_bwd.execute();
+        ctx.synchronize();
+
+        let tol = 1e-3;
+
+        let ctx_msg = format!("seq_len={seq_len} num_heads={num_heads} head_dim={head_dim}");
+
+        let old_out_cpu = old_attn.out_buffer.to_cpu::<Real>();
+        let new_out_cpu = new_out.to_cpu::<Real>();
+        let out_diff = max_abs_diff(&old_out_cpu, &new_out_cpu);
+        assert!(
+            out_diff < tol,
+            "forward output mismatch ({ctx_msg}): max_abs_diff={out_diff}"
+        );
+
+        let dq_diff = max_abs_diff(&old_grad_q.to_cpu::<Real>(), &new_grad_q.to_cpu::<Real>());
+        assert!(
+            dq_diff < tol,
+            "dQ mismatch ({ctx_msg}): max_abs_diff={dq_diff}"
+        );
+
+        let dk_diff = max_abs_diff(&old_grad_k.to_cpu::<Real>(), &new_grad_k.to_cpu::<Real>());
+        assert!(
+            dk_diff < tol,
+            "dK mismatch ({ctx_msg}): max_abs_diff={dk_diff}"
+        );
+
+        let dv_diff = max_abs_diff(&old_grad_v.to_cpu::<Real>(), &new_grad_v.to_cpu::<Real>());
+        assert!(
+            dv_diff < tol,
+            "dV mismatch ({ctx_msg}): max_abs_diff={dv_diff}"
+        );
+    }
 }
