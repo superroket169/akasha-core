@@ -5,7 +5,7 @@
 use super::ops;
 use super::ops::GraphBuilder;
 use super::ops::meta::{
-    AttnScaleMeta, CrossEntropyMeta, EmbeddingMeta, HeadMoveMeta, MatMulMeta, NormMeta, RopeMeta,
+    CrossEntropyMeta, EmbeddingMeta, FlashAttnMeta, HeadMoveMeta, MatMulMeta, NormMeta, RopeMeta,
 };
 use super::weights::BlockWeights;
 use crate::Real;
@@ -388,128 +388,32 @@ impl<B: Backend> SelfAttention<B> {
             &vec![0.0 as Real; out_size],
         ));
 
-        let head_size = (seq_len * head_dim) as usize;
-        let scores_size = (seq_len * seq_len) as usize;
-
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut backward_graph = ComputeGraph::new(ctx.clone());
 
+        let shape = FlashAttnMeta {
+            seq_len,
+            dim,
+            head_dim,
+            scale,
+        };
+
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        let saved = ops::causal_attention(
+        let saved = ops::flash_attention(&mut gb, q_buf, k_buf, v_buf, &out_buffer, shape);
+
+        let mut gb = GraphBuilder::train(&mut backward_graph);
+        ops::flash_attention_bwd(
             &mut gb,
             q_buf,
             k_buf,
             v_buf,
-            &out_buffer,
-            seq_len,
-            dim,
-            num_heads,
+            &saved,
+            grad_output,
+            grad_q,
+            grad_k,
+            grad_v,
+            shape,
         );
-
-        let mut gb = GraphBuilder::train(&mut backward_graph);
-
-        let grad_out_head = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; head_size],
-        ));
-        let grad_q_head = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; head_size],
-        ));
-        let grad_k_head = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; head_size],
-        ));
-        let grad_v_head = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; head_size],
-        ));
-        let grad_y = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; scores_size],
-        ));
-        let grad_raw = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; scores_size],
-        ));
-
-        let attn_shape = AttnScaleMeta { seq_len, scale };
-
-        for h in 0..num_heads {
-            let head_move = HeadMoveMeta {
-                seq_len,
-                full_dim: dim,
-                head_dim,
-                head_offset: h * head_dim,
-            };
-            let scores_h = &saved.scores_heads[h as usize];
-
-            ops::head_gather(&mut gb, grad_output, &grad_out_head, head_move);
-
-            // dV_h = Y^T @ dOut_h  (accumulating MatMulWeightBwd -- zero first)
-            ops::zero(&mut gb, &grad_v_head, seq_len * head_dim);
-            ops::matmul_weight_bwd(
-                &mut gb,
-                scores_h,
-                &grad_out_head,
-                &grad_v_head,
-                MatMulMeta {
-                    m: seq_len,
-                    n: head_dim,
-                    k: seq_len,
-                },
-            );
-
-            // dY_h = dOut_h @ V_h^T
-            ops::matmul_trp(
-                &mut gb,
-                &grad_out_head,
-                &saved.v_heads[h as usize],
-                &grad_y,
-                MatMulMeta {
-                    m: seq_len,
-                    n: seq_len,
-                    k: head_dim,
-                },
-            );
-
-            ops::softmax_bwd(&mut gb, scores_h, &grad_y, &grad_raw, attn_shape);
-
-            // dQ_h = dRaw @ K_h
-            ops::matmul(
-                &mut gb,
-                &grad_raw,
-                &saved.k_heads[h as usize],
-                &grad_q_head,
-                MatMulMeta {
-                    m: seq_len,
-                    n: head_dim,
-                    k: seq_len,
-                },
-            );
-
-            // dK_h = dRaw^T @ Q_h  (accumulating -- zero first)
-            ops::zero(&mut gb, &grad_k_head, seq_len * head_dim);
-            ops::matmul_weight_bwd(
-                &mut gb,
-                &grad_raw,
-                &saved.q_heads[h as usize],
-                &grad_k_head,
-                MatMulMeta {
-                    m: seq_len,
-                    n: head_dim,
-                    k: seq_len,
-                },
-            );
-
-            for (src, dst) in [
-                (&grad_q_head, grad_q),
-                (&grad_k_head, grad_k),
-                (&grad_v_head, grad_v),
-            ] {
-                ops::head_scatter(&mut gb, src, dst, head_move);
-            }
-        }
 
         Self {
             out_buffer,
@@ -704,14 +608,14 @@ impl<B: Backend> TransformerBlock<B> {
         let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let mut qkv_split_forward = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut qkv_split_forward);
-        for (buf, off) in [(&q_buf, 0), (&k_buf, dim), (&v_buf, 2 * dim)] {
-            ops::head_gather(
-                &mut gb,
-                &qkv_proj.out_buffer,
-                buf,
-                HeadMoveMeta::qkv_slice(seq_len, dim, off),
-            );
-        }
+        ops::qkv_split(
+            &mut gb,
+            &qkv_proj.out_buffer,
+            &q_buf,
+            &k_buf,
+            &v_buf,
+            HeadMoveMeta::qkv_slice(seq_len, dim, 0),
+        );
 
         let rope_shape = RopeMeta {
             seq_len,
@@ -721,8 +625,7 @@ impl<B: Backend> TransformerBlock<B> {
 
         let mut rope_forward = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut rope_forward);
-        ops::rope(&mut gb, &q_buf, rope_shape);
-        ops::rope(&mut gb, &k_buf, rope_shape);
+        ops::rope_qk(&mut gb, &q_buf, &k_buf, rope_shape);
 
         let attention = SelfAttention::new(
             ctx.clone(),
@@ -819,20 +722,19 @@ impl<B: Backend> TransformerBlock<B> {
 
         let mut rope_backward = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut rope_backward);
-        ops::rope_bwd(&mut gb, &g_attn_q, rope_shape);
-        ops::rope_bwd(&mut gb, &g_attn_k, rope_shape);
+        ops::rope_bwd_qk(&mut gb, &g_attn_q, &g_attn_k, rope_shape);
 
         // dL/dQ + dL/dK + dL/dV -> one fused grad_output for qkv_proj's backward
         let mut qkv_gather_backward = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut qkv_gather_backward);
-        for (buf, off) in [(&g_attn_q, 0), (&g_attn_k, dim), (&g_attn_v, 2 * dim)] {
-            ops::head_scatter(
-                &mut gb,
-                buf,
-                &g_attn_qkv,
-                HeadMoveMeta::qkv_slice(seq_len, dim, off),
-            );
-        }
+        ops::qkv_scatter(
+            &mut gb,
+            &g_attn_q,
+            &g_attn_k,
+            &g_attn_v,
+            &g_attn_qkv,
+            HeadMoveMeta::qkv_slice(seq_len, dim, 0),
+        );
 
         let backward_graph = fuse_compute_graphs(
             ctx.clone(),
