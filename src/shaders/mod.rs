@@ -7,8 +7,8 @@ mod cpu;
 #[cfg(feature = "cuda")]
 mod cuda;
 
-use wilupgu::TensorMode::{InOut, Input, Meta, Output};
 use wilupgu::Shader;
+use wilupgu::TensorMode::{InOut, Input, Meta, Output};
 #[cfg(feature = "cuda")]
 use wilupgu::{CudaShape, CudaSpec};
 
@@ -286,6 +286,32 @@ pub static HEAD_SCATTER: Shader = Shader {
         shape: CudaShape::Custom(cuda::head_scatter),
     }),
     #[cfg(not(feature = "cuda"))]
+    cuda: None,
+};
+
+pub static FLASH_ATTENTION: Shader = Shader {
+    name: "FlashAttention",
+    layout: &[Input, Input, Input, Output, Output, Meta],
+    wgpu: Some(include_str!("fwd/flash_attention.wgsl")),
+    cpu: None,
+    cuda: None,
+};
+
+pub static FLASH_ATTENTION_BWD_DQ: Shader = Shader {
+    name: "FlashAttentionBwdDQ",
+    layout: &[Input, Input, Input, Input, Input, Input, Output, Meta],
+    wgpu: Some(include_str!("bwd/flash_attention_bwd_dq.wgsl")),
+    cpu: None,
+    cuda: None,
+};
+
+pub static FLASH_ATTENTION_BWD_DKDV: Shader = Shader {
+    name: "FlashAttentionBwdDKDV",
+    layout: &[
+        Input, Input, Input, Input, Input, Input, Output, Output, Meta,
+    ],
+    wgpu: Some(include_str!("bwd/flash_attention_bwd_dkdv.wgsl")),
+    cpu: None,
     cuda: None,
 };
 
