@@ -1,8 +1,3 @@
-//! akasha-core's own `Shader` constants -- kernels that used to live in
-//! wilupgu but aren't universal/structural enough to belong there forever
-//! (attention machinery, RoPE, RMSNorm, embedding, cross-entropy, SiLU).
-//! See wilupgu's `REFACTOR.md` for the full rationale.
-
 mod cpu;
 #[cfg(feature = "cuda")]
 mod cuda;
@@ -100,6 +95,36 @@ pub static ROPE_BWD: Shader = Shader {
         src: "",
         entry: "",
         shape: CudaShape::Custom(cuda::rope_bwd),
+    }),
+    #[cfg(not(feature = "cuda"))]
+    cuda: None,
+};
+
+pub static ROPE_QK: Shader = Shader {
+    name: "RopeQK",
+    layout: &[InOut, InOut, Meta],
+    wgpu: Some(include_str!("fwd/rope_qk.wgsl")),
+    cpu: None,
+    #[cfg(feature = "cuda")]
+    cuda: Some(CudaSpec {
+        src: "",
+        entry: "",
+        shape: CudaShape::Custom(cuda::rope_qk),
+    }),
+    #[cfg(not(feature = "cuda"))]
+    cuda: None,
+};
+
+pub static ROPE_BWD_QK: Shader = Shader {
+    name: "RopeBwdQK",
+    layout: &[InOut, InOut, Meta],
+    wgpu: Some(include_str!("bwd/rope_bwd_qk.wgsl")),
+    cpu: None,
+    #[cfg(feature = "cuda")]
+    cuda: Some(CudaSpec {
+        src: "",
+        entry: "",
+        shape: CudaShape::Custom(cuda::rope_bwd_qk),
     }),
     #[cfg(not(feature = "cuda"))]
     cuda: None,
@@ -289,11 +314,48 @@ pub static HEAD_SCATTER: Shader = Shader {
     cuda: None,
 };
 
+pub static QKV_SPLIT: Shader = Shader {
+    name: "QkvSplit",
+    layout: &[Input, Output, Output, Output, Meta],
+    wgpu: Some(include_str!("fwd/qkv_split.wgsl")),
+    cpu: None,
+    #[cfg(feature = "cuda")]
+    cuda: Some(CudaSpec {
+        src: "",
+        entry: "",
+        shape: CudaShape::Custom(cuda::qkv_split),
+    }),
+    #[cfg(not(feature = "cuda"))]
+    cuda: None,
+};
+
+pub static QKV_SCATTER: Shader = Shader {
+    name: "QkvScatter",
+    layout: &[Input, Input, Input, Output, Meta],
+    wgpu: Some(include_str!("bwd/qkv_scatter.wgsl")),
+    cpu: None,
+    #[cfg(feature = "cuda")]
+    cuda: Some(CudaSpec {
+        src: "",
+        entry: "",
+        shape: CudaShape::Custom(cuda::qkv_scatter),
+    }),
+    #[cfg(not(feature = "cuda"))]
+    cuda: None,
+};
+
 pub static FLASH_ATTENTION: Shader = Shader {
     name: "FlashAttention",
     layout: &[Input, Input, Input, Output, Output, Meta],
     wgpu: Some(include_str!("fwd/flash_attention.wgsl")),
     cpu: None,
+    #[cfg(feature = "cuda")]
+    cuda: Some(CudaSpec {
+        src: "",
+        entry: "",
+        shape: CudaShape::Custom(cuda::flash_attention),
+    }),
+    #[cfg(not(feature = "cuda"))]
     cuda: None,
 };
 
@@ -302,6 +364,13 @@ pub static FLASH_ATTENTION_BWD_DQ: Shader = Shader {
     layout: &[Input, Input, Input, Input, Input, Input, Output, Meta],
     wgpu: Some(include_str!("bwd/flash_attention_bwd_dq.wgsl")),
     cpu: None,
+    #[cfg(feature = "cuda")]
+    cuda: Some(CudaSpec {
+        src: "",
+        entry: "",
+        shape: CudaShape::Custom(cuda::flash_attention_bwd_dq),
+    }),
+    #[cfg(not(feature = "cuda"))]
     cuda: None,
 };
 
@@ -312,6 +381,13 @@ pub static FLASH_ATTENTION_BWD_DKDV: Shader = Shader {
     ],
     wgpu: Some(include_str!("bwd/flash_attention_bwd_dkdv.wgsl")),
     cpu: None,
+    #[cfg(feature = "cuda")]
+    cuda: Some(CudaSpec {
+        src: "",
+        entry: "",
+        shape: CudaShape::Custom(cuda::flash_attention_bwd_dkdv),
+    }),
+    #[cfg(not(feature = "cuda"))]
     cuda: None,
 };
 
