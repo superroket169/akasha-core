@@ -248,7 +248,7 @@ impl<B: Backend> Trainer<B> {
 
             self.zero_transient_grads();
 
-            self.fused_forward_graph.execute();
+            self.fused_forward_graph.execute_captured();
             if read_loss {
                 total_loss += self.cross_entropy.loss();
             }
@@ -316,11 +316,11 @@ impl<B: Backend> Trainer<B> {
     }
 
     pub fn backward_fused(&self) {
-        self.fused_backward_graph.execute();
+        self.fused_backward_graph.execute_captured();
     }
 
     pub fn forward_fused(&self) {
-        self.fused_forward_graph.execute();
+        self.fused_forward_graph.execute_captured();
     }
 
     pub fn zero_grad(&self) {
@@ -350,5 +350,48 @@ impl<B: Backend> Trainer<B> {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod fused_ops_integration {
+    use super::*;
+    use wilupgu::WgpuBackend;
+
+    #[test]
+    fn trainer_forward_backward_stays_finite_with_fused_ops() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+
+        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+
+        let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
+        let targets: Vec<u32> = (0..cfg.seq_len).map(|i| (i + 1) % cfg.vocab_size).collect();
+        let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
+
+        let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens);
+        trainer.cross_entropy.target_tokens.copy_from_cpu(&targets);
+        trainer.zero_grad();
+
+        trainer.fused_forward_graph.execute_captured();
+        let loss = trainer.cross_entropy.loss();
+        trainer.backward_fused();
+        ctx.synchronize();
+
+        assert!(loss.is_finite(), "loss is not finite: {loss}");
+        assert!(
+            loss > 0.0,
+            "loss should be positive cross-entropy, got {loss}"
+        );
+
+        let embed_grad = trainer.embedding.grad_table.to_cpu::<Real>();
+        assert!(
+            embed_grad.iter().all(|g| g.is_finite()),
+            "embedding grad contains non-finite values"
+        );
+        assert!(
+            embed_grad.iter().any(|&g| g != 0.0),
+            "embedding grad is all zero -- gradient did not flow back through the fused attention/rope/qkv ops"
+        );
     }
 }
