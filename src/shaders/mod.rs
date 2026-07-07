@@ -1,25 +1,24 @@
 mod cpu;
-#[cfg(feature = "cuda")]
 mod cuda;
 
 use wilupgu::Shader;
 use wilupgu::TensorMode::{InOut, Input, Meta, Output};
-#[cfg(feature = "cuda")]
-use wilupgu::{CudaShape, CudaSpec};
+use wilupgu::{CudaShape, CudaSpec, MetaField};
 
 pub static EMBEDDING: Shader = Shader {
     name: "Embedding",
     layout: &[Input, Input, Output, Meta],
     wgpu: Some(include_str!("fwd/embedding.wgsl")),
     cpu: Some(cpu::embedding),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::embedding),
+        src: cuda::EMBEDDING,
+        entry: "embedding_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::U32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static EMBEDDING_BWD: Shader = Shader {
@@ -27,14 +26,15 @@ pub static EMBEDDING_BWD: Shader = Shader {
     layout: &[Input, Input, Output, Meta],
     wgpu: Some(include_str!("bwd/embedding_bwd.wgsl")),
     cpu: Some(cpu::embedding_bwd),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::embedding_bwd),
+        src: cuda::EMBEDDING_BWD,
+        entry: "embedding_bwd_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::U32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static SILU: Shader = Shader {
@@ -42,14 +42,15 @@ pub static SILU: Shader = Shader {
     layout: &[InOut],
     wgpu: Some(include_str!("fwd/silu.wgsl")),
     cpu: Some(cpu::silu),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
         src: cuda::SILU,
         entry: "silu_kernel",
-        shape: CudaShape::InOut1,
+        shape: CudaShape::Generic {
+            meta_fields: &[],
+            block_dim: (256, 1, 1),
+            append_len: true,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 /// No CPU implementation -- pre-existing gap inherited from wilupgu's old
@@ -59,14 +60,15 @@ pub static SILU_BWD: Shader = Shader {
     layout: &[Input, Input, Output],
     wgpu: Some(include_str!("bwd/silu_bwd.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
         src: cuda::SILU_BWD,
         entry: "silu_bwd_kernel",
-        shape: CudaShape::In2Out1,
+        shape: CudaShape::Generic {
+            meta_fields: &[],
+            block_dim: (256, 1, 1),
+            append_len: true,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static ROPE: Shader = Shader {
@@ -74,14 +76,15 @@ pub static ROPE: Shader = Shader {
     layout: &[InOut, Meta],
     wgpu: Some(include_str!("fwd/rope.wgsl")),
     cpu: Some(cpu::rope),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::rope),
+        src: cuda::ROPE,
+        entry: "rope_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::U32],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 /// No CPU implementation (pre-existing gap, see `SILU_BWD`).
@@ -90,14 +93,15 @@ pub static ROPE_BWD: Shader = Shader {
     layout: &[InOut, Meta],
     wgpu: Some(include_str!("bwd/rope_bwd.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::rope_bwd),
+        src: cuda::ROPE_BWD,
+        entry: "rope_bwd_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::U32],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static ROPE_QK: Shader = Shader {
@@ -105,14 +109,20 @@ pub static ROPE_QK: Shader = Shader {
     layout: &[InOut, InOut, Meta],
     wgpu: Some(include_str!("fwd/rope_qk.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::rope_qk),
+        src: cuda::ROPE_QK,
+        entry: "rope_qk_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+            ],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static ROPE_BWD_QK: Shader = Shader {
@@ -120,14 +130,20 @@ pub static ROPE_BWD_QK: Shader = Shader {
     layout: &[InOut, InOut, Meta],
     wgpu: Some(include_str!("bwd/rope_bwd_qk.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::rope_bwd_qk),
+        src: cuda::ROPE_BWD_QK,
+        entry: "rope_bwd_qk_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+            ],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static ROPE_OFFSET: Shader = Shader {
@@ -135,14 +151,20 @@ pub static ROPE_OFFSET: Shader = Shader {
     layout: &[InOut, Meta],
     wgpu: Some(include_str!("fwd/rope_offset.wgsl")),
     cpu: Some(cpu::rope_offset),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::rope_offset),
+        src: cuda::ROPE_OFFSET,
+        entry: "rope_offset_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+            ],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static SOFTMAX: Shader = Shader {
@@ -150,14 +172,15 @@ pub static SOFTMAX: Shader = Shader {
     layout: &[InOut, Meta],
     wgpu: Some(include_str!("fwd/softmax.wgsl")),
     cpu: Some(cpu::softmax),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::softmax),
+        src: cuda::SOFTMAX,
+        entry: "softmax_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 /// No CPU implementation (pre-existing gap, see `SILU_BWD`).
@@ -166,14 +189,15 @@ pub static SOFTMAX_BWD: Shader = Shader {
     layout: &[Input, Input, Output, Meta],
     wgpu: Some(include_str!("bwd/softmax_bwd.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::softmax_bwd),
+        src: cuda::SOFTMAX_BWD,
+        entry: "softmax_bwd_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::F32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static SOFTMAX_RECT: Shader = Shader {
@@ -181,14 +205,15 @@ pub static SOFTMAX_RECT: Shader = Shader {
     layout: &[InOut, Meta],
     wgpu: Some(include_str!("fwd/softmax_rect.wgsl")),
     cpu: Some(cpu::softmax_rect),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::softmax_rect),
+        src: cuda::SOFTMAX_RECT,
+        entry: "softmax_rect_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::F32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static CAUSAL_SOFTMAX: Shader = Shader {
@@ -196,14 +221,15 @@ pub static CAUSAL_SOFTMAX: Shader = Shader {
     layout: &[InOut, Meta],
     wgpu: Some(include_str!("fwd/causal_softmax.wgsl")),
     cpu: Some(cpu::causal_softmax),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::causal_softmax),
+        src: cuda::CAUSAL_SOFTMAX,
+        entry: "causal_softmax_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::F32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static RMSNORM: Shader = Shader {
@@ -211,14 +237,15 @@ pub static RMSNORM: Shader = Shader {
     layout: &[Input, Input, Output, Meta],
     wgpu: Some(include_str!("fwd/rmsnorm.wgsl")),
     cpu: Some(cpu::rmsnorm),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::rmsnorm),
+        src: cuda::RMSNORM,
+        entry: "rmsnorm_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::F32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 /// No CPU implementation (pre-existing gap, see `SILU_BWD`).
@@ -227,14 +254,15 @@ pub static RMSNORM_BWD: Shader = Shader {
     layout: &[Input, Input, Input, Output, Output, Meta],
     wgpu: Some(include_str!("bwd/rmsnorm_bwd.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::rmsnorm_bwd),
+        src: cuda::RMSNORM_BWD,
+        entry: "rmsnorm_bwd_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::F32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 /// No CPU implementation (pre-existing gap, see `SILU_BWD`).
@@ -243,14 +271,15 @@ pub static RMSNORM_WEIGHT_BWD: Shader = Shader {
     layout: &[Input, Input, Input, Output, Meta],
     wgpu: Some(include_str!("bwd/rmsnorm_weight_bwd.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::rmsnorm_weight_bwd),
+        src: cuda::RMSNORM_WEIGHT_BWD,
+        entry: "rmsnorm_weight_bwd_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static CROSS_ENTROPY: Shader = Shader {
@@ -258,14 +287,15 @@ pub static CROSS_ENTROPY: Shader = Shader {
     layout: &[Input, Input, Output, Output, Meta],
     wgpu: Some(include_str!("fwd/cross_entropy.wgsl")),
     cpu: Some(cpu::cross_entropy),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::cross_entropy),
+        src: cuda::CROSS_ENTROPY,
+        entry: "cross_entropy_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 /// No CPU implementation (pre-existing gap, see `SILU_BWD`).
@@ -274,14 +304,15 @@ pub static CROSS_ENTROPY_BWD: Shader = Shader {
     layout: &[Input, Input, Input, Output, Meta],
     wgpu: Some(include_str!("bwd/cross_entropy_bwd.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::cross_entropy_bwd),
+        src: cuda::CROSS_ENTROPY_BWD,
+        entry: "cross_entropy_bwd_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static HEAD_GATHER: Shader = Shader {
@@ -289,14 +320,20 @@ pub static HEAD_GATHER: Shader = Shader {
     layout: &[Input, Output, Meta],
     wgpu: Some(include_str!("head_gather.wgsl")),
     cpu: Some(cpu::head_gather),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::head_gather),
+        src: cuda::HEAD_GATHER,
+        entry: "head_gather_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+            ],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static HEAD_SCATTER: Shader = Shader {
@@ -304,14 +341,20 @@ pub static HEAD_SCATTER: Shader = Shader {
     layout: &[Input, Output, Meta],
     wgpu: Some(include_str!("head_scatter.wgsl")),
     cpu: Some(cpu::head_scatter),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::head_scatter),
+        src: cuda::HEAD_SCATTER,
+        entry: "head_scatter_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+            ],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static QKV_SPLIT: Shader = Shader {
@@ -319,14 +362,20 @@ pub static QKV_SPLIT: Shader = Shader {
     layout: &[Input, Output, Output, Output, Meta],
     wgpu: Some(include_str!("fwd/qkv_split.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::qkv_split),
+        src: cuda::QKV_SPLIT,
+        entry: "qkv_split_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+            ],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static QKV_SCATTER: Shader = Shader {
@@ -334,14 +383,20 @@ pub static QKV_SCATTER: Shader = Shader {
     layout: &[Input, Input, Input, Output, Meta],
     wgpu: Some(include_str!("bwd/qkv_scatter.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::qkv_scatter),
+        src: cuda::QKV_SCATTER,
+        entry: "qkv_scatter_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+            ],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static FLASH_ATTENTION: Shader = Shader {
@@ -349,14 +404,21 @@ pub static FLASH_ATTENTION: Shader = Shader {
     layout: &[Input, Input, Input, Output, Output, Meta],
     wgpu: Some(include_str!("fwd/flash_attention.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::flash_attention),
+        src: cuda::FLASH_ATTENTION,
+        entry: "flash_attention_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::F32,
+                MetaField::U32,
+            ],
+            block_dim: (64, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static FLASH_ATTENTION_BWD_DQ: Shader = Shader {
@@ -364,14 +426,21 @@ pub static FLASH_ATTENTION_BWD_DQ: Shader = Shader {
     layout: &[Input, Input, Input, Input, Input, Input, Output, Meta],
     wgpu: Some(include_str!("bwd/flash_attention_bwd_dq.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::flash_attention_bwd_dq),
+        src: cuda::FLASH_ATTENTION_BWD_DQ,
+        entry: "flash_attention_bwd_dq_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::F32,
+                MetaField::U32,
+            ],
+            block_dim: (64, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static FLASH_ATTENTION_BWD_DKDV: Shader = Shader {
@@ -381,14 +450,21 @@ pub static FLASH_ATTENTION_BWD_DKDV: Shader = Shader {
     ],
     wgpu: Some(include_str!("bwd/flash_attention_bwd_dkdv.wgsl")),
     cpu: None,
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::flash_attention_bwd_dkdv),
+        src: cuda::FLASH_ATTENTION_BWD_DKDV,
+        entry: "flash_attention_bwd_dkdv_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::U32,
+                MetaField::F32,
+                MetaField::U32,
+            ],
+            block_dim: (64, 1, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
 
 pub static CACHE_WRITE: Shader = Shader {
@@ -396,12 +472,13 @@ pub static CACHE_WRITE: Shader = Shader {
     layout: &[Input, InOut, Meta],
     wgpu: Some(include_str!("cache_write.wgsl")),
     cpu: Some(cpu::cache_write),
-    #[cfg(feature = "cuda")]
     cuda: Some(CudaSpec {
-        src: "",
-        entry: "",
-        shape: CudaShape::Custom(cuda::cache_write),
+        src: cuda::CACHE_WRITE,
+        entry: "cache_write_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::U32],
+            block_dim: (16, 16, 1),
+            append_len: false,
+        },
     }),
-    #[cfg(not(feature = "cuda"))]
-    cuda: None,
 };
