@@ -778,6 +778,22 @@ pub(crate) fn silu<B: Backend, P: FwdPhase>(
     );
 }
 
+pub(crate) fn silu_out<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    input: &Arc<Tensor<B>>,
+    out: &Arc<Tensor<B>>,
+    len: u32,
+) {
+    gb.graph.add_node(
+        &shaders::SILU_OUT,
+        &[
+            Binding::new(0, &input.buffer, TensorMode::Input),
+            Binding::new(1, &out.buffer, TensorMode::Output),
+        ],
+        grid256(len),
+    );
+}
+
 /// `input` is the pre-activation buffer saved by the forward pass.
 pub(crate) fn silu_bwd<B: Backend>(
     gb: &mut GraphBuilder<'_, B, Train>,
@@ -809,6 +825,24 @@ pub(crate) fn residual_add<B: Backend, P: FwdPhase>(
         &[
             Binding::new(0, &target.buffer, TensorMode::InOut),
             Binding::new(1, &source.buffer, TensorMode::Input),
+        ],
+        grid256(len),
+    );
+}
+
+pub(crate) fn add_out<B: Backend, P: FwdPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    a: &Arc<Tensor<B>>,
+    b: &Arc<Tensor<B>>,
+    out: &Arc<Tensor<B>>,
+    len: u32,
+) {
+    gb.graph.add_node(
+        &shaders::ADD,
+        &[
+            Binding::new(0, &a.buffer, TensorMode::Input),
+            Binding::new(1, &b.buffer, TensorMode::Input),
+            Binding::new(2, &out.buffer, TensorMode::Output),
         ],
         grid256(len),
     );

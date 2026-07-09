@@ -48,6 +48,25 @@ extern "C" __global__ void silu_kernel(float* x, unsigned int n) {
 }
 "#;
 
+pub(crate) const SILU_OUT: &str = r#"
+extern "C" __global__ void silu_out_kernel(const float* x, float* y, unsigned int n) {
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        float val = x[idx];
+        y[idx] = val / (1.0f + expf(-val));
+    }
+}
+"#;
+
+pub(crate) const ADD: &str = r#"
+extern "C" __global__ void add_kernel(const float* a, const float* b, float* out, unsigned int n) {
+    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        out[idx] = a[idx] + b[idx];
+    }
+}
+"#;
+
 pub(crate) const SILU_BWD: &str = r#"
 extern "C" __global__ void silu_bwd_kernel(const float* x, const float* dY, float* dX, unsigned int n) {
     unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;

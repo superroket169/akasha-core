@@ -120,7 +120,7 @@ impl<B: Backend> Trainer<B> {
                 &edges[i + 1],
                 &edges[i],
             );
-            current_input = block.add_2.in_out_buffer.clone();
+            current_input = block.add_2.out_buffer.clone();
             layers.push(block);
         }
 
@@ -131,7 +131,7 @@ impl<B: Backend> Trainer<B> {
             dim,
             rows,
             &weights.final_norm,
-            &last_block.add_2.in_out_buffer,
+            &last_block.add_2.out_buffer,
             &g_lmhead_in,
             &edges[num_layers],
         );
@@ -410,6 +410,114 @@ mod fused_ops_integration {
     }
 }
 
+/// Numerical gradcheck through the REAL fused forward/backward chain test
+#[cfg(test)]
+mod full_chain_gradcheck {
+    use super::*;
+    use wilupgu::WgpuBackend;
+
+    fn loss_at(trainer: &Trainer<WgpuBackend>) -> Real {
+        trainer.fused_forward_graph.execute_captured();
+        trainer.cross_entropy.loss()
+    }
+
+    fn check_param(
+        trainer: &Trainer<WgpuBackend>,
+        name: &str,
+        weight: &Arc<Tensor<WgpuBackend>>,
+        analytic: &[Real],
+        indices: &[usize],
+    ) {
+        let eps = 1e-2 as Real;
+        for &i in indices {
+            let mut w: Vec<Real> = weight.to_cpu();
+            let orig = w[i];
+
+            w[i] = orig + eps;
+            weight.copy_from_cpu(&w);
+            let loss_plus = loss_at(trainer);
+
+            w[i] = orig - eps;
+            weight.copy_from_cpu(&w);
+            let loss_minus = loss_at(trainer);
+
+            w[i] = orig;
+            weight.copy_from_cpu(&w);
+
+            let numeric = (loss_plus - loss_minus) / (2.0 * eps);
+            let denom = numeric.abs().max(analytic[i].abs()).max(1e-3);
+            let rel = (numeric - analytic[i]).abs() / denom;
+            assert!(
+                rel < 0.08,
+                "{name}[{i}]: analytic={} numeric={numeric} rel_err={rel}",
+                analytic[i]
+            );
+        }
+    }
+
+    #[test]
+    fn backward_matches_numerical_gradients_through_full_chain() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let seq_len = cfg.seq_len as usize;
+
+        let tokens: Vec<u32> = (0..cfg.seq_len)
+            .map(|i| (i * 7 + 3) % cfg.vocab_size)
+            .collect();
+        let targets: Vec<u32> = (0..cfg.seq_len)
+            .map(|i| (i * 5 + 1) % cfg.vocab_size)
+            .collect();
+        let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
+
+        let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens);
+        trainer.cross_entropy.target_tokens.copy_from_cpu(&targets);
+        trainer.cross_entropy.set_grad_scale(1.0 / seq_len as Real);
+
+        trainer.zero_grad();
+        trainer.zero_transient_grads();
+        trainer.fused_forward_graph.execute_captured();
+        trainer.backward_fused();
+        ctx.synchronize();
+
+        let l0 = &trainer.layers[0];
+        let l1 = &trainer.layers[1];
+        let idx_norm = [0usize, 5, 11, 15];
+        check_param(
+            &trainer,
+            "layer0.norm_1.weight",
+            &l0.norm_1.weight,
+            &l0.norm_1.grad_weight.to_cpu::<Real>(),
+            &idx_norm,
+        );
+        check_param(
+            &trainer,
+            "layer1.norm_2.weight",
+            &l1.norm_2.weight,
+            &l1.norm_2.grad_weight.to_cpu::<Real>(),
+            &idx_norm,
+        );
+
+        let idx_mat = [0usize, 100, 500, 1023];
+        check_param(
+            &trainer,
+            "layer0.ffn_up.weight",
+            &l0.ffn_up.weight,
+            &l0.ffn_up.grad_weight.to_cpu::<Real>(),
+            &idx_mat,
+        );
+
+        let idx_qkv = [0usize, 200, 767];
+        check_param(
+            &trainer,
+            "layer1.qkv_proj.weight",
+            &l1.qkv_proj.weight,
+            &l1.qkv_proj.grad_weight.to_cpu::<Real>(),
+            &idx_qkv,
+        );
+    }
+}
+
 /// Proves the row_offset-based real-batching design
 #[cfg(test)]
 mod batching_validation {
@@ -508,7 +616,7 @@ mod batching_validation {
         // ref_trainer's buffers -- compare it against the batched trainer's
         // matching row_offset slice below.
         let last_block = ref_trainer.layers.last().unwrap();
-        let ref_last_out = last_block.add_2.in_out_buffer.to_cpu::<Real>();
+        let ref_last_out = last_block.add_2.out_buffer.to_cpu::<Real>();
 
         // ---- new: one batch_size=3 Trainer, ONE execute over all 33 rows ----
         let rows = batch as usize * seq_len;
@@ -533,7 +641,7 @@ mod batching_validation {
         );
 
         let batched_last_block = batched_trainer.layers.last().unwrap();
-        let batched_out_full = batched_last_block.add_2.in_out_buffer.to_cpu::<Real>();
+        let batched_out_full = batched_last_block.add_2.out_buffer.to_cpu::<Real>();
         let last_window = (batch as usize - 1) * seq_len * dim..batch as usize * seq_len * dim;
         let batched_last_out = &batched_out_full[last_window];
         let out_diff = max_abs_diff(&ref_last_out, batched_last_out);

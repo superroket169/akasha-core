@@ -68,6 +68,19 @@ pub(crate) fn silu(bindings: &[CpuBinding]) {
     write_f32(find(bindings, 0), &x);
 }
 
+pub(crate) fn silu_out(bindings: &[CpuBinding]) {
+    let x = read_f32(find(bindings, 0));
+    let y: Vec<f32> = x.iter().map(|v| v / (1.0 + (-v).exp())).collect();
+    write_f32(find(bindings, 1), &y);
+}
+
+pub(crate) fn add(bindings: &[CpuBinding]) {
+    let a = read_f32(find(bindings, 0));
+    let b = read_f32(find(bindings, 1));
+    let out: Vec<f32> = a.iter().zip(b.iter()).map(|(x, y)| x + y).collect();
+    write_f32(find(bindings, 2), &out);
+}
+
 pub(crate) fn rope(bindings: &[CpuBinding]) {
     let mut vec_ = read_f32(find(bindings, 0));
     let meta = read_u32(find(bindings, 1));

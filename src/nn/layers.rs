@@ -259,7 +259,7 @@ impl<B: Backend> Layer for Embedding<B> {
 }
 
 pub struct Add<B: Backend> {
-    pub in_out_buffer: Arc<Tensor<B>>,
+    pub out_buffer: Arc<Tensor<B>>,
     pub grad_a: Arc<Tensor<B>>,
     pub grad_b: Arc<Tensor<B>>,
     pub forward_graph: ComputeGraph<B>,
@@ -279,9 +279,14 @@ impl<B: Backend> Add<B> {
         let grad_a = grad_a.clone();
         let grad_b = grad_b.clone();
 
+        let out_buffer = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; length as usize],
+        ));
+
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        ops::residual_add(&mut gb, buf_a, buf_b, length);
+        ops::add_out(&mut gb, buf_a, buf_b, &out_buffer, length);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut backward_graph);
@@ -289,7 +294,7 @@ impl<B: Backend> Add<B> {
         ops::residual_add(&mut gb, &grad_b, grad_output, length);
 
         Self {
-            in_out_buffer: buf_a.clone(),
+            out_buffer,
             grad_a,
             grad_b,
             forward_graph,
@@ -309,7 +314,7 @@ impl<B: Backend> Layer for Add<B> {
 }
 
 pub struct SiLU<B: Backend> {
-    pub in_out_buffer: Arc<Tensor<B>>,
+    pub out_buffer: Arc<Tensor<B>>,
     pub grad_input: Arc<Tensor<B>>,
     pub forward_graph: ComputeGraph<B>,
     pub backward_graph: ComputeGraph<B>,
@@ -325,9 +330,14 @@ impl<B: Backend> SiLU<B> {
     ) -> Self {
         let grad_input = grad_input.clone();
 
+        let out_buffer = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; total_elements as usize],
+        ));
+
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        ops::silu(&mut gb, input_buffer, total_elements);
+        ops::silu_out(&mut gb, input_buffer, &out_buffer, total_elements);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut backward_graph);
@@ -340,7 +350,7 @@ impl<B: Backend> SiLU<B> {
         );
 
         Self {
-            in_out_buffer: input_buffer.clone(),
+            out_buffer,
             grad_input,
             forward_graph,
             backward_graph,
@@ -689,7 +699,7 @@ impl<B: Backend> TransformerBlock<B> {
             dim,
             rows,
             &bw.norm_2,
-            &add_1.in_out_buffer,
+            &add_1.out_buffer,
             &g_ffnup_in,
             &g_norm2_in,
         );
@@ -719,7 +729,7 @@ impl<B: Backend> TransformerBlock<B> {
             dim,
             rows,
             &bw.ffn_down,
-            &silu.in_out_buffer,
+            &silu.out_buffer,
             &g_add2_b,
             &g_ffndown_in,
         );
@@ -727,7 +737,7 @@ impl<B: Backend> TransformerBlock<B> {
         let add_2 = Add::new(
             ctx.clone(),
             dim * rows,
-            &add_1.in_out_buffer,
+            &add_1.out_buffer,
             &ffn_down.out_buffer,
             grad_output,
             &g_add2_a,

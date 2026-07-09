@@ -530,7 +530,7 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
                 };
                 println!(
                     "  [fwd-fp] layer0.add_2(resid into final_norm)={:.8} final_norm.out={:.8} lm_head.out={:.8}",
-                    norm_f32(&model.layers[0].add_2.in_out_buffer),
+                    norm_f32(&model.layers[0].add_2.out_buffer),
                     norm_f32(&model.final_norm.out_buffer),
                     norm_f32(&model.lm_head.out_buffer),
                 );

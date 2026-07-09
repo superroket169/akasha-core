@@ -53,6 +53,38 @@ pub static SILU: Shader = Shader {
     }),
 };
 
+pub static SILU_OUT: Shader = Shader {
+    name: "SiLUOut",
+    layout: &[Input, Output],
+    wgpu: Some(include_str!("fwd/silu_out.wgsl")),
+    cpu: Some(cpu::silu_out),
+    cuda: Some(CudaSpec {
+        src: cuda::SILU_OUT,
+        entry: "silu_out_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[],
+            block_dim: (256, 1, 1),
+            append_len: true,
+        },
+    }),
+};
+
+pub static ADD: Shader = Shader {
+    name: "Add",
+    layout: &[Input, Input, Output],
+    wgpu: Some(include_str!("fwd/add.wgsl")),
+    cpu: Some(cpu::add),
+    cuda: Some(CudaSpec {
+        src: cuda::ADD,
+        entry: "add_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[],
+            block_dim: (256, 1, 1),
+            append_len: true,
+        },
+    }),
+};
+
 /// No CPU implementation -- pre-existing gap inherited from wilupgu's old
 /// string-keyed dispatch (the CPU backend never had a `SiLUBwd` match arm).
 pub static SILU_BWD: Shader = Shader {
