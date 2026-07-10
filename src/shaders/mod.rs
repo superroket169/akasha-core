@@ -514,3 +514,51 @@ pub static CACHE_WRITE: Shader = Shader {
         },
     }),
 };
+
+pub static GRAD_SUMSQ: Shader = Shader {
+    name: "GradSumSq",
+    layout: &[Input, Output, Meta],
+    wgpu: Some(include_str!("bwd/grad_sumsq.wgsl")),
+    cpu: None,
+    cuda: Some(CudaSpec {
+        src: cuda::GRAD_SUMSQ,
+        entry: "grad_sumsq_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::U32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
+    }),
+};
+
+pub static GRAD_NORM_SCALE: Shader = Shader {
+    name: "GradNormScale",
+    layout: &[Input, Output, Meta],
+    wgpu: Some(include_str!("bwd/grad_norm_scale.wgsl")),
+    cpu: None,
+    cuda: Some(CudaSpec {
+        src: cuda::GRAD_NORM_SCALE,
+        entry: "grad_norm_scale_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32, MetaField::F32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
+    }),
+};
+
+pub static GRAD_SCALE: Shader = Shader {
+    name: "GradScale",
+    layout: &[InOut, Input, Meta],
+    wgpu: Some(include_str!("bwd/grad_scale.wgsl")),
+    cpu: None,
+    cuda: Some(CudaSpec {
+        src: cuda::GRAD_SCALE,
+        entry: "grad_scale_kernel",
+        shape: CudaShape::Generic {
+            meta_fields: &[MetaField::U32],
+            block_dim: (256, 1, 1),
+            append_len: false,
+        },
+    }),
+};
