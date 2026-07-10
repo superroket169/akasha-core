@@ -1,14 +1,19 @@
 //! Raw CUDA C kernel sources, consumed only as `&str` by `CudaShape::Generic` in
-//! `shaders/mod.rs` -- dispatch (buffer locking, meta parsing, launch) lives entirely in
-//! wilupgu's generic dispatcher now, so this file needs no wilupgu/cudarc imports at all.
+//! `shaders/mod.rs` -- dispatch (buffer locking, launch) lives entirely in wilupgu's
+//! generic dispatcher now, so this file needs no wilupgu/cudarc imports at all.
 
 pub(crate) const EMBEDDING: &str = r#"
 extern "C" __global__ void embedding_kernel(
     const unsigned int* tokens, const float* weight, float* output,
-    unsigned int vocab_size, unsigned int embed_dim, unsigned int seq_len
+    const unsigned int* meta
 ) {
+    unsigned int vocab_size = meta[0];
+    unsigned int embed_dim = meta[1];
+    unsigned int seq_len = meta[2];
+    
     unsigned int dim_idx = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int token_idx = blockIdx.y;
+    
     if (token_idx >= seq_len || dim_idx >= embed_dim) return;
 
     unsigned int token_id = tokens[token_idx];
@@ -23,10 +28,15 @@ extern "C" __global__ void embedding_kernel(
 pub(crate) const EMBEDDING_BWD: &str = r#"
 extern "C" __global__ void embedding_bwd_kernel(
     const unsigned int* tokens, const float* grad_output, float* grad_table,
-    unsigned int vocab_size, unsigned int embed_dim, unsigned int seq_len
+    const unsigned int* meta
 ) {
+    unsigned int vocab_size = meta[0];
+    unsigned int embed_dim = meta[1];
+    unsigned int seq_len = meta[2];
+    
     unsigned int dim_idx = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int token_idx = blockIdx.y;
+    
     if (token_idx >= seq_len || dim_idx >= embed_dim) return;
 
     unsigned int token_id = tokens[token_idx];
@@ -80,9 +90,14 @@ extern "C" __global__ void silu_bwd_kernel(const float* x, const float* dY, floa
 "#;
 
 pub(crate) const ROPE: &str = r#"
-extern "C" __global__ void rope_kernel(float* vec, unsigned int seq_len, unsigned int dim, unsigned int head_dim) {
+extern "C" __global__ void rope_kernel(float* vec, const unsigned int* meta) {
+    unsigned int seq_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
+    
     unsigned int dim_idx = (blockIdx.x * blockDim.x + threadIdx.x) * 2u;
     unsigned int token_idx = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
     unsigned int num_heads = dim / head_dim;
@@ -103,12 +118,18 @@ extern "C" __global__ void rope_kernel(float* vec, unsigned int seq_len, unsigne
 "#;
 
 pub(crate) const ROPE_BWD: &str = r#"
-extern "C" __global__ void rope_bwd_kernel(float* d_vec, unsigned int seq_len, unsigned int dim, unsigned int head_dim) {
+extern "C" __global__ void rope_bwd_kernel(float* d_vec, const unsigned int* meta) {
+    unsigned int seq_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
+    
     unsigned int dim_idx = (blockIdx.x * blockDim.x + threadIdx.x) * 2u;
     unsigned int token_idx = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
     unsigned int num_heads = dim / head_dim;
+    
     for (unsigned int h = 0; h < num_heads; h++) {
         unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
         float dx0 = d_vec[offset];
@@ -127,15 +148,21 @@ extern "C" __global__ void rope_bwd_kernel(float* d_vec, unsigned int seq_len, u
 
 pub(crate) const ROPE_QK: &str = r#"
 extern "C" __global__ void rope_qk_kernel(
-    float* q, float* k, unsigned int seq_len, unsigned int dim, unsigned int head_dim,
-    unsigned int row_offset
+    float* q, float* k, const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
+    unsigned int row_offset = meta[3];
+    
     unsigned int dim_idx = (blockIdx.x * blockDim.x + threadIdx.x) * 2u;
     unsigned int token_idx = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
     unsigned int num_heads = dim / head_dim;
     unsigned int row = row_offset + token_idx;
+    
     for (unsigned int h = 0; h < num_heads; h++) {
         unsigned int offset = row * dim + h * head_dim + dim_idx;
         float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
@@ -158,15 +185,21 @@ extern "C" __global__ void rope_qk_kernel(
 
 pub(crate) const ROPE_BWD_QK: &str = r#"
 extern "C" __global__ void rope_bwd_qk_kernel(
-    float* d_q, float* d_k, unsigned int seq_len, unsigned int dim, unsigned int head_dim,
-    unsigned int row_offset
+    float* d_q, float* d_k, const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
+    unsigned int row_offset = meta[3];
+    
     unsigned int dim_idx = (blockIdx.x * blockDim.x + threadIdx.x) * 2u;
     unsigned int token_idx = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
     unsigned int num_heads = dim / head_dim;
     unsigned int row = row_offset + token_idx;
+    
     for (unsigned int h = 0; h < num_heads; h++) {
         unsigned int offset = row * dim + h * head_dim + dim_idx;
         float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
@@ -189,14 +222,21 @@ extern "C" __global__ void rope_bwd_qk_kernel(
 
 pub(crate) const ROPE_OFFSET: &str = r#"
 extern "C" __global__ void rope_offset_kernel(
-    float* vec, unsigned int seq_len, unsigned int dim, unsigned int head_dim, unsigned int pos_offset
+    float* vec, const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
+    unsigned int pos_offset = meta[3];
+    
     unsigned int dim_idx = (blockIdx.x * blockDim.x + threadIdx.x) * 2u;
     unsigned int token_idx = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
     unsigned int num_heads = dim / head_dim;
     unsigned int abs_pos = token_idx + pos_offset;
+    
     for (unsigned int h = 0; h < num_heads; h++) {
         unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
         float x0 = vec[offset];
@@ -215,12 +255,18 @@ extern "C" __global__ void rope_offset_kernel(
 
 pub(crate) const HEAD_GATHER: &str = r#"
 extern "C" __global__ void head_gather_kernel(
-    const float* src, float* dst,
-    unsigned int seq_len, unsigned int full_dim, unsigned int head_dim, unsigned int head_offset
+    const float* src, float* dst, const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int full_dim = meta[1];
+    unsigned int head_dim = meta[2];
+    unsigned int head_offset = meta[3];
+    
     unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (row >= seq_len || col >= head_dim) return;
+    
     unsigned int src_idx = row * full_dim + head_offset + col;
     unsigned int dst_idx = row * head_dim + col;
     dst[dst_idx] = src[src_idx];
@@ -229,12 +275,18 @@ extern "C" __global__ void head_gather_kernel(
 
 pub(crate) const HEAD_SCATTER: &str = r#"
 extern "C" __global__ void head_scatter_kernel(
-    const float* src, float* dst,
-    unsigned int seq_len, unsigned int full_dim, unsigned int head_dim, unsigned int head_offset
+    const float* src, float* dst, const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int full_dim = meta[1];
+    unsigned int head_dim = meta[2];
+    unsigned int head_offset = meta[3];
+    
     unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (row >= seq_len || col >= head_dim) return;
+    
     unsigned int src_idx = row * head_dim + col;
     unsigned int dst_idx = row * full_dim + head_offset + col;
     dst[dst_idx] = src[src_idx];
@@ -244,10 +296,16 @@ extern "C" __global__ void head_scatter_kernel(
 pub(crate) const QKV_SPLIT: &str = r#"
 extern "C" __global__ void qkv_split_kernel(
     const float* src, float* q, float* k, float* v,
-    unsigned int seq_len, unsigned int full_dim, unsigned int head_dim, unsigned int head_offset
+    const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int full_dim = meta[1];
+    unsigned int head_dim = meta[2];
+    unsigned int head_offset = meta[3];
+    
     unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (row >= seq_len || col >= head_dim) return;
     (void)head_offset;
 
@@ -264,11 +322,18 @@ extern "C" __global__ void qkv_split_kernel(
 pub(crate) const QKV_SCATTER: &str = r#"
 extern "C" __global__ void qkv_scatter_kernel(
     const float* q, const float* k, const float* v, float* dst,
-    unsigned int seq_len, unsigned int full_dim, unsigned int head_dim, unsigned int head_offset
+    const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int full_dim = meta[1];
+    unsigned int head_dim = meta[2];
+    unsigned int head_offset = meta[3];
+    
     unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (row >= seq_len || col >= head_dim) return;
+    
     (void)head_offset;
 
     unsigned int width = head_dim;
@@ -282,8 +347,11 @@ extern "C" __global__ void qkv_scatter_kernel(
 "#;
 
 pub(crate) const SOFTMAX: &str = r#"
-extern "C" __global__ void softmax_kernel(float* x, unsigned int seq_len) {
+extern "C" __global__ void softmax_kernel(float* x, const unsigned int* meta) {
+    unsigned int seq_len = meta[0];
+    
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    
     if (row >= seq_len) return;
     unsigned int offset = row * seq_len;
 
@@ -308,9 +376,13 @@ extern "C" __global__ void softmax_kernel(float* x, unsigned int seq_len) {
 
 pub(crate) const SOFTMAX_BWD: &str = r#"
 extern "C" __global__ void softmax_bwd_kernel(
-    const float* Y, const float* dY, float* dX, unsigned int seq_len, float scale
+    const float* Y, const float* dY, float* dX, const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    float scale = __uint_as_float(meta[1]);
+    
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    
     if (row >= seq_len) return;
     unsigned int offset = row * seq_len;
 
@@ -326,8 +398,13 @@ extern "C" __global__ void softmax_bwd_kernel(
 "#;
 
 pub(crate) const SOFTMAX_RECT: &str = r#"
-extern "C" __global__ void softmax_rect_kernel(float* x, unsigned int num_rows, unsigned int width, float scale) {
+extern "C" __global__ void softmax_rect_kernel(float* x, const unsigned int* meta) {
+    unsigned int num_rows = meta[0];
+    unsigned int width = meta[1];
+    float scale = __uint_as_float(meta[2]);
+    
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    
     if (row >= num_rows) return;
     unsigned int offset = row * width;
 
@@ -351,7 +428,10 @@ extern "C" __global__ void softmax_rect_kernel(float* x, unsigned int num_rows, 
 "#;
 
 pub(crate) const CAUSAL_SOFTMAX: &str = r#"
-extern "C" __global__ void causal_softmax_kernel(float* x, unsigned int seq_len, float scale) {
+extern "C" __global__ void causal_softmax_kernel(float* x, const unsigned int* meta) {
+    unsigned int seq_len = meta[0];
+    float scale = __uint_as_float(meta[1]);
+    
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
     if (row >= seq_len) return;
     unsigned int offset = row * seq_len;
@@ -379,10 +459,15 @@ extern "C" __global__ void causal_softmax_kernel(float* x, unsigned int seq_len,
 pub(crate) const RMSNORM: &str = r#"
 extern "C" __global__ void rmsnorm_kernel(
     const float* x, const float* weight, float* output,
-    unsigned int seq_len, unsigned int size, float eps
+    const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int size = meta[1];
+    float eps = __uint_as_float(meta[2]);
+    
     __shared__ float partial[256];
     unsigned int row = blockIdx.x;
+    
     if (row >= seq_len) return;
     unsigned int offset = row * size;
     unsigned int tid = threadIdx.x;
@@ -412,10 +497,16 @@ pub(crate) const RMSNORM_BWD: &str = r#"
 extern "C" __global__ void rmsnorm_bwd_kernel(
     const float* dY, const float* X, const float* Weight,
     float* dX, float* rsqrt_cache,
-    unsigned int seq_len, unsigned int size, float eps
+    const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int size = meta[1];
+    
+    float eps = __uint_as_float(meta[2]);
+    
     __shared__ float partial[256];
     unsigned int row = blockIdx.x;
+    
     if (row >= seq_len) return;
     unsigned int offset = row * size;
     unsigned int tid = threadIdx.x;
@@ -462,9 +553,13 @@ extern "C" __global__ void rmsnorm_bwd_kernel(
 pub(crate) const RMSNORM_WEIGHT_BWD: &str = r#"
 extern "C" __global__ void rmsnorm_weight_bwd_kernel(
     const float* dY, const float* X, const float* rsqrt_cache, float* dWeight,
-    unsigned int seq_len, unsigned int size
+    const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int size = meta[1];
+    
     unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    
     if (i >= size) return;
 
     float acc = 0.0f;
@@ -480,10 +575,15 @@ extern "C" __global__ void rmsnorm_weight_bwd_kernel(
 pub(crate) const CROSS_ENTROPY: &str = r#"
 extern "C" __global__ void cross_entropy_kernel(
     const float* logits, const unsigned int* targets, float* probs, float* losses,
-    unsigned int vocab_size, unsigned int num_rows
+    const unsigned int* meta
 ) {
+    unsigned int vocab_size = meta[0];
+    unsigned int num_rows = meta[1];
+    
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    
     if (row >= num_rows) return;
+    
     unsigned int offset = row * vocab_size;
     unsigned int target_id = targets[row];
 
@@ -512,10 +612,15 @@ extern "C" __global__ void cross_entropy_kernel(
 pub(crate) const CROSS_ENTROPY_BWD: &str = r#"
 extern "C" __global__ void cross_entropy_bwd_kernel(
     const float* probs, const unsigned int* targets, const float* d_losses, float* d_logits,
-    unsigned int vocab_size, unsigned int num_rows
+    const unsigned int* meta
 ) {
+    unsigned int vocab_size = meta[0];
+    unsigned int num_rows = meta[1];
+
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
+    
     if (row >= num_rows) return;
+    
     unsigned int offset = row * vocab_size;
     unsigned int target_id = targets[row];
     float grad_scale = d_losses[row];
@@ -529,12 +634,17 @@ extern "C" __global__ void cross_entropy_bwd_kernel(
 
 pub(crate) const CACHE_WRITE: &str = r#"
 extern "C" __global__ void cache_write_kernel(
-    const float* src, float* dst,
-    unsigned int row_count, unsigned int width, unsigned int dst_row_offset
+    const float* src, float* dst, const unsigned int* meta
 ) {
+    unsigned int row_count = meta[0];
+    unsigned int width = meta[1];
+    unsigned int dst_row_offset = meta[2];
+
     unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int row = blockIdx.y * blockDim.y + threadIdx.y;
+    
     if (row >= row_count || col >= width) return;
+    
     unsigned int src_idx = row * width + col;
     unsigned int dst_idx = (dst_row_offset + row) * width + col;
     dst[dst_idx] = src[src_idx];
@@ -544,9 +654,15 @@ extern "C" __global__ void cache_write_kernel(
 pub(crate) const FLASH_ATTENTION: &str = r#"
 extern "C" __global__ void flash_attention_kernel(
     const float* q, const float* k, const float* v, float* out, float* l_cache,
-    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale,
-    unsigned int row_offset
+    const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
+
+    float scale = __uint_as_float(meta[3]);
+    
+    unsigned int row_offset = meta[4];
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int head = blockIdx.y;
     unsigned int num_heads = dim / head_dim;
@@ -593,12 +709,19 @@ pub(crate) const FLASH_ATTENTION_BWD_DQ: &str = r#"
 extern "C" __global__ void flash_attention_bwd_dq_kernel(
     const float* q, const float* k, const float* v, const float* o, const float* d_o,
     const float* l_cache, float* d_q,
-    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale,
-    unsigned int row_offset
+    const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
+
+    float scale = __uint_as_float(meta[3]);
+    
+    unsigned int row_offset = meta[4];
     unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int head = blockIdx.y;
     unsigned int num_heads = dim / head_dim;
+    
     if (row >= seq_len || head >= num_heads) return;
 
     unsigned int head_off = head * head_dim;
@@ -645,9 +768,15 @@ pub(crate) const FLASH_ATTENTION_BWD_DKDV: &str = r#"
 extern "C" __global__ void flash_attention_bwd_dkdv_kernel(
     const float* q, const float* k, const float* v, const float* o, const float* d_o,
     const float* l_cache, float* d_k, float* d_v,
-    unsigned int seq_len, unsigned int dim, unsigned int head_dim, float scale,
-    unsigned int row_offset
+    const unsigned int* meta
 ) {
+    unsigned int seq_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
+
+    float scale = __uint_as_float(meta[3]);
+    
+    unsigned int row_offset = meta[4];
     unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int head = blockIdx.y;
     unsigned int num_heads = dim / head_dim;

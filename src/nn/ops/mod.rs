@@ -2,6 +2,12 @@
 //! emitter per kernel (`emit`, re-exported flat as `ops::*`).
 //! `foo(shape)` uploads a constant meta; `foo_with(shape, meta)` takes a
 //! caller-owned meta updated between executions. `shape` drives the grid.
+//!
+//! Live metas hold on every backend: kernels read the meta buffer at
+//! execution time (CUDA generic kernels get it as a device pointer, cuBLAS
+//! matmuls dtoh it per dispatch). The one exception is a CAPTURED graph
+//! containing matmuls -- cuBLAS dims get frozen at capture, so only
+//! constant-meta graphs (training) may use `execute_captured`.
 
 mod emit;
 pub mod meta;
