@@ -71,11 +71,4 @@ impl<'g, B: Backend> GraphBuilder<'g, B, Decode> {
     }
 }
 
-use crate::Real;
-use wilupgu::{Backend, Tensor};
-
-/// Host-side zeroing (not a graph node).
-pub(crate) fn zero_tensor<B: Backend>(t: &Tensor<B>) {
-    let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
-    t.copy_from_cpu(&vec![0.0 as Real; len]);
-}
+use wilupgu::Backend;

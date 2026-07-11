@@ -1,6 +1,7 @@
 use super::meta::{
-    AttnScaleMeta, CacheWriteMeta, CrossEntropyMeta, EmbeddingMeta, FlashAttnMeta, HeadMoveMeta,
-    KernelMeta, MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta, SoftmaxRectMeta, ZeroMeta,
+    AttnScaleMeta, CacheWriteMeta, CrossEntropyMeta, EmbeddingMeta, FlashAttnMeta, GradNormMeta,
+    GradSumSqMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta,
+    SoftmaxRectMeta, ZeroMeta,
 };
 use super::{CachedPhase, Decode, FullSeqPhase, FwdPhase, GraphBuilder, Phase, Train};
 use crate::Real;
@@ -282,7 +283,11 @@ fn inout_meta_node<B: Backend, P: Phase>(
 }
 
 fn grid_full(shape: RopeMeta) -> [u32; 3] {
-    [(shape.dim / 2 + 15) / 16, (shape.seq_len + 15) / 16, 1]
+    [
+        (shape.head_dim / 2 + 15) / 16,
+        (shape.seq_len + 15) / 16,
+        shape.dim / shape.head_dim,
+    ]
 }
 
 pub(crate) fn rope<B: Backend, P: FullSeqPhase>(
@@ -314,7 +319,11 @@ pub(crate) fn rope_offset_with<B: Backend>(
         &shaders::ROPE_OFFSET,
         buf,
         meta,
-        [(shape.head_dim / 2 + 15) / 16, 1, 1],
+        [
+            (shape.head_dim / 2 + 15) / 16,
+            1,
+            shape.dim / shape.head_dim,
+        ],
     );
 }
 
@@ -766,6 +775,14 @@ fn grid256(len: u32) -> [u32; 3] {
     [(len + 255) / 256, 1, 1]
 }
 
+// For tensors that can exceed 65535 workgroups in x (embedding-sized);
+// the kernel must linearize (wg.y * num_wg.x + wg.x).
+fn grid256_2d(len: u32) -> [u32; 3] {
+    let total = (len + 255) / 256;
+    let x = total.clamp(1, 8192);
+    [x, (total + x - 1) / x, 1]
+}
+
 pub(crate) fn silu<B: Backend, P: FwdPhase>(
     gb: &mut GraphBuilder<'_, B, P>,
     buf: &Arc<Tensor<B>>,
@@ -878,7 +895,67 @@ pub(crate) fn zero<B: Backend, P: FwdPhase>(
             Binding::new(0, &buf.buffer, TensorMode::Output),
             Binding::new(1, &meta.buffer, TensorMode::Meta),
         ],
-        grid256(len),
+        grid256_2d(len),
+    );
+}
+
+// ---- grad clip ----
+
+pub(crate) fn grad_sumsq_wgs(len: u32) -> u32 {
+    ((len + 255) / 256).clamp(1, 256)
+}
+
+pub(crate) fn grad_sumsq<B: Backend>(
+    gb: &mut GraphBuilder<'_, B, Train>,
+    grad: &Arc<Tensor<B>>,
+    partials: &Arc<Tensor<B>>,
+    shape: GradSumSqMeta,
+) {
+    let meta = shape.upload(&grad.ctx);
+    gb.graph.add_node(
+        &shaders::GRAD_SUMSQ,
+        &[
+            Binding::new(0, &grad.buffer, TensorMode::Input),
+            Binding::new(1, &partials.buffer, TensorMode::Output),
+            Binding::new(2, &meta.buffer, TensorMode::Meta),
+        ],
+        [grad_sumsq_wgs(shape.len), 1, 1],
+    );
+}
+
+pub(crate) fn grad_norm_scale<B: Backend>(
+    gb: &mut GraphBuilder<'_, B, Train>,
+    partials: &Arc<Tensor<B>>,
+    scale: &Arc<Tensor<B>>,
+    shape: GradNormMeta,
+) {
+    let meta = shape.upload(&partials.ctx);
+    gb.graph.add_node(
+        &shaders::GRAD_NORM_SCALE,
+        &[
+            Binding::new(0, &partials.buffer, TensorMode::Input),
+            Binding::new(1, &scale.buffer, TensorMode::Output),
+            Binding::new(2, &meta.buffer, TensorMode::Meta),
+        ],
+        [1, 1, 1],
+    );
+}
+
+pub(crate) fn grad_scale<B: Backend>(
+    gb: &mut GraphBuilder<'_, B, Train>,
+    grad: &Arc<Tensor<B>>,
+    scale: &Arc<Tensor<B>>,
+    len: u32,
+) {
+    let meta = ZeroMeta { len }.upload(&grad.ctx);
+    gb.graph.add_node(
+        &shaders::GRAD_SCALE,
+        &[
+            Binding::new(0, &grad.buffer, TensorMode::InOut),
+            Binding::new(1, &scale.buffer, TensorMode::Input),
+            Binding::new(2, &meta.buffer, TensorMode::Meta),
+        ],
+        grid256_2d(len),
     );
 }
 

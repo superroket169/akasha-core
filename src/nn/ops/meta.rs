@@ -129,13 +129,29 @@ pub struct CrossEntropyMeta {
 }
 impl KernelMeta for CrossEntropyMeta {}
 
-/// ZeroTensor: zero `len` elements.
+/// ZeroTensor / GradScale: `len` elements, nothing else.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ZeroMeta {
     pub len: u32,
 }
 impl KernelMeta for ZeroMeta {}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GradSumSqMeta {
+    pub len: u32,
+    pub out_offset: u32,
+}
+impl KernelMeta for GradSumSqMeta {}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct GradNormMeta {
+    pub num_partials: u32,
+    pub max_norm: f32,
+}
+impl KernelMeta for GradNormMeta {}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
