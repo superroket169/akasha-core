@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use akasha_core::config::{ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, ModelConfig};
+use akasha_core::config::{ADAM_WEIGHT_DECAY, ModelConfig};
 use akasha_core::nn::{
     Cache, CrossEntropy, InferenceSession, Layer, ModelWeights, RMSNorm, Trainer,
 };
@@ -539,7 +539,7 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
             model.backward_fused();
         }
         if use_clip {
-            model.clip_grad_norm(GRAD_CLIP_NORM);
+            model.clip_grad_norm();
         }
         model.optimizer.step();
 

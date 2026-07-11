@@ -6,7 +6,7 @@ use wilupgu::{Backend, ComputeGraph, Tensor, fuse_compute_graphs};
 
 use super::checkpoint;
 use super::layers::{CrossEntropy, Embedding, Layer, Linear, RMSNorm, TransformerBlock};
-use super::ops::zero_tensor;
+use super::ops::{self, GraphBuilder};
 use super::weights::ModelWeights;
 use crate::config::{
     ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, LR_MAX, LR_MIN, MAX_STEPS, ModelConfig, WARMUP_STEPS,
@@ -69,6 +69,13 @@ pub struct Trainer<B: Backend> {
     pub optimizer: AdamW<B>,
     pub fused_forward_graph: ComputeGraph<B>,
     pub fused_backward_graph: ComputeGraph<B>,
+    zero_grads_graph: ComputeGraph<B>,
+    zero_transient_graph: ComputeGraph<B>,
+    clip_grads_graph: ComputeGraph<B>,
+}
+
+fn elems<B: Backend>(t: &Tensor<B>) -> u32 {
+    (t.size / std::mem::size_of::<Real>() as u64) as u32
 }
 
 impl<B: Backend> Trainer<B> {
@@ -170,6 +177,71 @@ impl<B: Backend> Trainer<B> {
             ADAM_WEIGHT_DECAY,
         );
 
+        // ---- zero-grad graphs ----
+        // the weight grads only per accumulation cycle.
+        let mut zero_transient_graph = ComputeGraph::new(ctx.clone());
+        {
+            let mut gb = GraphBuilder::train(&mut zero_transient_graph);
+            for layer in &layers {
+                for grad in layer.transient_grads() {
+                    ops::zero(&mut gb, grad, elems(grad));
+                }
+            }
+        }
+
+        let mut zero_grads_graph = ComputeGraph::new(ctx.clone());
+        {
+            let mut gb = GraphBuilder::train(&mut zero_grads_graph);
+            for (_, grad) in &trainable_params {
+                ops::zero(&mut gb, grad, elems(grad));
+            }
+            for layer in &layers {
+                for grad in layer.transient_grads() {
+                    ops::zero(&mut gb, grad, elems(grad));
+                }
+            }
+        }
+
+        // ---- grad clip graph ----
+        // (a factor of 1.0 when the norm is under GRAD_CLIP_NORM).
+        let total_partials: u32 = trainable_params
+            .iter()
+            .map(|(_, grad)| ops::grad_sumsq_wgs(elems(grad)))
+            .sum();
+        let norm_partials = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; total_partials as usize],
+        ));
+        let clip_scale = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[1.0 as Real]));
+
+        let mut clip_grads_graph = ComputeGraph::new(ctx.clone());
+        {
+            let mut gb = GraphBuilder::train(&mut clip_grads_graph);
+            let mut out_offset = 0;
+            for (_, grad) in &trainable_params {
+                let len = elems(grad);
+                ops::grad_sumsq(
+                    &mut gb,
+                    grad,
+                    &norm_partials,
+                    ops::meta::GradSumSqMeta { len, out_offset },
+                );
+                out_offset += ops::grad_sumsq_wgs(len);
+            }
+            ops::grad_norm_scale(
+                &mut gb,
+                &norm_partials,
+                &clip_scale,
+                ops::meta::GradNormMeta {
+                    num_partials: total_partials,
+                    max_norm: GRAD_CLIP_NORM,
+                },
+            );
+            for (_, grad) in &trainable_params {
+                ops::grad_scale(&mut gb, grad, &clip_scale, elems(grad));
+            }
+        }
+
         // ---- fused forward ----
         let mut forward_graphs: Vec<&ComputeGraph<B>> = vec![&embedding.forward_graph];
         for layer in &layers {
@@ -217,6 +289,9 @@ impl<B: Backend> Trainer<B> {
             optimizer,
             fused_forward_graph,
             fused_backward_graph,
+            zero_grads_graph,
+            zero_transient_graph,
+            clip_grads_graph,
         }
     }
 
@@ -272,7 +347,7 @@ impl<B: Backend> Trainer<B> {
         }
 
         if is_last_in_cycle {
-            self.clip_grad_norm(GRAD_CLIP_NORM);
+            self.clip_grad_norm();
             self.optimizer.step();
         }
 
@@ -283,23 +358,8 @@ impl<B: Backend> Trainer<B> {
         }
     }
 
-    pub fn clip_grad_norm(&self, max_norm: f32) {
-        let params = self.trainable_params();
-        let grads: Vec<Vec<Real>> = params.iter().map(|(_, grad)| grad.to_cpu()).collect();
-
-        let total_sq: f64 = grads
-            .iter()
-            .map(|g| g.iter().map(|&x| (x as f64) * (x as f64)).sum::<f64>())
-            .sum();
-        let total_norm = total_sq.sqrt() as f32;
-
-        if total_norm > max_norm {
-            let scale = max_norm / (total_norm + 1e-6);
-            for ((_, grad_tensor), grad_data) in params.iter().zip(grads.iter()) {
-                let scaled: Vec<Real> = grad_data.iter().map(|&x| x * scale).collect();
-                grad_tensor.copy_from_cpu(&scaled);
-            }
-        }
+    pub fn clip_grad_norm(&self) {
+        self.clip_grads_graph.execute_captured();
     }
 
     pub fn trainable_params(&self) -> Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)> {
@@ -338,18 +398,11 @@ impl<B: Backend> Trainer<B> {
     }
 
     pub fn zero_grad(&self) {
-        zero_tensor(&self.embedding.grad_table);
-        zero_tensor(&self.final_norm.grad_weight);
-        zero_tensor(&self.lm_head.grad_weight);
-        for layer in self.layers.iter() {
-            layer.zero_grad();
-        }
+        self.zero_grads_graph.execute_captured();
     }
 
     pub fn zero_transient_grads(&self) {
-        for layer in self.layers.iter() {
-            layer.zero_transient_grads();
-        }
+        self.zero_transient_graph.execute_captured();
     }
 
     pub fn save_weights(&self, path: &str) -> Result<(), Box<dyn Error>> {
@@ -664,5 +717,69 @@ mod batching_validation {
                 "grad mismatch at trainable_params()[{i}]: max_abs_diff={diff}"
             );
         }
+    }
+}
+
+/// GPU grad clip vs. the old host-side reference formula
+#[cfg(test)]
+mod grad_clip_validation {
+    use super::*;
+    use wilupgu::WgpuBackend;
+
+    fn check_clip(amplitude: Real) {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+
+        let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
+        let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
+        let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens);
+
+        let params = trainer.trainable_params();
+        let mut host_grads: Vec<Vec<Real>> = Vec::new();
+        for (t, (_, grad)) in params.iter().enumerate() {
+            let len = (grad.size / std::mem::size_of::<Real>() as u64) as usize;
+            let data: Vec<Real> = (0..len)
+                .map(|i| ((t * 31 + i) as Real * 0.7).sin() * amplitude)
+                .collect();
+            grad.copy_from_cpu(&data);
+            host_grads.push(data);
+        }
+
+        trainer.clip_grad_norm();
+        ctx.synchronize();
+
+        let total_sq: f64 = host_grads
+            .iter()
+            .flatten()
+            .map(|&g| (g as f64) * (g as f64))
+            .sum();
+        let norm = total_sq.sqrt() as f32;
+        let scale = if norm > GRAD_CLIP_NORM {
+            GRAD_CLIP_NORM / (norm + 1e-6)
+        } else {
+            1.0
+        };
+
+        for (host, (_, grad)) in host_grads.iter().zip(params.iter()) {
+            let gpu: Vec<Real> = grad.to_cpu();
+            for (i, (&h, &g)) in host.iter().zip(gpu.iter()).enumerate() {
+                let expected = h * scale;
+                assert!(
+                    (expected - g).abs() < 1e-6 + expected.abs() * 1e-4,
+                    "amplitude {amplitude}: grad[{i}] expected {expected}, gpu {g} (norm {norm}, scale {scale})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clips_when_norm_exceeds_max() {
+        check_clip(0.1);
+    }
+
+    #[test]
+    fn leaves_grads_alone_under_max() {
+        check_clip(1e-4);
     }
 }

@@ -817,21 +817,13 @@ impl<B: Backend> TransformerBlock<B> {
         }
     }
 
-    pub fn zero_grad(&self) {
-        ops::zero_tensor(&self.norm_1.grad_weight);
-        ops::zero_tensor(&self.qkv_proj.grad_weight);
-        ops::zero_tensor(&self.out_proj.grad_weight);
-        ops::zero_tensor(&self.norm_2.grad_weight);
-        ops::zero_tensor(&self.ffn_up.grad_weight);
-        ops::zero_tensor(&self.ffn_down.grad_weight);
-        self.zero_transient_grads();
-    }
-
-    pub fn zero_transient_grads(&self) {
-        ops::zero_tensor(&self.add_1.grad_a);
-        ops::zero_tensor(&self.add_1.grad_b);
-        ops::zero_tensor(&self.add_2.grad_a);
-        ops::zero_tensor(&self.add_2.grad_b);
+    pub fn transient_grads(&self) -> [&Arc<Tensor<B>>; 4] {
+        [
+            &self.add_1.grad_a,
+            &self.add_1.grad_b,
+            &self.add_2.grad_a,
+            &self.add_2.grad_b,
+        ]
     }
 }
 
