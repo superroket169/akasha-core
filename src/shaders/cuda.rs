@@ -100,20 +100,19 @@ extern "C" __global__ void rope_kernel(float* vec, const unsigned int* meta) {
     
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
-    unsigned int num_heads = dim / head_dim;
-    for (unsigned int h = 0; h < num_heads; h++) {
-        unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
-        float x0 = vec[offset];
-        float x1 = vec[offset + 1u];
+    // grid.z spans the heads
+    unsigned int h = blockIdx.z * blockDim.z + threadIdx.z;
+    unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
+    float x0 = vec[offset];
+    float x1 = vec[offset + 1u];
 
-        float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
-        float v_angle = (float)token_idx * freq;
-        float v_cos = cosf(v_angle);
-        float v_sin = sinf(v_angle);
+    float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
+    float v_angle = (float)token_idx * freq;
+    float v_cos = cosf(v_angle);
+    float v_sin = sinf(v_angle);
 
-        vec[offset]      = x0 * v_cos - x1 * v_sin;
-        vec[offset + 1u] = x0 * v_sin + x1 * v_cos;
-    }
+    vec[offset]      = x0 * v_cos - x1 * v_sin;
+    vec[offset + 1u] = x0 * v_sin + x1 * v_cos;
 }
 "#;
 
@@ -128,21 +127,19 @@ extern "C" __global__ void rope_bwd_kernel(float* d_vec, const unsigned int* met
     
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
-    unsigned int num_heads = dim / head_dim;
-    
-    for (unsigned int h = 0; h < num_heads; h++) {
-        unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
-        float dx0 = d_vec[offset];
-        float dx1 = d_vec[offset + 1u];
+    // grid.z spans the heads
+    unsigned int h = blockIdx.z * blockDim.z + threadIdx.z;
+    unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
+    float dx0 = d_vec[offset];
+    float dx1 = d_vec[offset + 1u];
 
-        float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
-        float v_angle = (float)token_idx * freq;
-        float v_cos = cosf(v_angle);
-        float v_sin = sinf(v_angle);
+    float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
+    float v_angle = (float)token_idx * freq;
+    float v_cos = cosf(v_angle);
+    float v_sin = sinf(v_angle);
 
-        d_vec[offset]      = dx0 * v_cos + dx1 * v_sin;
-        d_vec[offset + 1u] = -dx0 * v_sin + dx1 * v_cos;
-    }
+    d_vec[offset]      = dx0 * v_cos + dx1 * v_sin;
+    d_vec[offset + 1u] = -dx0 * v_sin + dx1 * v_cos;
 }
 "#;
 
@@ -160,26 +157,25 @@ extern "C" __global__ void rope_qk_kernel(
     
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
-    unsigned int num_heads = dim / head_dim;
+    // grid.z spans the heads
+    unsigned int h = blockIdx.z * blockDim.z + threadIdx.z;
     unsigned int row = row_offset + token_idx;
-    
-    for (unsigned int h = 0; h < num_heads; h++) {
-        unsigned int offset = row * dim + h * head_dim + dim_idx;
-        float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
-        float v_angle = (float)token_idx * freq;
-        float v_cos = cosf(v_angle);
-        float v_sin = sinf(v_angle);
+    unsigned int offset = row * dim + h * head_dim + dim_idx;
 
-        float q0 = q[offset];
-        float q1 = q[offset + 1u];
-        q[offset]      = q0 * v_cos - q1 * v_sin;
-        q[offset + 1u] = q0 * v_sin + q1 * v_cos;
+    float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
+    float v_angle = (float)token_idx * freq;
+    float v_cos = cosf(v_angle);
+    float v_sin = sinf(v_angle);
 
-        float k0 = k[offset];
-        float k1 = k[offset + 1u];
-        k[offset]      = k0 * v_cos - k1 * v_sin;
-        k[offset + 1u] = k0 * v_sin + k1 * v_cos;
-    }
+    float q0 = q[offset];
+    float q1 = q[offset + 1u];
+    q[offset]      = q0 * v_cos - q1 * v_sin;
+    q[offset + 1u] = q0 * v_sin + q1 * v_cos;
+
+    float k0 = k[offset];
+    float k1 = k[offset + 1u];
+    k[offset]      = k0 * v_cos - k1 * v_sin;
+    k[offset + 1u] = k0 * v_sin + k1 * v_cos;
 }
 "#;
 
@@ -197,26 +193,25 @@ extern "C" __global__ void rope_bwd_qk_kernel(
     
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
-    unsigned int num_heads = dim / head_dim;
+    // grid.z spans the heads
+    unsigned int h = blockIdx.z * blockDim.z + threadIdx.z;
     unsigned int row = row_offset + token_idx;
-    
-    for (unsigned int h = 0; h < num_heads; h++) {
-        unsigned int offset = row * dim + h * head_dim + dim_idx;
-        float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
-        float v_angle = (float)token_idx * freq;
-        float v_cos = cosf(v_angle);
-        float v_sin = sinf(v_angle);
+    unsigned int offset = row * dim + h * head_dim + dim_idx;
 
-        float dq0 = d_q[offset];
-        float dq1 = d_q[offset + 1u];
-        d_q[offset]      = dq0 * v_cos + dq1 * v_sin;
-        d_q[offset + 1u] = -dq0 * v_sin + dq1 * v_cos;
+    float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
+    float v_angle = (float)token_idx * freq;
+    float v_cos = cosf(v_angle);
+    float v_sin = sinf(v_angle);
 
-        float dk0 = d_k[offset];
-        float dk1 = d_k[offset + 1u];
-        d_k[offset]      = dk0 * v_cos + dk1 * v_sin;
-        d_k[offset + 1u] = -dk0 * v_sin + dk1 * v_cos;
-    }
+    float dq0 = d_q[offset];
+    float dq1 = d_q[offset + 1u];
+    d_q[offset]      = dq0 * v_cos + dq1 * v_sin;
+    d_q[offset + 1u] = -dq0 * v_sin + dq1 * v_cos;
+
+    float dk0 = d_k[offset];
+    float dk1 = d_k[offset + 1u];
+    d_k[offset]      = dk0 * v_cos + dk1 * v_sin;
+    d_k[offset + 1u] = -dk0 * v_sin + dk1 * v_cos;
 }
 "#;
 
@@ -234,22 +229,21 @@ extern "C" __global__ void rope_offset_kernel(
     
     if (token_idx >= seq_len || dim_idx >= head_dim) return;
 
-    unsigned int num_heads = dim / head_dim;
+    // grid.z spans the heads
+    unsigned int h = blockIdx.z * blockDim.z + threadIdx.z;
     unsigned int abs_pos = token_idx + pos_offset;
-    
-    for (unsigned int h = 0; h < num_heads; h++) {
-        unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
-        float x0 = vec[offset];
-        float x1 = vec[offset + 1u];
+    unsigned int offset = token_idx * dim + h * head_dim + dim_idx;
 
-        float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
-        float v_angle = (float)abs_pos * freq;
-        float v_cos = cosf(v_angle);
-        float v_sin = sinf(v_angle);
+    float x0 = vec[offset];
+    float x1 = vec[offset + 1u];
 
-        vec[offset]      = x0 * v_cos - x1 * v_sin;
-        vec[offset + 1u] = x0 * v_sin + x1 * v_cos;
-    }
+    float freq = 1.0f / powf(10000.0f, (float)dim_idx / (float)head_dim);
+    float v_angle = (float)abs_pos * freq;
+    float v_cos = cosf(v_angle);
+    float v_sin = sinf(v_angle);
+
+    vec[offset]      = x0 * v_cos - x1 * v_sin;
+    vec[offset + 1u] = x0 * v_sin + x1 * v_cos;
 }
 "#;
 
@@ -818,5 +812,73 @@ extern "C" __global__ void flash_attention_bwd_dkdv_kernel(
         d_k[kv_off + d] = dk_acc[d] * scale;
         d_v[kv_off + d] = dv_acc[d];
     }
+}
+"#;
+
+pub(crate) const GRAD_SUMSQ: &str = r#"
+extern "C" __global__ void grad_sumsq_kernel(
+    const float* grad, float* partials, const unsigned int* meta
+) {
+    unsigned int len = meta[0];
+    unsigned int out_offset = meta[1];
+
+    __shared__ float partial[256];
+    unsigned int tid = threadIdx.x;
+    unsigned int stride = gridDim.x * 256u;
+
+    float acc = 0.0f;
+    for (unsigned int i = blockIdx.x * 256u + tid; i < len; i += stride) {
+        float v = grad[i];
+        acc += v * v;
+    }
+    partial[tid] = acc;
+    __syncthreads();
+
+    for (unsigned int s = 128u; s > 0u; s >>= 1) {
+        if (tid < s) { partial[tid] += partial[tid + s]; }
+        __syncthreads();
+    }
+
+    if (tid == 0u) { partials[out_offset + blockIdx.x] = partial[0]; }
+}
+"#;
+
+pub(crate) const GRAD_NORM_SCALE: &str = r#"
+extern "C" __global__ void grad_norm_scale_kernel(
+    const float* partials, float* scale, const unsigned int* meta
+) {
+    unsigned int num_partials = meta[0];
+    float max_norm = __uint_as_float(meta[1]);
+
+    __shared__ float partial[256];
+    unsigned int tid = threadIdx.x;
+
+    float acc = 0.0f;
+    for (unsigned int i = tid; i < num_partials; i += 256u) {
+        acc += partials[i];
+    }
+    partial[tid] = acc;
+    __syncthreads();
+
+    for (unsigned int s = 128u; s > 0u; s >>= 1) {
+        if (tid < s) { partial[tid] += partial[tid + s]; }
+        __syncthreads();
+    }
+
+    if (tid == 0u) {
+        float norm = sqrtf(partial[0]);
+        scale[0] = (norm > max_norm) ? max_norm / (norm + 1e-6f) : 1.0f;
+    }
+}
+"#;
+
+pub(crate) const GRAD_SCALE: &str = r#"
+extern "C" __global__ void grad_scale_kernel(
+    float* grad, const float* scale, const unsigned int* meta
+) {
+    unsigned int len = meta[0];
+    // 2D grid, linearized
+    unsigned int idx = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
+    if (idx < len) { grad[idx] = grad[idx] * scale[0]; }
 }
 "#;
