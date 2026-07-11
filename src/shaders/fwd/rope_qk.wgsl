@@ -18,25 +18,23 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let num_heads = m.dim / m.head_dim;
+    // grid.z spans the heads
+    let h = global_id.z;
     let row = m.row_offset + token_idx;
+    let offset = row * m.dim + h * m.head_dim + dim_idx;
 
-    for (var h: u32 = 0u; h < num_heads; h = h + 1u) {
-        let offset = row * m.dim + h * m.head_dim + dim_idx;
+    let freq = 1.0 / pow(10000.0, f32(dim_idx) / f32(m.head_dim));
+    let v_angle = f32(token_idx) * freq;
+    let v_cos = cos(v_angle);
+    let v_sin = sin(v_angle);
 
-        let freq = 1.0 / pow(10000.0, f32(dim_idx) / f32(m.head_dim));
-        let v_angle = f32(token_idx) * freq;
-        let v_cos = cos(v_angle);
-        let v_sin = sin(v_angle);
+    let q0 = q[offset];
+    let q1 = q[offset + 1u];
+    q[offset]      = q0 * v_cos - q1 * v_sin;
+    q[offset + 1u] = q0 * v_sin + q1 * v_cos;
 
-        let q0 = q[offset];
-        let q1 = q[offset + 1u];
-        q[offset]      = q0 * v_cos - q1 * v_sin;
-        q[offset + 1u] = q0 * v_sin + q1 * v_cos;
-
-        let k0 = k[offset];
-        let k1 = k[offset + 1u];
-        k[offset]      = k0 * v_cos - k1 * v_sin;
-        k[offset + 1u] = k0 * v_sin + k1 * v_cos;
-    }
+    let k0 = k[offset];
+    let k1 = k[offset + 1u];
+    k[offset]      = k0 * v_cos - k1 * v_sin;
+    k[offset + 1u] = k0 * v_sin + k1 * v_cos;
 }

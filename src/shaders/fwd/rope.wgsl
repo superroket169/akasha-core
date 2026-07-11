@@ -16,22 +16,20 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         return;
     }
 
-    let num_heads = m.dim / m.head_dim;
+    // grid.z spans the heads
+    let h = global_id.z;
+    let offset = token_idx * m.dim + h * m.head_dim + dim_idx;
 
-    for (var h: u32 = 0u; h < num_heads; h = h + 1u) {
-        let offset = token_idx * m.dim + h * m.head_dim + dim_idx;
+    let x0 = vec[offset];
+    let x1 = vec[offset + 1u];
 
-        let x0 = vec[offset];
-        let x1 = vec[offset + 1u];
+    // TODO: will add inv_freq for optimization
+    let freq = 1.0 / pow(10000.0, f32(dim_idx) / f32(m.head_dim));
+    let v_angle = f32(token_idx) * freq;
 
-        // TODO: will add inv_freq for optimization
-        let freq = 1.0 / pow(10000.0, f32(dim_idx) / f32(m.head_dim));
-        let v_angle = f32(token_idx) * freq;
+    let v_cos = cos(v_angle);
+    let v_sin = sin(v_angle);
 
-        let v_cos = cos(v_angle);
-        let v_sin = sin(v_angle);
-
-        vec[offset]       = x0 * v_cos - x1 * v_sin;
-        vec[offset + 1u]  = x0 * v_sin + x1 * v_cos;
-    }
+    vec[offset]       = x0 * v_cos - x1 * v_sin;
+    vec[offset + 1u]  = x0 * v_sin + x1 * v_cos;
 }
