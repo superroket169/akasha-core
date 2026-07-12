@@ -5,5 +5,10 @@
 @compute @workgroup_size(256, 1, 1)
 fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let idx = global_id.x;
+
+    if (idx >= arrayLength(&a) || idx >= arrayLength(&b) || idx >= arrayLength(&out)) {
+        return;
+    }
+    
     out[idx] = a[idx] + b[idx];
 }
