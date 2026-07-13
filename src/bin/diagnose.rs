@@ -450,12 +450,8 @@ fn check7_cross_entropy<B: Backend>(ctx: Arc<B>) -> bool {
         ctx.clone(),
         &vec![0.0f32; (vocab_size * seq_len) as usize],
     ));
-    let grad_logits = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0.0f32; (vocab_size * seq_len) as usize],
-    ));
 
-    let ce = CrossEntropy::new(ctx.clone(), vocab_size, seq_len, &logits, &grad_logits);
+    let ce = CrossEntropy::new(ctx.clone(), vocab_size, seq_len, &logits);
     ce.target_tokens.copy_from_cpu(&vec![0u32, 1, 2, 3]);
     ce.forward();
 
@@ -529,7 +525,7 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
                         .sqrt()
                 };
                 println!(
-                    "  [fwd-fp] layer0.add_2(resid into final_norm)={:.8} final_norm.out={:.8} lm_head.out={:.8}",
+                    "  [fwd-fp] layer0.add_2(resid into final_norm)={:.8} final_norm.out={:.8} softmax_probs={:.8}",
                     norm_f32(&model.layers[0].add_2.out_buffer),
                     norm_f32(&model.final_norm.out_buffer),
                     norm_f32(&model.lm_head.out_buffer),
@@ -666,9 +662,11 @@ fn check9_kv_cache_equivalence<B: Backend>(ctx: Arc<B>) -> bool {
         };
         let mut window = vec![0u32; seq_len_us];
         let slice = &full_sequence[start..cur_len];
+
         window[..slice.len()].copy_from_slice(slice);
         model.input_tokens.copy_from_cpu(&window);
-        model.forward_fused();
+        model.forward();
+
         let logits = model.lm_head.out_buffer.to_cpu();
         logits_a.push(logits[pred_pos * vocab_us..(pred_pos + 1) * vocab_us].to_vec());
     }
@@ -730,9 +728,11 @@ fn check10_kv_cache_speed<B: Backend>(ctx: Arc<B>) {
         };
         let mut window = vec![0u32; seq_len_us];
         let slice = &tokens[start_idx..];
+
         window[..slice.len()].copy_from_slice(slice);
         model_a.input_tokens.copy_from_cpu(&window);
-        model_a.forward_fused();
+        model_a.forward();
+
         let logits = model_a.lm_head.out_buffer.to_cpu();
         let row = &logits[pred_pos * vocab_us..(pred_pos + 1) * vocab_us];
         tokens.push(argmax(row));

@@ -64,7 +64,7 @@ pub struct Trainer<B: Backend> {
     pub layers: Vec<TransformerBlock<B>>,
     pub final_norm: RMSNorm<B>,
     pub lm_head: Linear<B>,
-    pub grad_logits: Arc<Tensor<B>>,
+    pub logits: Arc<Tensor<B>>,
     pub cross_entropy: CrossEntropy<B>,
     pub optimizer: AdamW<B>,
     pub fused_forward_graph: ComputeGraph<B>,
@@ -95,7 +95,7 @@ impl<B: Backend> Trainer<B> {
         let vocab_out_size = (rows * vocab_size) as usize;
         let zeros_dim = vec![0.0 as Real; dim_size];
 
-        let grad_logits = Arc::new(Tensor::init_from_cpu(
+        let logits = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
             &vec![0.0 as Real; vocab_out_size],
         ));
@@ -150,17 +150,12 @@ impl<B: Backend> Trainer<B> {
             rows,
             &weights.lm_head,
             &final_norm.out_buffer,
-            &grad_logits,
+            &logits,
+            &logits,
             &g_lmhead_in,
         );
 
-        let cross_entropy = CrossEntropy::new(
-            ctx.clone(),
-            vocab_size,
-            rows,
-            &lm_head.out_buffer,
-            &grad_logits,
-        );
+        let cross_entropy = CrossEntropy::new(ctx.clone(), vocab_size, rows, &logits);
 
         let trainable_params = collect_trainable_params(&embedding, &layers, &final_norm, &lm_head);
         let optimizer = AdamW::new(
@@ -284,7 +279,7 @@ impl<B: Backend> Trainer<B> {
             layers,
             final_norm,
             lm_head,
-            grad_logits,
+            logits,
             cross_entropy,
             optimizer,
             fused_forward_graph,

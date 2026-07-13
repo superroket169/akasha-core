@@ -59,14 +59,14 @@ impl HeadMoveMeta {
     }
 }
 
-/// CausalSoftmax/SoftmaxBwd: square `[seq_len, seq_len]` scores.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct AttnScaleMeta {
-    pub seq_len: u32,
-    pub scale: f32,
+pub struct AttnCachedMeta {
+    pub attn_len: u32,
+    pub dim: u32,
+    pub head_dim: u32,
 }
-impl KernelMeta for AttnScaleMeta {}
+impl KernelMeta for AttnCachedMeta {}
 
 /// SoftmaxRect: rectangular `[num_rows, width]` scores (decode).
 #[repr(C)]

@@ -1,7 +1,7 @@
 use super::meta::{
-    AttnScaleMeta, CacheWriteMeta, CrossEntropyMeta, EmbeddingMeta, FlashAttnMeta, GradNormMeta,
-    GradSumSqMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta,
-    SoftmaxRectMeta, ZeroMeta,
+    CacheWriteMeta, CrossEntropyMeta, EmbeddingMeta, FlashAttnMeta, GradNormMeta, GradSumSqMeta,
+    HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta, SoftmaxRectMeta,
+    ZeroMeta,
 };
 use super::{CachedPhase, Decode, FullSeqPhase, FwdPhase, GraphBuilder, Phase, Train};
 use crate::Real;
@@ -16,7 +16,10 @@ fn grid_nm(shape: MatMulMeta) -> [u32; 3] {
     [(shape.n + 15) / 16, (shape.m + 15) / 16, 1]
 }
 
-/// `C[m,n] = A[m,k] @ B[k,n]`
+/// `C[m,n] = A[m,k] @ B[k,n]`. m=1 (decode) routes to the flat GEMV kernel;
+/// the tiled matmul would idle 15/16 of every workgroup on a single row.
+/// The build-time `shape.m` decides — fine, because dynamic metas only ever
+/// change n/k (decode is m=1 throughout).
 pub(crate) fn matmul_with<B: Backend, P: FwdPhase>(
     gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,
@@ -25,15 +28,20 @@ pub(crate) fn matmul_with<B: Backend, P: FwdPhase>(
     shape: MatMulMeta,
     meta: &Arc<Tensor<B>>,
 ) {
+    let (shader, grid) = if shape.m == 1 {
+        (&builtin::GEMV, [(shape.n + 255) / 256, 1, 1])
+    } else {
+        (&builtin::MATMUL, grid_nm(shape))
+    };
     gb.graph.add_node(
-        &builtin::MATMUL,
+        shader,
         &[
             Binding::new(0, &a.buffer, TensorMode::Input),
             Binding::new(1, &b.buffer, TensorMode::Input),
             Binding::new(2, &c.buffer, TensorMode::Output),
             Binding::new(3, &meta.buffer, TensorMode::Meta),
         ],
-        grid_nm(shape),
+        grid,
     );
 }
 
@@ -80,7 +88,7 @@ pub(crate) fn matmul_trp<B: Backend, P: FwdPhase>(
     matmul_trp_with(gb, a, b, c, shape, &meta);
 }
 
-/// `C[m,n] += A[m,k] @ B[k,n]` (fused residual, `c` is InOut)
+/// `C[m,n] += A[m,k] @ B[k,n]` (fused residual, `c` is InOut).
 pub(crate) fn matmul_add_with<B: Backend, P: FwdPhase>(
     gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,
@@ -89,15 +97,20 @@ pub(crate) fn matmul_add_with<B: Backend, P: FwdPhase>(
     shape: MatMulMeta,
     meta: &Arc<Tensor<B>>,
 ) {
+    let (shader, grid) = if shape.m == 1 {
+        (&builtin::GEMV_ADD, [(shape.n + 255) / 256, 1, 1])
+    } else {
+        (&builtin::MATMUL_ADD, grid_nm(shape))
+    };
     gb.graph.add_node(
-        &builtin::MATMUL_ADD,
+        shader,
         &[
             Binding::new(0, &a.buffer, TensorMode::Input),
             Binding::new(1, &b.buffer, TensorMode::Input),
             Binding::new(2, &c.buffer, TensorMode::InOut),
             Binding::new(3, &meta.buffer, TensorMode::Meta),
         ],
-        grid_nm(shape),
+        grid,
     );
 }
 
@@ -299,6 +312,7 @@ pub(crate) fn rope<B: Backend, P: FullSeqPhase>(
     inout_meta_node(gb, &shaders::ROPE, buf, &meta, grid_full(shape));
 }
 
+#[cfg(test)] // reference impl: only the rope_qk fusion test compares against it
 pub(crate) fn rope_bwd<B: Backend>(
     gb: &mut GraphBuilder<'_, B, Train>,
     grad: &Arc<Tensor<B>>,
@@ -410,16 +424,7 @@ pub(crate) fn head_gather<B: Backend, P: FwdPhase>(
 }
 
 /// compact `src` -> wide `dst`
-pub(crate) fn head_scatter_with<B: Backend, P: FwdPhase>(
-    gb: &mut GraphBuilder<'_, B, P>,
-    src: &Arc<Tensor<B>>,
-    dst: &Arc<Tensor<B>>,
-    shape: HeadMoveMeta,
-    meta: &Arc<Tensor<B>>,
-) {
-    move_node(gb, &shaders::HEAD_SCATTER, src, dst, shape, meta);
-}
-
+#[cfg(test)] // reference impl: only the qkv_scatter fusion test compares against it
 pub(crate) fn head_scatter<B: Backend, P: FwdPhase>(
     gb: &mut GraphBuilder<'_, B, P>,
     src: &Arc<Tensor<B>>,
@@ -427,7 +432,7 @@ pub(crate) fn head_scatter<B: Backend, P: FwdPhase>(
     shape: HeadMoveMeta,
 ) {
     let meta = shape.upload(&src.ctx);
-    head_scatter_with(gb, src, dst, shape, &meta);
+    move_node(gb, &shaders::HEAD_SCATTER, src, dst, shape, &meta);
 }
 
 pub(crate) fn qkv_split<B: Backend, P: FwdPhase>(
@@ -476,20 +481,46 @@ pub(crate) fn qkv_scatter<B: Backend, P: FwdPhase>(
 
 // ---- attention ----
 
-/// Fused causal-mask + scale + softmax, in place.
-pub(crate) fn causal_softmax<B: Backend, P: FullSeqPhase>(
-    gb: &mut GraphBuilder<'_, B, P>,
+/// Decode QK^T for all heads in one dispatch, K read strided from the cache
+pub(crate) fn attn_qk_cached_with<B: Backend>(
+    gb: &mut GraphBuilder<'_, B, Decode>,
+    q: &Arc<Tensor<B>>,
+    k_cache: &Arc<Tensor<B>>,
     scores: &Arc<Tensor<B>>,
-    shape: AttnScaleMeta,
+    num_heads: u32,
+    max_attn_len: u32,
+    meta: &Arc<Tensor<B>>,
 ) {
-    let meta = shape.upload(&scores.ctx);
     gb.graph.add_node(
-        &shaders::CAUSAL_SOFTMAX,
+        &shaders::ATTN_QK_CACHED,
         &[
-            Binding::new(0, &scores.buffer, TensorMode::InOut),
-            Binding::new(1, &meta.buffer, TensorMode::Meta),
+            Binding::new(0, &q.buffer, TensorMode::Input),
+            Binding::new(1, &k_cache.buffer, TensorMode::Input),
+            Binding::new(2, &scores.buffer, TensorMode::Output),
+            Binding::new(3, &meta.buffer, TensorMode::Meta),
         ],
-        [(shape.seq_len + 255) / 256, 1, 1],
+        [(max_attn_len + 255) / 256, num_heads, 1],
+    );
+}
+
+/// Decode P@V for all heads in one dispatch, V read strided from the cache;
+pub(crate) fn attn_av_cached_with<B: Backend>(
+    gb: &mut GraphBuilder<'_, B, Decode>,
+    scores: &Arc<Tensor<B>>,
+    v_cache: &Arc<Tensor<B>>,
+    out: &Arc<Tensor<B>>,
+    dim: u32,
+    meta: &Arc<Tensor<B>>,
+) {
+    gb.graph.add_node(
+        &shaders::ATTN_AV_CACHED,
+        &[
+            Binding::new(0, &scores.buffer, TensorMode::Input),
+            Binding::new(1, &v_cache.buffer, TensorMode::Input),
+            Binding::new(2, &out.buffer, TensorMode::Output),
+            Binding::new(3, &meta.buffer, TensorMode::Meta),
+        ],
+        [(dim + 255) / 256, 1, 1],
     );
 }
 
@@ -508,132 +539,6 @@ pub(crate) fn softmax_rect_with<B: Backend>(
         ],
         [(shape.num_rows + 255) / 256, 1, 1],
     );
-}
-
-pub(crate) fn softmax_bwd<B: Backend>(
-    gb: &mut GraphBuilder<'_, B, Train>,
-    y: &Arc<Tensor<B>>,
-    grad_y: &Arc<Tensor<B>>,
-    grad_raw: &Arc<Tensor<B>>,
-    shape: AttnScaleMeta,
-) {
-    let meta = shape.upload(&y.ctx);
-    gb.graph.add_node(
-        &shaders::SOFTMAX_BWD,
-        &[
-            Binding::new(0, &y.buffer, TensorMode::Input),
-            Binding::new(1, &grad_y.buffer, TensorMode::Input),
-            Binding::new(2, &grad_raw.buffer, TensorMode::Output),
-            Binding::new(3, &meta.buffer, TensorMode::Meta),
-        ],
-        [(shape.seq_len + 255) / 256, 1, 1],
-    );
-}
-
-/// Saved per-head activations; the train backward pass reads these.
-pub(crate) struct CausalAttnBuffers<B: Backend> {
-    pub q_heads: Vec<Arc<Tensor<B>>>,
-    pub k_heads: Vec<Arc<Tensor<B>>>,
-    pub v_heads: Vec<Arc<Tensor<B>>>,
-    pub scores_heads: Vec<Arc<Tensor<B>>>,
-}
-
-/// Multi-head causal attention forward, shared verbatim by train and prefill.
-pub(crate) fn causal_attention<B: Backend, P: FullSeqPhase>(
-    gb: &mut GraphBuilder<'_, B, P>,
-    q_buf: &Arc<Tensor<B>>,
-    k_buf: &Arc<Tensor<B>>,
-    v_buf: &Arc<Tensor<B>>,
-    out_buffer: &Arc<Tensor<B>>,
-    seq_len: u32,
-    dim: u32,
-    num_heads: u32,
-) -> CausalAttnBuffers<B> {
-    let ctx = q_buf.ctx.clone();
-    assert_eq!(dim % num_heads, 0, "dim must be divisible by num_heads");
-    let head_dim = dim / num_heads;
-    let scale = 1.0 / (head_dim as f32).sqrt();
-
-    let head_size = (seq_len * head_dim) as usize;
-    let scores_size = (seq_len * seq_len) as usize;
-
-    let mut bufs = CausalAttnBuffers {
-        q_heads: Vec::with_capacity(num_heads as usize),
-        k_heads: Vec::with_capacity(num_heads as usize),
-        v_heads: Vec::with_capacity(num_heads as usize),
-        scores_heads: Vec::with_capacity(num_heads as usize),
-    };
-
-    // Shared scratch: reused/overwritten sequentially per head
-    let out_head = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0.0 as Real; head_size],
-    ));
-
-    for h in 0..num_heads {
-        let head_move = HeadMoveMeta {
-            seq_len,
-            full_dim: dim,
-            head_dim,
-            head_offset: h * head_dim,
-        };
-
-        let q_head = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; head_size],
-        ));
-        let k_head = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; head_size],
-        ));
-        let v_head = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; head_size],
-        ));
-        let t_scores = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; scores_size],
-        ));
-
-        head_gather(gb, q_buf, &q_head, head_move);
-        head_gather(gb, k_buf, &k_head, head_move);
-        head_gather(gb, v_buf, &v_head, head_move);
-
-        matmul_trp(
-            gb,
-            &q_head,
-            &k_head,
-            &t_scores,
-            MatMulMeta {
-                m: seq_len,
-                n: seq_len,
-                k: head_dim,
-            },
-        );
-
-        causal_softmax(gb, &t_scores, AttnScaleMeta { seq_len, scale });
-
-        matmul(
-            gb,
-            &t_scores,
-            &v_head,
-            &out_head,
-            MatMulMeta {
-                m: seq_len,
-                n: head_dim,
-                k: seq_len,
-            },
-        );
-
-        head_scatter(gb, &out_head, out_buffer, head_move);
-
-        bufs.q_heads.push(q_head);
-        bufs.k_heads.push(k_head);
-        bufs.v_heads.push(v_head);
-        bufs.scores_heads.push(t_scores);
-    }
-
-    bufs
 }
 
 // ---- flash attention  ----
@@ -965,7 +870,6 @@ pub(crate) fn cross_entropy<B: Backend>(
     gb: &mut GraphBuilder<'_, B, Train>,
     logits: &Arc<Tensor<B>>,
     target_tokens: &Arc<Tensor<B>>,
-    probs: &Arc<Tensor<B>>,
     losses: &Arc<Tensor<B>>,
     shape: CrossEntropyMeta,
 ) {
@@ -973,13 +877,12 @@ pub(crate) fn cross_entropy<B: Backend>(
     gb.graph.add_node(
         &shaders::CROSS_ENTROPY,
         &[
-            Binding::new(0, &logits.buffer, TensorMode::Input),
+            Binding::new(0, &logits.buffer, TensorMode::InOut),
             Binding::new(1, &target_tokens.buffer, TensorMode::Input),
-            Binding::new(2, &probs.buffer, TensorMode::Output),
-            Binding::new(3, &losses.buffer, TensorMode::Output),
-            Binding::new(4, &meta.buffer, TensorMode::Meta),
+            Binding::new(2, &losses.buffer, TensorMode::Output),
+            Binding::new(3, &meta.buffer, TensorMode::Meta),
         ],
-        [(shape.num_rows + 255) / 256, 1, 1],
+        [shape.num_rows, 1, 1],
     );
 }
 
@@ -988,28 +891,25 @@ pub(crate) fn cross_entropy_bwd<B: Backend>(
     probs: &Arc<Tensor<B>>,
     target_tokens: &Arc<Tensor<B>>,
     d_losses: &Arc<Tensor<B>>,
-    grad_logits: &Arc<Tensor<B>>,
     shape: CrossEntropyMeta,
 ) {
     let meta = shape.upload(&probs.ctx);
     gb.graph.add_node(
         &shaders::CROSS_ENTROPY_BWD,
         &[
-            Binding::new(0, &probs.buffer, TensorMode::Input),
+            Binding::new(0, &probs.buffer, TensorMode::InOut),
             Binding::new(1, &target_tokens.buffer, TensorMode::Input),
             Binding::new(2, &d_losses.buffer, TensorMode::Input),
-            Binding::new(3, &grad_logits.buffer, TensorMode::Output),
-            Binding::new(4, &meta.buffer, TensorMode::Meta),
+            Binding::new(3, &meta.buffer, TensorMode::Meta),
         ],
-        [(shape.num_rows + 255) / 256, 1, 1],
+        [(shape.vocab_size + 255) / 256, shape.num_rows, 1],
     );
 }
 
-// Flash Attention (new) vs "causal_attention" + "SelfAttention"
+// Flash Attention (GPU kernels) vs plain-Rust CPU reference
 #[cfg(test)]
 mod flash_attention_validation {
     use super::*;
-    use crate::nn::layers::{Layer, SelfAttention};
     use wilupgu::{ComputeGraph, WgpuBackend};
 
     fn rand_vec(n: usize, seed: u64) -> Vec<Real> {
@@ -1032,8 +932,79 @@ mod flash_attention_validation {
             .fold(0.0, f32::max)
     }
 
+    #[allow(clippy::needless_range_loop)]
+    fn cpu_attention(
+        q: &[Real],
+        k: &[Real],
+        v: &[Real],
+        grad_out: &[Real],
+        seq_len: usize,
+        dim: usize,
+        head_dim: usize,
+    ) -> (Vec<Real>, Vec<Real>, Vec<Real>, Vec<Real>) {
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        let n = seq_len * dim;
+        let (mut out, mut dq, mut dk, mut dv) =
+            (vec![0.0; n], vec![0.0; n], vec![0.0; n], vec![0.0; n]);
+
+        for h0 in (0..dim).step_by(head_dim) {
+            let at = |i: usize, c: usize| i * dim + h0 + c;
+
+            let mut p = vec![0.0f32; seq_len * seq_len];
+            for i in 0..seq_len {
+                let row = &mut p[i * seq_len..(i + 1) * seq_len];
+                for j in 0..=i {
+                    row[j] = scale
+                        * (0..head_dim)
+                            .map(|c| q[at(i, c)] * k[at(j, c)])
+                            .sum::<f32>();
+                }
+                let max = row[..=i].iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                let mut sum = 0.0;
+                for j in 0..=i {
+                    row[j] = (row[j] - max).exp();
+                    sum += row[j];
+                }
+                for j in 0..=i {
+                    row[j] /= sum;
+                }
+            }
+
+            // out = P V ; dV = P^T dO
+            for i in 0..seq_len {
+                for j in 0..=i {
+                    let pij = p[i * seq_len + j];
+                    for c in 0..head_dim {
+                        out[at(i, c)] += pij * v[at(j, c)];
+                        dv[at(j, c)] += pij * grad_out[at(i, c)];
+                    }
+                }
+            }
+
+            // dS = P o (dP - rowsum(P o dP)), dP = dO V^T; then dQ/dK
+            for i in 0..seq_len {
+                let dp: Vec<f32> = (0..=i)
+                    .map(|j| {
+                        (0..head_dim)
+                            .map(|c| grad_out[at(i, c)] * v[at(j, c)])
+                            .sum()
+                    })
+                    .collect();
+                let dot: f32 = (0..=i).map(|j| p[i * seq_len + j] * dp[j]).sum();
+                for j in 0..=i {
+                    let ds = scale * p[i * seq_len + j] * (dp[j] - dot);
+                    for c in 0..head_dim {
+                        dq[at(i, c)] += ds * k[at(j, c)];
+                        dk[at(j, c)] += ds * q[at(i, c)];
+                    }
+                }
+            }
+        }
+        (out, dq, dk, dv)
+    }
+
     #[test]
-    fn flash_attention_matches_causal_attention() {
+    fn flash_attention_matches_cpu_reference() {
         check(8, 2, 4);
         check(37, 3, 16);
         check(65, 12, 64);
@@ -1046,32 +1017,27 @@ mod flash_attention_validation {
         let scale = 1.0 / (head_dim as f32).sqrt();
         let n = (seq_len * dim) as usize;
 
-        let q_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 1)));
-        let k_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 2)));
-        let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 3)));
-        let grad_output = Arc::new(Tensor::init_from_cpu(ctx.clone(), &rand_vec(n, 4)));
+        let q_cpu = rand_vec(n, 1);
+        let k_cpu = rand_vec(n, 2);
+        let v_cpu = rand_vec(n, 3);
+        let grad_out_cpu = rand_vec(n, 4);
+
+        let q_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &q_cpu));
+        let k_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &k_cpu));
+        let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &v_cpu));
+        let grad_output = Arc::new(Tensor::init_from_cpu(ctx.clone(), &grad_out_cpu));
 
         let zeros = || Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![0.0 as Real; n]));
 
-        // ---- reference: existing causal_attention + SelfAttention's inline backward ----
-        let (old_grad_q, old_grad_k, old_grad_v) = (zeros(), zeros(), zeros());
-        let old_attn = SelfAttention::new(
-            ctx.clone(),
-            seq_len,
-            dim,
-            num_heads,
-            1,
-            &q_buf,
-            &k_buf,
-            &v_buf,
-            &grad_output,
-            &old_grad_q,
-            &old_grad_k,
-            &old_grad_v,
+        let (ref_out, ref_dq, ref_dk, ref_dv) = cpu_attention(
+            &q_cpu,
+            &k_cpu,
+            &v_cpu,
+            &grad_out_cpu,
+            seq_len as usize,
+            dim as usize,
+            head_dim as usize,
         );
-        old_attn.forward();
-        old_attn.backward();
-        ctx.synchronize();
 
         // ---- new: flash_attention + flash_attention_bwd ----
         let new_out = zeros();
@@ -1111,27 +1077,25 @@ mod flash_attention_validation {
 
         let ctx_msg = format!("seq_len={seq_len} num_heads={num_heads} head_dim={head_dim}");
 
-        let old_out_cpu = old_attn.out_buffer.to_cpu::<Real>();
-        let new_out_cpu = new_out.to_cpu::<Real>();
-        let out_diff = max_abs_diff(&old_out_cpu, &new_out_cpu);
+        let out_diff = max_abs_diff(&ref_out, &new_out.to_cpu::<Real>());
         assert!(
             out_diff < tol,
             "forward output mismatch ({ctx_msg}): max_abs_diff={out_diff}"
         );
 
-        let dq_diff = max_abs_diff(&old_grad_q.to_cpu::<Real>(), &new_grad_q.to_cpu::<Real>());
+        let dq_diff = max_abs_diff(&ref_dq, &new_grad_q.to_cpu::<Real>());
         assert!(
             dq_diff < tol,
             "dQ mismatch ({ctx_msg}): max_abs_diff={dq_diff}"
         );
 
-        let dk_diff = max_abs_diff(&old_grad_k.to_cpu::<Real>(), &new_grad_k.to_cpu::<Real>());
+        let dk_diff = max_abs_diff(&ref_dk, &new_grad_k.to_cpu::<Real>());
         assert!(
             dk_diff < tol,
             "dK mismatch ({ctx_msg}): max_abs_diff={dk_diff}"
         );
 
-        let dv_diff = max_abs_diff(&old_grad_v.to_cpu::<Real>(), &new_grad_v.to_cpu::<Real>());
+        let dv_diff = max_abs_diff(&ref_dv, &new_grad_v.to_cpu::<Real>());
         assert!(
             dv_diff < tol,
             "dV mismatch ({ctx_msg}): max_abs_diff={dv_diff}"
@@ -1339,6 +1303,169 @@ mod kernel_fusion_validation {
         assert!(
             max_abs_diff(&old_dst.to_cpu::<Real>(), &new_dst.to_cpu::<Real>()) < 1e-6,
             "qkv_scatter mismatch ({ctx_msg})"
+        );
+    }
+}
+
+// Decode-path kernels (strided-cache attention, GEMV) vs plain-Rust references.
+#[cfg(test)]
+mod decode_kernel_validation {
+    use super::*;
+    use crate::nn::ops::meta::AttnCachedMeta;
+    use wilupgu::{ComputeGraph, WgpuBackend};
+
+    fn rand_vec(n: usize, seed: u64) -> Vec<Real> {
+        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        (0..n)
+            .map(|_| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                let bits = ((state >> 40) as u32) & 0x00FF_FFFF;
+                (bits as f32 / 0x00FF_FFFF as f32) * 2.0 - 1.0
+            })
+            .collect()
+    }
+
+    fn max_abs_diff(a: &[Real], b: &[Real]) -> f32 {
+        a.iter()
+            .zip(b.iter())
+            .map(|(x, y)| (x - y).abs())
+            .fold(0.0, f32::max)
+    }
+
+    #[test]
+    fn cached_attention_matches_cpu_reference() {
+        check_attn(1, 2, 4);
+        check_attn(5, 3, 16);
+        check_attn(33, 12, 64);
+    }
+
+    fn check_attn(attn_len: u32, num_heads: u32, head_dim: u32) {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let dim = num_heads * head_dim;
+        let scale = 1.0 / (head_dim as f32).sqrt();
+        // Grid sized for a larger context than attn_len, like a real decode
+        // step mid-generation: the meta must bound the live work.
+        let max_ctx = 64u32;
+
+        let q_cpu = rand_vec(dim as usize, 1);
+        let k_cpu = rand_vec((max_ctx * dim) as usize, 2);
+        let v_cpu = rand_vec((max_ctx * dim) as usize, 3);
+
+        let q = Arc::new(Tensor::init_from_cpu(ctx.clone(), &q_cpu));
+        let k_cache = Arc::new(Tensor::init_from_cpu(ctx.clone(), &k_cpu));
+        let v_cache = Arc::new(Tensor::init_from_cpu(ctx.clone(), &v_cpu));
+        let scores = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; (num_heads * max_ctx) as usize],
+        ));
+        let out = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; dim as usize],
+        ));
+
+        let softmax_shape = SoftmaxRectMeta {
+            num_rows: num_heads,
+            width: attn_len,
+            scale,
+        };
+        let attn_meta = AttnCachedMeta {
+            attn_len,
+            dim,
+            head_dim,
+        }
+        .upload(&ctx);
+        let softmax_meta = softmax_shape.upload(&ctx);
+
+        let mut graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::decode(&mut graph);
+        attn_qk_cached_with(
+            &mut gb, &q, &k_cache, &scores, num_heads, max_ctx, &attn_meta,
+        );
+        softmax_rect_with(&mut gb, &scores, softmax_shape, &softmax_meta);
+        attn_av_cached_with(&mut gb, &scores, &v_cache, &out, dim, &attn_meta);
+        graph.execute();
+        ctx.synchronize();
+
+        // CPU reference: per head, softmax(scale * q.K^T) @ V off the cache
+        let (al, d, hd) = (attn_len as usize, dim as usize, head_dim as usize);
+        let mut ref_out = vec![0.0f32; d];
+        for h in 0..num_heads as usize {
+            let q_off = h * hd;
+            let mut p: Vec<f32> = (0..al)
+                .map(|j| {
+                    scale
+                        * (0..hd)
+                            .map(|c| q_cpu[q_off + c] * k_cpu[j * d + q_off + c])
+                            .sum::<f32>()
+                })
+                .collect();
+            let max = p.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+            let sum: f32 = p
+                .iter_mut()
+                .map(|x| {
+                    *x = (*x - max).exp();
+                    *x
+                })
+                .sum();
+            for j in 0..al {
+                p[j] /= sum;
+                for c in 0..hd {
+                    ref_out[q_off + c] += p[j] * v_cpu[j * d + q_off + c];
+                }
+            }
+        }
+
+        let diff = max_abs_diff(&ref_out, &out.to_cpu::<Real>());
+        assert!(
+            diff < 1e-4,
+            "cached attention mismatch (attn_len={attn_len} num_heads={num_heads} head_dim={head_dim}): {diff}"
+        );
+    }
+
+    // m=1 matmuls route to GEMV/GEMV_ADD inside matmul_with/matmul_add_with;
+    // n,k chosen off the 256/16 grid boundaries to exercise bounds checks.
+    #[test]
+    fn gemv_routing_matches_cpu_reference() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let (n, k) = (301u32, 19u32);
+
+        let a_cpu = rand_vec(k as usize, 10);
+        let b_cpu = rand_vec((k * n) as usize, 20);
+        let c0_cpu = rand_vec(n as usize, 30);
+
+        let a = Arc::new(Tensor::init_from_cpu(ctx.clone(), &a_cpu));
+        let b = Arc::new(Tensor::init_from_cpu(ctx.clone(), &b_cpu));
+        let c = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; n as usize],
+        ));
+        let c_add = Arc::new(Tensor::init_from_cpu(ctx.clone(), &c0_cpu));
+
+        let shape = MatMulMeta { m: 1, n, k };
+        let mut graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut graph);
+        matmul(&mut gb, &a, &b, &c, shape);
+        matmul_add(&mut gb, &a, &b, &c_add, shape);
+        graph.execute();
+        ctx.synchronize();
+
+        let dot = |col: usize| -> f32 {
+            (0..k as usize)
+                .map(|i| a_cpu[i] * b_cpu[i * n as usize + col])
+                .sum()
+        };
+        let ref_c: Vec<f32> = (0..n as usize).map(dot).collect();
+        let ref_c_add: Vec<f32> = (0..n as usize).map(|j| c0_cpu[j] + dot(j)).collect();
+
+        assert!(
+            max_abs_diff(&ref_c, &c.to_cpu::<Real>()) < 1e-4,
+            "gemv mismatch"
+        );
+        assert!(
+            max_abs_diff(&ref_c_add, &c_add.to_cpu::<Real>()) < 1e-4,
+            "gemv_add mismatch"
         );
     }
 }

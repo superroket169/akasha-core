@@ -1,8 +1,8 @@
 use super::ops;
 use super::ops::GraphBuilder;
 use super::ops::meta::{
-    CacheWriteMeta, EmbeddingMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
-    RopeOffsetMeta, SoftmaxRectMeta,
+    AttnCachedMeta, CacheWriteMeta, EmbeddingMeta, FlashAttnMeta, HeadMoveMeta, KernelMeta,
+    MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta, SoftmaxRectMeta,
 };
 use super::weights::BlockWeights;
 use crate::Real;
@@ -17,11 +17,7 @@ pub(crate) struct DecodeScratch<B: Backend> {
     pub(crate) q_buf: Arc<Tensor<B>>,
     pub(crate) k_buf: Arc<Tensor<B>>,
     pub(crate) v_buf: Arc<Tensor<B>>,
-    pub(crate) q_head: Arc<Tensor<B>>,
-    pub(crate) k_head: Arc<Tensor<B>>,
-    pub(crate) v_head: Arc<Tensor<B>>,
-    pub(crate) scores: Arc<Tensor<B>>,
-    pub(crate) out_head: Arc<Tensor<B>>,
+    pub(crate) scores: Arc<Tensor<B>>, // packed [num_heads, attn_len]
     pub(crate) attn_out: Arc<Tensor<B>>,
     pub(crate) ffn_up_out: Arc<Tensor<B>>,
     pub(crate) final_norm_out: Arc<Tensor<B>>,
@@ -36,15 +32,12 @@ pub(crate) struct DecodeScratch<B: Backend> {
     pub(crate) ffndown_meta: Arc<Tensor<B>>, // MatMulMeta{1,dim,ffn_hidden}
     pub(crate) emb_meta: Arc<Tensor<B>>,  // EmbeddingMeta (seq_len=1)
     pub(crate) lm_meta: Arc<Tensor<B>>,   // MatMulMeta{1,vocab_size,dim}
-    pub(crate) q_move_meta: Vec<Arc<Tensor<B>>>, // per head: HeadMoveMeta (seq_len=1)
 
     // ---- dynamic Meta buffers: updated once per decode step ----
     pub(crate) rope_meta: Arc<Tensor<B>>, // RopeOffsetMeta (pos advances)
     pub(crate) cache_write_meta: Arc<Tensor<B>>, // CacheWriteMeta (dst_row_offset advances)
-    pub(crate) qkt_meta: Arc<Tensor<B>>,  // MatMulMeta{1,attn_len,head_dim}
+    pub(crate) attn_meta: Arc<Tensor<B>>, // AttnCachedMeta (attn_len advances)
     pub(crate) softmax_meta: Arc<Tensor<B>>, // SoftmaxRectMeta (width=attn_len)
-    pub(crate) av_meta: Arc<Tensor<B>>,   // MatMulMeta{1,head_dim,attn_len}
-    pub(crate) cache_move_meta: Vec<Arc<Tensor<B>>>, // per head: HeadMoveMeta (seq_len=attn_len)
 }
 
 impl<B: Backend> DecodeScratch<B> {
@@ -105,17 +98,6 @@ impl<B: Backend> DecodeScratch<B> {
             k: dim,
         }
         .upload(&ctx);
-        let q_move_meta = (0..num_heads)
-            .map(|h| {
-                HeadMoveMeta {
-                    seq_len: 1,
-                    full_dim: dim,
-                    head_dim,
-                    head_offset: h * head_dim,
-                }
-                .upload(&ctx)
-            })
-            .collect();
 
         let rope_meta = RopeOffsetMeta {
             seq_len: 1,
@@ -130,35 +112,18 @@ impl<B: Backend> DecodeScratch<B> {
             dst_row_offset: 0,
         }
         .upload(&ctx);
-        let qkt_meta = MatMulMeta {
-            m: 1,
-            n: 1,
-            k: head_dim,
+        let attn_meta = AttnCachedMeta {
+            attn_len: 1,
+            dim,
+            head_dim,
         }
         .upload(&ctx);
         let softmax_meta = SoftmaxRectMeta {
-            num_rows: 1,
+            num_rows: num_heads,
             width: 1,
             scale: 1.0,
         }
         .upload(&ctx);
-        let av_meta = MatMulMeta {
-            m: 1,
-            n: head_dim,
-            k: 1,
-        }
-        .upload(&ctx);
-        let cache_move_meta = (0..num_heads)
-            .map(|h| {
-                HeadMoveMeta {
-                    seq_len: 1,
-                    full_dim: dim,
-                    head_dim,
-                    head_offset: h * head_dim,
-                }
-                .upload(&ctx)
-            })
-            .collect();
 
         Self {
             hidden: Arc::new(Tensor::init_from_cpu(ctx.clone(), &dim1)),
@@ -170,25 +135,9 @@ impl<B: Backend> DecodeScratch<B> {
             q_buf: Arc::new(Tensor::init_from_cpu(ctx.clone(), &dim1)),
             k_buf: Arc::new(Tensor::init_from_cpu(ctx.clone(), &dim1)),
             v_buf: Arc::new(Tensor::init_from_cpu(ctx.clone(), &dim1)),
-            q_head: Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &zeros(head_dim as usize),
-            )),
-            k_head: Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &zeros((max_context_len * head_dim) as usize),
-            )),
-            v_head: Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &zeros((max_context_len * head_dim) as usize),
-            )),
             scores: Arc::new(Tensor::init_from_cpu(
                 ctx.clone(),
-                &zeros(max_context_len as usize),
-            )),
-            out_head: Arc::new(Tensor::init_from_cpu(
-                ctx.clone(),
-                &zeros(head_dim as usize),
+                &zeros((num_heads * max_context_len) as usize),
             )),
             attn_out: Arc::new(Tensor::init_from_cpu(ctx.clone(), &dim1)),
             ffn_up_out: Arc::new(Tensor::init_from_cpu(
@@ -205,13 +154,10 @@ impl<B: Backend> DecodeScratch<B> {
             ffndown_meta,
             emb_meta,
             lm_meta,
-            q_move_meta,
             rope_meta,
             cache_write_meta,
-            qkt_meta,
+            attn_meta,
             softmax_meta,
-            av_meta,
-            cache_move_meta,
         }
     }
 
@@ -234,33 +180,18 @@ impl<B: Backend> DecodeScratch<B> {
             dst_row_offset: pos,
         }
         .write_to(&self.cache_write_meta);
-        MatMulMeta {
-            m: 1,
-            n: attn_len,
-            k: head_dim,
+        AttnCachedMeta {
+            attn_len,
+            dim,
+            head_dim,
         }
-        .write_to(&self.qkt_meta);
+        .write_to(&self.attn_meta);
         SoftmaxRectMeta {
-            num_rows: 1,
+            num_rows: num_heads,
             width: attn_len,
             scale,
         }
         .write_to(&self.softmax_meta);
-        MatMulMeta {
-            m: 1,
-            n: head_dim,
-            k: attn_len,
-        }
-        .write_to(&self.av_meta);
-        for h in 0..num_heads as usize {
-            HeadMoveMeta {
-                seq_len: attn_len,
-                full_dim: dim,
-                head_dim,
-                head_offset: h as u32 * head_dim,
-            }
-            .write_to(&self.cache_move_meta[h]);
-        }
     }
 }
 
@@ -276,7 +207,6 @@ pub(crate) fn build_prefill_layer<B: Backend>(
 ) -> Arc<Tensor<B>> {
     let ModelConfig {
         dim,
-        num_heads,
         ffn_hidden: ffn_hidden_dim,
         ..
     } = *cfg;
@@ -338,10 +268,21 @@ pub(crate) fn build_prefill_layer<B: Backend>(
     ops::cache_write(gb, &k_buf, cache_k, cache_shape);
     ops::cache_write(gb, &v_buf, cache_v, cache_shape);
 
-    // ---- attention ----
+    // ---- attention (flash: no per-head scores buffers) ----
     let attn_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    let _saved = ops::causal_attention(
-        gb, &q_buf, &k_buf, &v_buf, &attn_out, prompt_len, dim, num_heads,
+    let _saved = ops::flash_attention(
+        gb,
+        &q_buf,
+        &k_buf,
+        &v_buf,
+        &attn_out,
+        FlashAttnMeta {
+            seq_len: prompt_len,
+            dim,
+            head_dim,
+            scale: 1.0 / (head_dim as f32).sqrt(),
+            row_offset: 0,
+        },
     );
 
     // out_proj fused with the residual add: writes into hidden_in
@@ -484,87 +425,35 @@ pub(crate) fn build_decode_layer<B: Backend>(
         &scratch.cache_write_meta,
     );
 
-    // ---- cached attention ----
+    // ---- cached attention: strided cache reads, no per-head copies ----
     let scale = 1.0 / (head_dim as f32).sqrt();
-    for h in 0..num_heads as usize {
-        let q_move = HeadMoveMeta {
-            seq_len: 1,
-            full_dim: dim,
-            head_dim,
-            head_offset: h as u32 * head_dim,
-        };
-        let cache_move = HeadMoveMeta {
-            seq_len: attn_len,
-            ..q_move
-        };
-
-        ops::head_gather_with(
-            gb,
-            &scratch.q_buf,
-            &scratch.q_head,
-            q_move,
-            &scratch.q_move_meta[h],
-        );
-        ops::head_gather_with(
-            gb,
-            cache_k,
-            &scratch.k_head,
-            cache_move,
-            &scratch.cache_move_meta[h],
-        );
-        ops::head_gather_with(
-            gb,
-            cache_v,
-            &scratch.v_head,
-            cache_move,
-            &scratch.cache_move_meta[h],
-        );
-
-        ops::matmul_trp_with(
-            gb,
-            &scratch.q_head,
-            &scratch.k_head,
-            &scratch.scores,
-            MatMulMeta {
-                m: 1,
-                n: attn_len,
-                k: head_dim,
-            },
-            &scratch.qkt_meta,
-        );
-
-        ops::softmax_rect_with(
-            gb,
-            &scratch.scores,
-            SoftmaxRectMeta {
-                num_rows: 1,
-                width: attn_len,
-                scale,
-            },
-            &scratch.softmax_meta,
-        );
-
-        ops::matmul_with(
-            gb,
-            &scratch.scores,
-            &scratch.v_head,
-            &scratch.out_head,
-            MatMulMeta {
-                m: 1,
-                n: head_dim,
-                k: attn_len,
-            },
-            &scratch.av_meta,
-        );
-
-        ops::head_scatter_with(
-            gb,
-            &scratch.out_head,
-            &scratch.attn_out,
-            q_move,
-            &scratch.q_move_meta[h],
-        );
-    }
+    ops::attn_qk_cached_with(
+        gb,
+        &scratch.q_buf,
+        cache_k,
+        &scratch.scores,
+        num_heads,
+        attn_len,
+        &scratch.attn_meta,
+    );
+    ops::softmax_rect_with(
+        gb,
+        &scratch.scores,
+        SoftmaxRectMeta {
+            num_rows: num_heads,
+            width: attn_len,
+            scale,
+        },
+        &scratch.softmax_meta,
+    );
+    ops::attn_av_cached_with(
+        gb,
+        &scratch.scores,
+        cache_v,
+        &scratch.attn_out,
+        dim,
+        &scratch.attn_meta,
+    );
 
     // ---- out_proj + residual ----
     ops::matmul_add_with(

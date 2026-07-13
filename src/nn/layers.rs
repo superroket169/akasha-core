@@ -36,14 +36,17 @@ impl<B: Backend> Linear<B> {
         seq_len: u32,
         weight: &Arc<Tensor<B>>,
         input_buffer: &Arc<Tensor<B>>,
+        out_buffer: &Arc<Tensor<B>>,
         grad_output: &Arc<Tensor<B>>,
         grad_input: &Arc<Tensor<B>>,
     ) -> Self {
         let weight = weight.clone();
-
-        let out_size = (seq_len * out_features) as usize;
-        let zero_out = vec![0.0 as Real; out_size];
-        let out_buffer = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_out));
+        let out_buffer = out_buffer.clone();
+        debug_assert_eq!(
+            out_buffer.size,
+            (seq_len * out_features) as u64 * std::mem::size_of::<Real>() as u64,
+            "Linear out_buffer size mismatch"
+        );
 
         let zero_grad_w = vec![0.0 as Real; (in_features * out_features) as usize];
         let grad_weight = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zero_grad_w));
@@ -459,29 +462,17 @@ impl<B: Backend> Layer for SelfAttention<B> {
 pub struct CrossEntropy<B: Backend> {
     pub seq_len: u32,
     pub target_tokens: Arc<Tensor<B>>,
-    pub probs: Arc<Tensor<B>>,
     pub losses: Arc<Tensor<B>>,
     pub d_losses: Arc<Tensor<B>>,
-    pub grad_logits: Arc<Tensor<B>>,
     pub forward_graph: ComputeGraph<B>,
     pub backward_graph: ComputeGraph<B>,
 }
 
 impl<B: Backend> CrossEntropy<B> {
-    pub fn new(
-        ctx: Arc<B>,
-        vocab_size: u32,
-        seq_len: u32,
-        logits: &Arc<Tensor<B>>,
-        grad_logits: &Arc<Tensor<B>>,
-    ) -> Self {
+    pub fn new(ctx: Arc<B>, vocab_size: u32, seq_len: u32, logits: &Arc<Tensor<B>>) -> Self {
         let target_tokens = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
             &vec![0u32; seq_len as usize],
-        ));
-        let probs = Arc::new(Tensor::init_from_cpu(
-            ctx.clone(),
-            &vec![0.0 as Real; (seq_len * vocab_size) as usize],
         ));
         let losses = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
@@ -491,7 +482,6 @@ impl<B: Backend> CrossEntropy<B> {
             ctx.clone(),
             &vec![1.0 as Real / seq_len as Real; seq_len as usize],
         ));
-        let grad_logits = grad_logits.clone();
 
         let shape = CrossEntropyMeta {
             vocab_size,
@@ -500,26 +490,17 @@ impl<B: Backend> CrossEntropy<B> {
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        ops::cross_entropy(&mut gb, logits, &target_tokens, &probs, &losses, shape);
+        ops::cross_entropy(&mut gb, logits, &target_tokens, &losses, shape);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut backward_graph);
-        ops::cross_entropy_bwd(
-            &mut gb,
-            &probs,
-            &target_tokens,
-            &d_losses,
-            &grad_logits,
-            shape,
-        );
+        ops::cross_entropy_bwd(&mut gb, logits, &target_tokens, &d_losses, shape);
 
         Self {
             seq_len,
             target_tokens,
-            probs,
             losses,
             d_losses,
-            grad_logits,
             forward_graph,
             backward_graph,
         }
@@ -619,6 +600,7 @@ impl<B: Backend> TransformerBlock<B> {
         );
 
         // one [dim, 3*dim] matmul instead of three [dim,dim] matmuls
+        let qkv_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_qkv));
         let qkv_proj = Linear::new(
             ctx.clone(),
             dim,
@@ -626,6 +608,7 @@ impl<B: Backend> TransformerBlock<B> {
             rows,
             &bw.qkv_proj,
             &norm_1.out_buffer,
+            &qkv_out,
             &g_attn_qkv,
             &g_qkvproj_in,
         );
@@ -673,6 +656,7 @@ impl<B: Backend> TransformerBlock<B> {
             &g_attn_v,
         );
 
+        let outproj_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let out_proj = Linear::new(
             ctx.clone(),
             dim,
@@ -680,6 +664,7 @@ impl<B: Backend> TransformerBlock<B> {
             rows,
             &bw.out_proj,
             &attention.out_buffer,
+            &outproj_out,
             &g_add1_b,
             &g_outproj_in,
         );
@@ -704,6 +689,7 @@ impl<B: Backend> TransformerBlock<B> {
             &g_norm2_in,
         );
 
+        let ffnup_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_hidden));
         let ffn_up = Linear::new(
             ctx.clone(),
             dim,
@@ -711,6 +697,7 @@ impl<B: Backend> TransformerBlock<B> {
             rows,
             &bw.ffn_up,
             &norm_2.out_buffer,
+            &ffnup_out,
             &g_silu_in,
             &g_ffnup_in,
         );
@@ -723,6 +710,7 @@ impl<B: Backend> TransformerBlock<B> {
             &g_silu_in,
         );
 
+        let ffndown_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let ffn_down = Linear::new(
             ctx.clone(),
             hidden_dim,
@@ -730,6 +718,7 @@ impl<B: Backend> TransformerBlock<B> {
             rows,
             &bw.ffn_down,
             &silu.out_buffer,
+            &ffndown_out,
             &g_add2_b,
             &g_ffndown_in,
         );
