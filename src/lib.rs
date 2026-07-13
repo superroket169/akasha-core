@@ -13,6 +13,8 @@ pub enum AkashaError {
     EmptyPrompt,
     PromptTooLong { len: u32, max: u32 },
     ContextFull { max: u32 },
+    NoCache,
+    CacheNotEmpty { cur_len: u32 },
 }
 
 impl std::fmt::Display for AkashaError {
@@ -23,6 +25,14 @@ impl std::fmt::Display for AkashaError {
                 write!(f, "prompt is {len} tokens, context window is {max}")
             }
             AkashaError::ContextFull { max } => write!(f, "context window is full ({max} tokens)"),
+            AkashaError::NoCache => {
+                write!(f, "no cache attached (call replace_cache or generate first)")
+            }
+            AkashaError::CacheNotEmpty { cur_len } => write!(
+                f,
+                "prefill needs an empty cache, this one holds {cur_len} tokens \
+                 (loop decode_step for a resumed cache)"
+            ),
         }
     }
 }
