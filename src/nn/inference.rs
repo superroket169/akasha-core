@@ -69,14 +69,10 @@ impl<B: Backend> InferenceSession<B> {
                 max: self.max_context_len,
             });
         }
-        assert_eq!(
-            self.cache
-                .as_ref()
-                .expect("prefill: no cache attached (call replace_cache first)")
-                .cur_len,
-            0,
-            "prefill: v1 only supports an empty cache; loop decode_step for a resumed cache"
-        );
+        let cur_len = self.cache.as_ref().ok_or(AkashaError::NoCache)?.cur_len;
+        if cur_len != 0 {
+            return Err(AkashaError::CacheNotEmpty { cur_len });
+        }
 
         let ctx = self.ctx.clone();
         let weights = self.weights.clone();
@@ -165,10 +161,7 @@ impl<B: Backend> InferenceSession<B> {
 
     pub fn decode_step(&mut self, token: u32) -> Result<Vec<Real>, AkashaError> {
         let pos = {
-            let cache = self
-                .cache
-                .as_ref()
-                .expect("decode_step: no cache attached (call replace_cache first)");
+            let cache = self.cache.as_ref().ok_or(AkashaError::NoCache)?;
             if cache.cur_len >= self.max_context_len {
                 return Err(AkashaError::ContextFull {
                     max: self.max_context_len,
