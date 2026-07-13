@@ -258,6 +258,8 @@ impl<B: Backend> InferenceSession<B> {
         prompt_tokens: &[u32],
         max_new_tokens: usize,
         temperature: f32,
+        top_k: usize,
+        top_p: f32,
     ) -> Result<String, AkashaError> {
         if self.cache.is_none() {
             self.decode_graph = None;
@@ -282,7 +284,7 @@ impl<B: Backend> InferenceSession<B> {
         const EOS: u32 = 50256;
         let mut generated: Vec<u32> = Vec::with_capacity(max_new_tokens);
         for _ in 0..max_new_tokens {
-            let next = sample_token(&logits, temperature);
+            let next = sample_token(&logits, temperature, top_k, top_p);
             generated.push(next);
             if next == EOS {
                 break;

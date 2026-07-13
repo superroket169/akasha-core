@@ -49,7 +49,8 @@ fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str) {
         let tokens = tokenizer.encode(input);
 
         session.take_cache();
-        match session.generate(&tokenizer, &tokens, 200, 0.8) {
+        // temperature 0.8, top-k 40, top-p 0.95 - llama.cpp-style defaults - for now
+        match session.generate(&tokenizer, &tokens, 200, 0.8, 40, 0.95) {
             Ok(output) => println!("{}\n", output),
             Err(e) => eprintln!("generation failed: {e}\n"),
         }
