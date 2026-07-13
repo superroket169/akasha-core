@@ -199,33 +199,32 @@ pub static ROPE_OFFSET: Shader = Shader {
     }),
 };
 
-pub static SOFTMAX: Shader = Shader {
-    name: "Softmax",
-    layout: &[InOut, Meta],
-    wgpu: Some(include_str!("fwd/softmax.wgsl")),
-    cpu: Some(cpu::softmax),
+pub static ATTN_QK_CACHED: Shader = Shader {
+    name: "AttnQkCached",
+    layout: &[Input, Input, Output, Meta],
+    wgpu: Some(include_str!("fwd/attn_qk_cached.wgsl")),
+    cpu: Some(cpu::attn_qk_cached),
     cuda: Some(CudaSpec {
-        src: cuda::SOFTMAX,
-        entry: "softmax_kernel",
+        src: cuda::ATTN_QK_CACHED,
+        entry: "attn_qk_cached_kernel",
         shape: CudaShape::Generic {
-            meta_fields: &[MetaField::U32],
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::U32],
             block_dim: (256, 1, 1),
             append_len: false,
         },
     }),
 };
 
-/// No CPU implementation (pre-existing gap, see `SILU_BWD`).
-pub static SOFTMAX_BWD: Shader = Shader {
-    name: "SoftmaxBwd",
+pub static ATTN_AV_CACHED: Shader = Shader {
+    name: "AttnAvCached",
     layout: &[Input, Input, Output, Meta],
-    wgpu: Some(include_str!("bwd/softmax_bwd.wgsl")),
-    cpu: None,
+    wgpu: Some(include_str!("fwd/attn_av_cached.wgsl")),
+    cpu: Some(cpu::attn_av_cached),
     cuda: Some(CudaSpec {
-        src: cuda::SOFTMAX_BWD,
-        entry: "softmax_bwd_kernel",
+        src: cuda::ATTN_AV_CACHED,
+        entry: "attn_av_cached_kernel",
         shape: CudaShape::Generic {
-            meta_fields: &[MetaField::U32, MetaField::F32],
+            meta_fields: &[MetaField::U32, MetaField::U32, MetaField::U32],
             block_dim: (256, 1, 1),
             append_len: false,
         },
@@ -242,22 +241,6 @@ pub static SOFTMAX_RECT: Shader = Shader {
         entry: "softmax_rect_kernel",
         shape: CudaShape::Generic {
             meta_fields: &[MetaField::U32, MetaField::U32, MetaField::F32],
-            block_dim: (256, 1, 1),
-            append_len: false,
-        },
-    }),
-};
-
-pub static CAUSAL_SOFTMAX: Shader = Shader {
-    name: "CausalSoftmax",
-    layout: &[InOut, Meta],
-    wgpu: Some(include_str!("fwd/causal_softmax.wgsl")),
-    cpu: Some(cpu::causal_softmax),
-    cuda: Some(CudaSpec {
-        src: cuda::CAUSAL_SOFTMAX,
-        entry: "causal_softmax_kernel",
-        shape: CudaShape::Generic {
-            meta_fields: &[MetaField::U32, MetaField::F32],
             block_dim: (256, 1, 1),
             append_len: false,
         },
@@ -314,9 +297,10 @@ pub static RMSNORM_WEIGHT_BWD: Shader = Shader {
     }),
 };
 
+/// In place: slot 0 is logits in, softmax probs out.
 pub static CROSS_ENTROPY: Shader = Shader {
     name: "CrossEntropy",
-    layout: &[Input, Input, Output, Output, Meta],
+    layout: &[InOut, Input, Output, Meta],
     wgpu: Some(include_str!("fwd/cross_entropy.wgsl")),
     cpu: Some(cpu::cross_entropy),
     cuda: Some(CudaSpec {
@@ -330,12 +314,12 @@ pub static CROSS_ENTROPY: Shader = Shader {
     }),
 };
 
-/// No CPU implementation (pre-existing gap, see `SILU_BWD`).
+/// In place: slot 0 is softmax probs in, grad_logits out.
 pub static CROSS_ENTROPY_BWD: Shader = Shader {
     name: "CrossEntropyBwd",
-    layout: &[Input, Input, Input, Output, Meta],
+    layout: &[InOut, Input, Input, Meta],
     wgpu: Some(include_str!("bwd/cross_entropy_bwd.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::cross_entropy_bwd),
     cuda: Some(CudaSpec {
         src: cuda::CROSS_ENTROPY_BWD,
         entry: "cross_entropy_bwd_kernel",

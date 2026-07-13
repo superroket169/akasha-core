@@ -141,60 +141,40 @@ pub(crate) fn rope_offset(bindings: &[CpuBinding]) {
     write_f32(find(bindings, 0), &vec_);
 }
 
-pub(crate) fn softmax(bindings: &[CpuBinding]) {
-    let mut x = read_f32(find(bindings, 0));
-    let meta = read_u32(find(bindings, 1));
-    let seq_len = meta[0] as usize;
+pub(crate) fn attn_qk_cached(bindings: &[CpuBinding]) {
+    let q = read_f32(find(bindings, 0));
+    let k_cache = read_f32(find(bindings, 1));
+    let meta = read_u32(find(bindings, 3));
+    let (attn_len, dim, head_dim) = (meta[0] as usize, meta[1] as usize, meta[2] as usize);
+    let num_heads = dim / head_dim;
 
-    for row in 0..seq_len {
-        let off = row * seq_len;
-        let max_val = x[off..off + seq_len]
-            .iter()
-            .cloned()
-            .fold(f32::NEG_INFINITY, f32::max);
-        let mut sum_exp = 0.0f32;
-        for i in 0..seq_len {
-            let e = (x[off + i] - max_val).exp();
-            x[off + i] = e;
-            sum_exp += e;
-        }
-        for i in 0..seq_len {
-            x[off + i] /= sum_exp;
+    let mut scores = read_f32(find(bindings, 2));
+    for h in 0..num_heads {
+        let q_off = h * head_dim;
+        for j in 0..attn_len {
+            let k_off = j * dim + q_off;
+            scores[h * attn_len + j] = (0..head_dim)
+                .map(|c| q[q_off + c] * k_cache[k_off + c])
+                .sum();
         }
     }
-    write_f32(find(bindings, 0), &x);
+    write_f32(find(bindings, 2), &scores);
 }
 
-pub(crate) fn causal_softmax(bindings: &[CpuBinding]) {
-    let mut x = read_f32(find(bindings, 0));
-    let meta = read_u32(find(bindings, 1));
-    let seq_len = meta[0] as usize;
-    let scale = f32::from_bits(meta[1]);
+pub(crate) fn attn_av_cached(bindings: &[CpuBinding]) {
+    let scores = read_f32(find(bindings, 0));
+    let v_cache = read_f32(find(bindings, 1));
+    let meta = read_u32(find(bindings, 3));
+    let (attn_len, dim, head_dim) = (meta[0] as usize, meta[1] as usize, meta[2] as usize);
 
-    fn masked(x: &[f32], off: usize, row: usize, i: usize, scale: f32) -> f32 {
-        if i > row {
-            -1_000_000_000.0
-        } else {
-            x[off + i] * scale
-        }
+    let mut out = read_f32(find(bindings, 2));
+    for d in 0..dim {
+        let s_off = (d / head_dim) * attn_len;
+        out[d] = (0..attn_len)
+            .map(|j| scores[s_off + j] * v_cache[j * dim + d])
+            .sum();
     }
-
-    for row in 0..seq_len {
-        let off = row * seq_len;
-        let max_val = (0..seq_len)
-            .map(|i| masked(&x, off, row, i, scale))
-            .fold(f32::NEG_INFINITY, f32::max);
-        let mut sum_exp = 0.0f32;
-        for i in 0..seq_len {
-            let e = (masked(&x, off, row, i, scale) - max_val).exp();
-            x[off + i] = e;
-            sum_exp += e;
-        }
-        for i in 0..seq_len {
-            x[off + i] /= sum_exp;
-        }
-    }
-    write_f32(find(bindings, 0), &x);
+    write_f32(find(bindings, 2), &out);
 }
 
 pub(crate) fn softmax_rect(bindings: &[CpuBinding]) {
@@ -293,38 +273,53 @@ pub(crate) fn head_scatter(bindings: &[CpuBinding]) {
     write_f32(find(bindings, 1), &dst);
 }
 
+// In place: binding 0 goes in as logits, comes out as softmax probs.
 pub(crate) fn cross_entropy(bindings: &[CpuBinding]) {
-    let logits = read_f32(find(bindings, 0));
+    let mut x = read_f32(find(bindings, 0));
     let targets = read_u32(find(bindings, 1));
-    let meta = read_u32(find(bindings, 4));
+    let meta = read_u32(find(bindings, 3));
     let (vocab_size, num_rows) = (meta[0] as usize, meta[1] as usize);
 
-    let mut probs = vec![0.0f32; num_rows * vocab_size];
     let mut losses = vec![0.0f32; num_rows];
-
     for row in 0..num_rows {
         let off = row * vocab_size;
         let target_id = targets[row] as usize;
 
-        let max_val = logits[off..off + vocab_size]
+        let max_val = x[off..off + vocab_size]
             .iter()
             .cloned()
             .fold(f32::NEG_INFINITY, f32::max);
 
         let mut sum_exp = 0.0f32;
         for i in 0..vocab_size {
-            let e = (logits[off + i] - max_val).exp();
-            probs[off + i] = e;
-            sum_exp += e;
+            sum_exp += (x[off + i] - max_val).exp();
         }
-        for i in 0..vocab_size {
-            probs[off + i] /= sum_exp;
-        }
+        losses[row] = -(x[off + target_id] - max_val - sum_exp.ln());
 
-        let log_sum_exp = sum_exp.ln();
-        losses[row] = -(logits[off + target_id] - max_val - log_sum_exp);
+        for i in 0..vocab_size {
+            x[off + i] = (x[off + i] - max_val).exp() / sum_exp;
+        }
     }
 
-    write_f32(find(bindings, 2), &probs);
-    write_f32(find(bindings, 3), &losses);
+    write_f32(find(bindings, 0), &x);
+    write_f32(find(bindings, 2), &losses);
+}
+
+// In place: binding 0 goes in as probs, comes out as grad_logits.
+pub(crate) fn cross_entropy_bwd(bindings: &[CpuBinding]) {
+    let mut x = read_f32(find(bindings, 0));
+    let targets = read_u32(find(bindings, 1));
+    let d_losses = read_f32(find(bindings, 2));
+    let meta = read_u32(find(bindings, 3));
+    let (vocab_size, num_rows) = (meta[0] as usize, meta[1] as usize);
+
+    for row in 0..num_rows {
+        let off = row * vocab_size;
+        let target_id = targets[row] as usize;
+        for i in 0..vocab_size {
+            let indicator = if i == target_id { 1.0 } else { 0.0 };
+            x[off + i] = (x[off + i] - indicator) * d_losses[row];
+        }
+    }
+    write_f32(find(bindings, 0), &x);
 }

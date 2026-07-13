@@ -340,54 +340,45 @@ extern "C" __global__ void qkv_scatter_kernel(
 }
 "#;
 
-pub(crate) const SOFTMAX: &str = r#"
-extern "C" __global__ void softmax_kernel(float* x, const unsigned int* meta) {
-    unsigned int seq_len = meta[0];
-    
-    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row >= seq_len) return;
-    unsigned int offset = row * seq_len;
+pub(crate) const ATTN_QK_CACHED: &str = r#"
+extern "C" __global__ void attn_qk_cached_kernel(
+    const float* q, const float* k_cache, float* scores, const unsigned int* meta
+) {
+    unsigned int attn_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
 
-    float max_val = -1000000.0f;
-    for (unsigned int i = 0; i < seq_len; i++) {
-        float val = x[offset + i];
-        if (val > max_val) max_val = val;
-    }
+    unsigned int j = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int h = blockIdx.y;
+    if (j >= attn_len) return;
 
-    float sum_exp = 0.0f;
-    for (unsigned int i = 0; i < seq_len; i++) {
-        float e = expf(x[offset + i] - max_val);
-        x[offset + i] = e;
-        sum_exp += e;
+    unsigned int q_off = h * head_dim;
+    unsigned int k_off = j * dim + q_off;
+    float sum = 0.0f;
+    for (unsigned int c = 0; c < head_dim; c++) {
+        sum += q[q_off + c] * k_cache[k_off + c];
     }
-
-    for (unsigned int i = 0; i < seq_len; i++) {
-        x[offset + i] = x[offset + i] / sum_exp;
-    }
+    scores[h * attn_len + j] = sum;
 }
 "#;
 
-pub(crate) const SOFTMAX_BWD: &str = r#"
-extern "C" __global__ void softmax_bwd_kernel(
-    const float* Y, const float* dY, float* dX, const unsigned int* meta
+pub(crate) const ATTN_AV_CACHED: &str = r#"
+extern "C" __global__ void attn_av_cached_kernel(
+    const float* scores, const float* v_cache, float* out, const unsigned int* meta
 ) {
-    unsigned int seq_len = meta[0];
-    float scale = __uint_as_float(meta[1]);
-    
-    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row >= seq_len) return;
-    unsigned int offset = row * seq_len;
+    unsigned int attn_len = meta[0];
+    unsigned int dim = meta[1];
+    unsigned int head_dim = meta[2];
 
-    float sum_ydy = 0.0f;
-    for (unsigned int i = 0; i < seq_len; i++) {
-        sum_ydy += Y[offset + i] * dY[offset + i];
-    }
+    unsigned int d = blockIdx.x * blockDim.x + threadIdx.x;
+    if (d >= dim) return;
 
-    for (unsigned int i = 0; i < seq_len; i++) {
-        dX[offset + i] = Y[offset + i] * (dY[offset + i] - sum_ydy) * scale;
+    unsigned int s_off = (d / head_dim) * attn_len;
+    float sum = 0.0f;
+    for (unsigned int j = 0; j < attn_len; j++) {
+        sum += scores[s_off + j] * v_cache[j * dim + d];
     }
+    out[d] = sum;
 }
 "#;
 
@@ -416,35 +407,6 @@ extern "C" __global__ void softmax_rect_kernel(float* x, const unsigned int* met
     }
 
     for (unsigned int i = 0; i < width; i++) {
-        x[offset + i] = x[offset + i] / sum_exp;
-    }
-}
-"#;
-
-pub(crate) const CAUSAL_SOFTMAX: &str = r#"
-extern "C" __global__ void causal_softmax_kernel(float* x, const unsigned int* meta) {
-    unsigned int seq_len = meta[0];
-    float scale = __uint_as_float(meta[1]);
-    
-    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
-    if (row >= seq_len) return;
-    unsigned int offset = row * seq_len;
-
-    float max_val = -1000000.0f;
-    for (unsigned int i = 0; i < seq_len; i++) {
-        float val = (i > row) ? -1000000000.0f : x[offset + i] * scale;
-        if (val > max_val) max_val = val;
-    }
-
-    float sum_exp = 0.0f;
-    for (unsigned int i = 0; i < seq_len; i++) {
-        float val = (i > row) ? -1000000000.0f : x[offset + i] * scale;
-        float e = expf(val - max_val);
-        x[offset + i] = e;
-        sum_exp += e;
-    }
-
-    for (unsigned int i = 0; i < seq_len; i++) {
         x[offset + i] = x[offset + i] / sum_exp;
     }
 }
@@ -567,62 +529,79 @@ extern "C" __global__ void rmsnorm_weight_bwd_kernel(
 "#;
 
 pub(crate) const CROSS_ENTROPY: &str = r#"
+// Workgroup-per-row, in place: logits become softmax probs; see the wgsl twin.
 extern "C" __global__ void cross_entropy_kernel(
-    const float* logits, const unsigned int* targets, float* probs, float* losses,
+    float* logits, const unsigned int* targets, float* losses,
     const unsigned int* meta
 ) {
     unsigned int vocab_size = meta[0];
     unsigned int num_rows = meta[1];
-    
-    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
-    
+
+    __shared__ float partial[256];
+    __shared__ float row_max;
+    __shared__ float row_sum;
+
+    unsigned int row = blockIdx.x;
     if (row >= num_rows) return;
-    
     unsigned int offset = row * vocab_size;
-    unsigned int target_id = targets[row];
+    unsigned int tid = threadIdx.x;
 
-    float max_val = -3.4028235e38f;
-    for (unsigned int i = 0; i < vocab_size; i++) {
-        max_val = fmaxf(max_val, logits[offset + i]);
+    float local_max = -3.4028235e38f;
+    for (unsigned int i = tid; i < vocab_size; i += 256u) {
+        local_max = fmaxf(local_max, logits[offset + i]);
     }
-
-    float sum_exp = 0.0f;
-    for (unsigned int i = 0; i < vocab_size; i++) {
-        float e = expf(logits[offset + i] - max_val);
-        probs[offset + i] = e;
-        sum_exp += e;
+    partial[tid] = local_max;
+    __syncthreads();
+    for (unsigned int stride = 128u; stride > 0u; stride /= 2u) {
+        if (tid < stride) partial[tid] = fmaxf(partial[tid], partial[tid + stride]);
+        __syncthreads();
     }
+    if (tid == 0u) row_max = partial[0];
+    __syncthreads();
+    float max_val = row_max;
 
-    float inv_sum = 1.0f / sum_exp;
-    for (unsigned int i = 0; i < vocab_size; i++) {
-        probs[offset + i] = probs[offset + i] * inv_sum;
+    float local_sum = 0.0f;
+    for (unsigned int i = tid; i < vocab_size; i += 256u) {
+        local_sum += expf(logits[offset + i] - max_val);
     }
+    partial[tid] = local_sum;
+    __syncthreads();
+    for (unsigned int stride = 128u; stride > 0u; stride /= 2u) {
+        if (tid < stride) partial[tid] += partial[tid + stride];
+        __syncthreads();
+    }
+    if (tid == 0u) row_sum = partial[0];
+    __syncthreads();
+    float sum_exp = row_sum;
 
-    float log_sum_exp = logf(sum_exp);
-    losses[row] = -(logits[offset + target_id] - max_val - log_sum_exp);
+    if (tid == 0u) {
+        losses[row] = -(logits[offset + targets[row]] - max_val - logf(sum_exp));
+    }
+    __syncthreads();
+
+    for (unsigned int i = tid; i < vocab_size; i += 256u) {
+        logits[offset + i] = expf(logits[offset + i] - max_val) / sum_exp;
+    }
 }
 "#;
 
 pub(crate) const CROSS_ENTROPY_BWD: &str = r#"
+// One thread per element, in place: probs become grad_logits.
 extern "C" __global__ void cross_entropy_bwd_kernel(
-    const float* probs, const unsigned int* targets, const float* d_losses, float* d_logits,
+    float* probs, const unsigned int* targets, const float* d_losses,
     const unsigned int* meta
 ) {
     unsigned int vocab_size = meta[0];
     unsigned int num_rows = meta[1];
 
-    unsigned int row = blockIdx.x * blockDim.x + threadIdx.x;
-    
-    if (row >= num_rows) return;
-    
-    unsigned int offset = row * vocab_size;
-    unsigned int target_id = targets[row];
-    float grad_scale = d_losses[row];
+    unsigned int col = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int row = blockIdx.y;
+    if (col >= vocab_size || row >= num_rows) return;
 
-    for (unsigned int i = 0; i < vocab_size; i++) {
-        float indicator = (i == target_id) ? 1.0f : 0.0f;
-        d_logits[offset + i] = (probs[offset + i] - indicator) * grad_scale;
-    }
+    unsigned int idx = row * vocab_size + col;
+    float g = probs[idx];
+    if (col == targets[row]) g -= 1.0f;
+    probs[idx] = g * d_losses[row];
 }
 "#;
 
