@@ -7,8 +7,21 @@ pub struct AkashaTokenizer {
 
 impl AkashaTokenizer {
     pub fn from_pretrained() -> Self {
-        let t = tokenizers::Tokenizer::from_pretrained("gpt2", None)
-            .expect("failed to download/load gpt2 tokenizer (requires network access)");
+        let local =
+            std::env::var("AKASHA_TOKENIZER").unwrap_or_else(|_| "tokenizer.json".to_string());
+        if std::path::Path::new(&local).exists() {
+            let t = tokenizers::Tokenizer::from_file(&local)
+                .unwrap_or_else(|e| panic!("failed to load tokenizer from `{local}`: {e}"));
+            return Self { inner: t };
+        }
+
+        let t = tokenizers::Tokenizer::from_pretrained("gpt2", None).expect(
+            "failed to download gpt2 tokenizer (needs network once; \
+             or provide tokenizer.json / set AKASHA_TOKENIZER)",
+        );
+        if let Err(e) = t.save(&local, false) {
+            eprintln!("warning: could not save tokenizer copy to `{local}`: {e}");
+        }
         Self { inner: t }
     }
 
