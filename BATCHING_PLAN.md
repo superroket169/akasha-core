@@ -1,4 +1,4 @@
-# Gerçek Batch Size -- Durum: Uygulandı (WgpuBackend'de doğrulandı, CUDA taraf ı henüz gerçek donanımda test edilmedi)
+# Gerçek Batch Size
 
 ## Neden
 
