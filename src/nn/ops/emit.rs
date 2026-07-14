@@ -88,7 +88,7 @@ pub(crate) fn matmul_trp<B: Backend, P: FwdPhase>(
     matmul_trp_with(gb, a, b, c, shape, &meta);
 }
 
-/// `C[m,n] += A[m,k] @ B[k,n]` (fused residual, `c` is InOut).
+/// `C[m,n] += A[m,k] @ B[k,n]` (fused residual, `c` accumulates).
 pub(crate) fn matmul_add_with<B: Backend, P: FwdPhase>(
     gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,
@@ -107,7 +107,7 @@ pub(crate) fn matmul_add_with<B: Backend, P: FwdPhase>(
         &[
             Binding::new(0, &a.buffer, TensorMode::Input),
             Binding::new(1, &b.buffer, TensorMode::Input),
-            Binding::new(2, &c.buffer, TensorMode::InOut),
+            Binding::new(2, &c.buffer, TensorMode::Accumulate),
             Binding::new(3, &meta.buffer, TensorMode::Meta),
         ],
         grid,
@@ -139,7 +139,7 @@ pub(crate) fn matmul_weight_bwd<B: Backend>(
         &[
             Binding::new(0, &input.buffer, TensorMode::Input),
             Binding::new(1, &grad_output.buffer, TensorMode::Input),
-            Binding::new(2, &grad_weight.buffer, TensorMode::Output),
+            Binding::new(2, &grad_weight.buffer, TensorMode::Accumulate),
             Binding::new(3, &meta.buffer, TensorMode::Meta),
         ],
         [(shape.n + 15) / 16, (shape.k + 15) / 16, 1],
@@ -745,7 +745,7 @@ pub(crate) fn residual_add<B: Backend, P: FwdPhase>(
     gb.graph.add_node(
         &builtin::RESIDUAL_ADD,
         &[
-            Binding::new(0, &target.buffer, TensorMode::InOut),
+            Binding::new(0, &target.buffer, TensorMode::Accumulate),
             Binding::new(1, &source.buffer, TensorMode::Input),
         ],
         grid256(len),
@@ -780,7 +780,7 @@ pub(crate) fn add_inplace_bwd<B: Backend>(
     gb.graph.add_node(
         &builtin::BWD_ADD_INPLACE,
         &[
-            Binding::new(0, &target.buffer, TensorMode::InOut),
+            Binding::new(0, &target.buffer, TensorMode::Accumulate),
             Binding::new(1, &source.buffer, TensorMode::Input),
         ],
         grid256(len),
