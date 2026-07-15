@@ -90,6 +90,11 @@ impl<B: Backend> Trainer<B> {
             ..
         } = cfg;
         let rows = batch_size * seq_len;
+        assert_eq!(
+            elems(input_tokens),
+            rows,
+            "Trainer::new: input_tokens tensor must hold batch_size * seq_len tokens"
+        );
 
         let dim_size = (rows * dim) as usize;
         let vocab_out_size = (rows * vocab_size) as usize;
@@ -310,6 +315,11 @@ impl<B: Backend> Trainer<B> {
             "train_step: target_tokens must be batch_size * seq_len long"
         );
         assert!(accumulation_steps >= 1, "accumulation_steps must be >= 1");
+        assert!(
+            batch_size == 1 || self.cfg.batch_size == 1,
+            "train_step: the batch_size argument (host-loop count) and cfg.batch_size \
+             (real batching) cannot both be > 1 — see BATCHING_PLAN.md (B6)"
+        );
 
         self.cross_entropy
             .set_grad_scale(1.0 / (seq_len * batch_size * accumulation_steps) as Real);
