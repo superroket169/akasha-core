@@ -19,7 +19,10 @@ fn reduce(tid: u32) -> f32 {
         workgroupBarrier();
         stride = stride / 2u;
     }
-    return partial[0];
+    // okuma bitmeden yazıma geçilmesin (B2).
+    let result = partial[0];
+    workgroupBarrier();
+    return result;
 }
 
 @compute @workgroup_size(256, 1, 1)
