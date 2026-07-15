@@ -190,6 +190,39 @@ Not: fwd ve bwd'de aynı matematiği yapan iki ayrı `+=` kernel'i vardır
 (RESIDUAL_ADD / BWD_ADD_INPLACE) — bilinçli ayrım; bwd'nin kendi Shader statiği
 fused backward graph içinde ayrı düğüm kimliği taşır.
 
+### Dataline: weight → layer → shader hattı
+
+Her weight tensörünün hangi sarmalayıcıdan geçip hangi kernellere bağlandığı.
+Blok deseni 12 kez tekrarlanır:
+
+| weights.rs (blok) | layers.rs | fwd kernel | bwd kernelleri | grad (sınıf) |
+|---|---|---|---|---|
+| norm_1 | RMSNorm | RMSNORM | RMSNORM_BWD (dX) + RMSNORM_WEIGHT_BWD (dW `+=`) | grad_weight (Persistent) |
+| qkv_proj | Linear | MATMUL | MATMUL_WEIGHT_BWD (dW `+=`) + MATMUL_TRP (dX) | grad_weight (Persistent) |
+| out_proj | Linear | MATMUL | aynı çift | grad_weight (Persistent) |
+| norm_2 | RMSNorm | RMSNORM | RMSNORM_BWD + RMSNORM_WEIGHT_BWD | grad_weight (Persistent) |
+| ffn_up | Linear | MATMUL | MATMUL_WEIGHT_BWD + MATMUL_TRP | grad_weight (Persistent) |
+| ffn_down | Linear | MATMUL | MATMUL_WEIGHT_BWD + MATMUL_TRP | grad_weight (Persistent) |
+
+Üst seviye:
+
+| weights.rs | layers.rs | fwd kernel | bwd kernelleri | grad (sınıf) |
+|---|---|---|---|---|
+| embedding | Embedding | EMBEDDING | EMBEDDING_BWD (atomik `+=`) | grad_table (Persistent) |
+| final_norm | RMSNorm | RMSNORM | RMSNORM_BWD + RMSNORM_WEIGHT_BWD | grad_weight (Persistent) |
+| lm_head | Linear | MATMUL | MATMUL_WEIGHT_BWD + MATMUL_TRP | grad_weight (Persistent) |
+
+Weight'siz katmanlar (weights.rs sütunu boş — sadece akışı şekillendirirler):
+
+| layers.rs | fwd kernel(ler) | bwd kernel(ler) | grad buffer'ları (sınıf) |
+|---|---|---|---|
+| SelfAttention | FLASH_ATTENTION ×batch | FLASH_BWD_DQ + FLASH_BWD_DKDV ×batch | g_attn_q/k/v (Overwrite), l_cache (scratch) |
+| SiLU | SILU_OUT | SILU_BWD | g_silu_in (Overwrite) |
+| Add ×2 | ADD | RESIDUAL_ADD ×2 (`+=` fan-in) | grad_a/grad_b (Transient) |
+| qkv taşıma | QKV_SPLIT | QKV_SCATTER + ROPE_BWD_QK | g_attn_qkv (Overwrite) |
+| blok barrier'ları | — | BWD_ADD_INPLACE ×2 (`+=` fan-in) | hedefleri Transient |
+| CrossEntropy | CROSS_ENTROPY (in-place) | CROSS_ENTROPY_BWD (in-place) | logits buffer'ının kendisi (bkz. VRAM aliasing) |
+
 ## Meta protokolü
 
 Meta = kernel parametrelerini taşıyan küçük bir tensör; `TensorMode::Meta` ile
@@ -362,6 +395,7 @@ invariantı buraya bir satır olarak eklenir.
 | optim/adamw.rs | device schedule == host `cosine_lr`; weight'ler doğru yöne hareket ediyor |
 | sampling.rs | greedy / top-k / top-p özellikleri |
 | wilupgu `tests/` | backend parity (wgpu↔cuda↔CPU-ref), graph zinciri grid'i (T8), CUDA meta semantiği (**cfg(cuda) — yalnız nvidia makinede derlenir/koşar**), mode-mismatch paniği |
+| `bin/diagnose.rs` (test değil, elle koşulan binary) | 10 check: param sayısı, grad akışı, gradcheck'ler, accumulation, CE kapalı-form, KV-cache == naif decode (CHECK 9, bit-exact), tok/s kıyası — "eğitim bozuk görünüyor" günlerinin ilk durağı. Durumu: ~900 satır, elden geçmesi Fikir kuyruğunda |
 
 Kurallar:
 
@@ -394,15 +428,32 @@ istekler. Olgunlaşan madde oradan bir K/H/V/T numarası alıp taşınır.
   (`include_str!("cuda/foo.cu")` — NVRTC zaten string alır, davranış değişmez;
   syntax highlighting + diff okunabilirliği bedavaya gelir).
 
+- **Decode'u cuBLAS'sızlaştırmak (GEMV'yi CUDA Generic'e taşımak)** — muhtemelen
+  en yüksek getirili tekil iş: `gemv.wgsl` / `gemv_add.wgsl`'in CUDA C çevirisi
+  yazılıp GEMV/GEMV_ADD `CudaShape::Custom`(cuBLAS)'tan `Generic`'e geçer.
+  Decode'daki TÜM matmul'lar m=1 → GEMV olduğundan decode graph'ında hiç cuBLAS
+  kalmaz. Sonuçlar: (1) dispatch-başı meta dtoh'u (B9) kökünden yok olur;
+  (2) capture yasağının tek sebebi cuBLAS host-side boyutlarıydı → **decode
+  graph'ı capture edilebilir olur** (token başına 100+ dispatch yerine tek
+  graph launch; dinamik metalar device-pointer'dan replay'de güncel okunur);
+  (3) `Custom` shape yalnız eğitim matmul'larının istisnasına küçülür.
+  GEMV bellek-bant sınırlı olduğu için cuBLAS'a hız kaybı yok denecek kadar az;
+  eğitim (m>1) ve prefill cuBLAS'ta kalır — orada tensor core (TF32/bf16) farkı
+  yapısal: skaler CUDA C tensor core'a hiç dokunamaz, erişim cuBLAS / CUTLASS /
+  elle mma-PTX ister. Eldeki 80-vs-31 step/dk ölçümü pooling/flash ÖNCESİ
+  dönemden — **ilk adım: güncel kodda CUDA↔Vulkan'ı yeniden ölçmek**, kararlar
+  o sayıyla verilecek. Not: f16/bf16 altyapısı (`Dtype`, `Gemm<T>`) zaten
+  cuBLAS'ın tensor-core yoluna akar — mixed-precision eğitimin zemini orası.
+
 - **Dinamik metayı tipe bağlamak** (Binding düzeyinde `DynamicMeta` işareti):
   Shader.layout'a KONAMAZ — aynı shader train'de sabit, decode'da dinamik meta
   alır; işaret binding'e aittir (layout `Meta` der, caller `Meta`/`DynamicMeta`
   ile bağlar). Kazançlar: (1) CUDA build_node dinamik meta için bayat cached_meta
   üretmez; (2) execute_captured, DynamicMeta içeren graph'ta assert'le durur —
-  "decode capture edilemez" kuralı yorumdan koda iner; (3) statikliği garanti
-  metalar için cuBLAS dispatch-başı dtoh'u atlayıp cached_meta kullanır →
-  decode'daki token başına ~61 bloklayan kopya kalkar (perf bulgusu #9'un temiz
-  çözümü).
+  "decode capture edilemez" kuralı yorumdan koda iner. **Etkileşim notu:**
+  yukarıdaki decode-cuBLAS'sızlaştırma yapılırsa bu maddenin perf gerekçesi
+  (cuBLAS cached_meta hızlı yolu) düşer; kalan değeri dokümantasyon + guard —
+  önceliği ona göre düşür.
 
 - **GraphBuilder<Decode> meta kaydı**: decode emitter'ları dinamik metaları
   builder'a kaydetsin; `update_for_step` elle yazılmış 4 `write_to` yerine kayıtlı
@@ -419,7 +470,23 @@ istekler. Olgunlaşan madde oradan bir K/H/V/T numarası alıp taşınır.
   (4) Output kontrat canary'si: Output etiketli buffer'ları dispatch öncesi
   NaN/çöple doldurup çıktıyı doğrulayan tek jenerik test — T1 sınıfı etiket
   buglarını otomatik yakalar.
+  (5) diagnose.rs elden geçirilmesi: ~900 satır, env-flag'li, elle koşulan
+  check yığını — hâlâ değerli olan check'ler (gradcheck'ler, KV==naif,
+  kapalı-form CE) gerçek test modüllerine taşınır, refactor'lardan sağ çıkmış
+  ölü check'ler silinir, kalan şey küçük bir "sağlık taraması" binary'si olur.
   İlke: test edilen yer değil, test edilmeyen yer patlar.
+
+- **Grad sınıflarını resmileştirmek (GradClass registry)**: Persistent /
+  Transient / Overwrite bugün yalnız bu dokümanda yaşayan isimler — kodda
+  karşılıkları iki elle-tutulan liste (`collect_trainable_params`'ın grad
+  tarafı, `transient_grads()`) ve "listeye girmeyenler". Öneri: `GradClass`
+  enum'u + layer'ların grad'larını sınıfıyla kaydettiği bir registry;
+  `zero_grads` / `zero_transient` graph'leri elle liste yerine registry'den
+  TÜRETİLİR. Overwrite kayıt dışı kalır (tanımı gereği zero istemez). Bonus
+  assert'lenebilir invariant: "Accumulate ile bağlanan her buffer bir zero
+  listesinde kayıtlı olmalı" — debug'da graph'leri tarayan tek kontrol,
+  "zero_grad şu buffer'ı unutmuş" bug sınıfını (geçmişte yaşandı) doğuştan
+  öldürür.
 
 - **GPU'nun eğitimde CPU'dan bağımsızlığının doğrulanması**: steady-state train
   loop'un kasıtlı trafiği dışında (pencere başına token htod + READ_LOSS'ta bir
