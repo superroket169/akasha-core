@@ -332,19 +332,25 @@ her mikro-batch penceresi:
 
 Checkpoint:
 
-- **V2** = `AKV2` magic + mimari başlığı (vocab/dim/heads/layers/ffn; yüklerken
-  eşleşmezse hata) + weight'ler `weights.params()` sırasında (embedding, blok
-  başına norm1/qkv/out/norm2/ffn_up/ffn_down, final_norm, lm_head — **bu sıra
-  format sözleşmesidir**).
-- **V1** (legacy) = başlıksız bincode (weight, grad) çiftleri; loader magic
-  koklayarak ayırt eder, v1'den grad'ları da geri yükler.
-- **V2'de OLMAYANLAR**: AdamW m/v momentleri, schedule step'i, RNG/data cursor.
-  Resume bugün warmup'ı sıfırdan başlatır ve momentleri soğuk açar (B5) —
-  continued pretraining'den önce V3 şart. Bu bölümü V3 gelince güncelle.
-- main.rs resume'u yalnız `model_step_*.bin` desenini tarar (`model_final.bin`'i
-  görmez); kaldığı step+1'den devam eder ama bu sayaç yalnız veri/isimlendirme
-  içindir, optimizer'a taşınmaz (B5'in parçası).
-- `save_v2` tüm paramları tek seferde host'a toplar (~650MB tepe, B13).
+- **V3 = TEK format** (B5) = `AKV3` magic + mimari başlığı (vocab/dim/heads/
+  layers/ffn; yüklerken eşleşmezse hata) + `train_step` (loop sayacı) +
+  `schedule_step` (AdamW cycle sayacı — ikisi FARKLI sayaçlardır, accum > 1'de
+  ayrışırlar) + weight'ler `weights.params()` sırasında + AdamW (m, v)
+  momentleri aynı sırada (**sıra format sözleşmesidir**). `moments` boş =
+  weights-only dosya (migre v1/v2): yüklenince optimizer soğuk, schedule 0'dan.
+- Legacy v1/v2 okuyucuları YALNIZ `bin/migrate_checkpoint_v3.rs`'te yaşar;
+  kütüphane v3 dışında hiçbir şeyi okumaz/yazmaz. Migre dosya momentsiz +
+  train_step 0 yazılır: eğitilmiş weight'ler üzerinde taze schedule —
+  continued pretraining'in başlangıç durumu tam olarak bu.
+- main.rs resume sırası: en yeni `model_step_*.bin` (step dosyanın İÇİNDEN
+  okunur, dosya adı yalnız migre dosyalar için fallback) → yoksa
+  `checkpoints/model_final.v3.bin` → yoksa sıfırdan. Final kayıt
+  `model_final.v3.bin`'e gider; `model_final.bin` adı v1 anı dosyasıdır,
+  asla yazılmaz.
+- `checkpoint::save` tüm paramları VE momentleri tek seferde host'a toplar
+  (momentlerle tepe ~3×'e çıktı, ~2GB — B13).
+- Format sözleşmesinin bekçisi: train.rs `v3_save_load_roundtrip` testi
+  (weight + moment + iki sayaç, taze trainer'a bit-exact dönüş).
 
 ## Invariantlar
 
