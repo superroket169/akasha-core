@@ -75,13 +75,18 @@ impl<B: Backend> ModelWeights<B> {
         ));
 
         let proj_std = xavier_std(dim);
+
+        // carries an extra 1/sqrt(2*num_layers) to keep the
+        // stream's variance depth-independent at step 0.
+        let residual_scale = 1.0 / ((2 * num_layers) as Real).sqrt();
+
         let blocks = (0..num_layers)
             .map(|_| {
                 let norm_1 = t(&random_normal_vec(dim as usize, 1.0, 0.02));
                 let q_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
                 let k_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
                 let v_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
-                let out_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std);
+                let out_w = random_normal_vec((dim * dim) as usize, 0.0, proj_std * residual_scale);
                 BlockWeights {
                     norm_1,
                     qkv_proj: t(&interleave_qkv(dim, &q_w, &k_w, &v_w)),
@@ -95,7 +100,7 @@ impl<B: Backend> ModelWeights<B> {
                     ffn_down: t(&random_normal_vec(
                         (ffn_hidden * dim) as usize,
                         0.0,
-                        xavier_std(ffn_hidden),
+                        xavier_std(ffn_hidden) * residual_scale,
                     )),
                 }
             })
