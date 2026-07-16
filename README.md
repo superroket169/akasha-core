@@ -37,9 +37,11 @@ cargo run --release --features cpu -- --chat --cpu   # CPU backend
 - **Tokenizer**: a local `tokenizer.json` (or the `AKASHA_TOKENIZER` env var)
   is used if present; otherwise the GPT-2 tokenizer is downloaded once and a
   local copy is saved.
-- **Training data**: `data/train.txt`, raw text; tokenized at startup
-  (truncated to the first 50M chars). Checkpoints go to
-  `checkpoints/model_step_<N>.bin` every `SAVE_EVERY` steps and training
+- **Training data**: `data/train.txt`, raw text of any size; tokenized ONCE
+  into 16M-token shard files under `data/train_shards/` (delete the directory
+  to re-tokenize). Training samples random windows from a small resident pool
+  of shards (~256MB RAM) that rotates through the whole corpus. Checkpoints go
+  to `checkpoints/model_step_<N>.bin` every `SAVE_EVERY` steps and training
   auto-resumes from the newest one. `scripts/train.{bat,sh}` wrap the run in
   an auto-restart loop.
 - **Hyperparameters** all live in `src/config.rs`.

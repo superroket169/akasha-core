@@ -54,14 +54,11 @@ a data problem (too little, too repetitive), not an architecture problem.
   docs, the weights/train/inference mental map, how to add a new kernel
   (meta struct + emitter + phase bound), checkpoint format spec (v1/v2),
   and a rewritten readme.
-- [ ] Streaming dataset module — the enabler for continued pretraining
-  (which comes *before* chat fine-tuning: the current run saw only a
-  ~15M-token slice, so the model is heavily undertrained; more/better data
-  is the highest-leverage next step). The module should: split a large raw
-  corpus into chunks, tokenize chunk-by-chunk with a bounded working set
-  (no more 50M-char truncation, no RAM blowups), persist tokenized shards
-  to disk, and serve `random_batch` across shards during training without
-  ever holding the whole corpus in memory.
+- [x] Streaming dataset module (2026-07-16) — chunked tokenization into
+  16M-token disk shards + resident-pool `random_batch` with rotation; no
+  more 50M-char truncation. With this + the V3 checkpoint (optimizer state
+  survives restarts), continued pretraining is UNBLOCKED — remaining work
+  is data collection itself.
 - [ ] Update `readme.MD` — still says "Training in progress ... ~3 days ...
   loss 3.86", needs the actual final numbers (440k steps, loss 3.6) and a
   mention of the two working chat backends.
