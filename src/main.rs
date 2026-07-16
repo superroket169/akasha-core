@@ -61,7 +61,7 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
     let tokenizer = AkashaTokenizer::from_pretrained();
     println!("Vocab size: {}", tokenizer.vocab_size());
 
-    let dataset = Dataset::from_file("data/train.txt", &tokenizer, SEQ_LEN as usize);
+    let mut dataset = Dataset::from_file("data/train.txt", &tokenizer, SEQ_LEN as usize);
     println!("Dataset: {} tokens", dataset.token_count());
 
     let cfg = ModelConfig::akasha_hall_1();
