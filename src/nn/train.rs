@@ -426,18 +426,97 @@ impl<B: Backend> Trainer<B> {
         self.zero_transient_graph.execute_captured();
     }
 
-    pub fn save_weights(&self, path: &str) -> Result<(), Box<dyn Error>> {
-        checkpoint::save_v2(&self.weights, path)
+    /// Saves weights + full optimizer state (V3)
+    pub fn save_checkpoint(&self, path: &str, train_step: u64) -> Result<(), Box<dyn Error>> {
+        let (schedule_step, _) = self.optimizer.current_schedule();
+        checkpoint::save(
+            &self.weights,
+            Some((&self.optimizer.moments, schedule_step)),
+            train_step,
+            path,
+        )
     }
 
-    pub fn load_weights(&self, path: &str) -> Result<(), Box<dyn Error>> {
+    /// weights-only/migrated files start the optimizer cold
+    pub fn load_checkpoint(&self, path: &str) -> Result<u64, Box<dyn Error>> {
         let loaded = checkpoint::load(&self.weights, path)?;
-        if let Some(grads) = loaded.v1_grads {
-            for ((_, grad_tensor), grad_data) in self.trainable_params().iter().zip(grads.iter()) {
-                grad_tensor.copy_from_cpu(grad_data);
-            }
+        if let Some(state) = loaded.optimizer {
+            self.optimizer
+                .load_state(&state.moments, state.schedule_step);
         }
-        Ok(())
+        Ok(loaded.train_step)
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_roundtrip {
+    use super::*;
+    use wilupgu::WgpuBackend;
+
+    #[test]
+    fn v3_save_load_roundtrip() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
+        let targets: Vec<u32> = (0..cfg.seq_len).map(|i| (i + 1) % cfg.vocab_size).collect();
+
+        // A few real steps so moments and the schedule counter are nonzero.
+        let input_a = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
+        let weights_a = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+        let a = Trainer::new(ctx.clone(), weights_a, &input_a);
+        for step in 0..3 {
+            a.train_step(&tokens, &targets, 1, step, 1);
+        }
+        ctx.synchronize();
+
+        let path = std::env::temp_dir().join("akasha_v3_roundtrip_test.bin");
+        let path = path.to_str().unwrap();
+        a.save_checkpoint(path, 42).unwrap();
+
+        let input_b = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
+        let weights_b = Arc::new(ModelWeights::zeros(ctx.clone(), &cfg));
+        let b = Trainer::new(ctx.clone(), weights_b, &input_b);
+        let train_step = b.load_checkpoint(path).unwrap();
+        ctx.synchronize();
+        std::fs::remove_file(path).ok();
+
+        assert_eq!(train_step, 42);
+        assert_eq!(
+            a.optimizer.current_schedule().0,
+            b.optimizer.current_schedule().0,
+            "schedule step didn't survive the roundtrip"
+        );
+        for (i, (wa, wb)) in a
+            .weights
+            .params()
+            .iter()
+            .zip(b.weights.params())
+            .enumerate()
+        {
+            assert_eq!(
+                wa.to_cpu::<Real>(),
+                wb.to_cpu::<Real>(),
+                "weight tensor {i} differs after roundtrip"
+            );
+        }
+        for (i, ((ma, va), (mb, vb))) in a
+            .optimizer
+            .moments
+            .iter()
+            .zip(b.optimizer.moments.iter())
+            .enumerate()
+        {
+            assert_eq!(
+                ma.to_cpu::<Real>(),
+                mb.to_cpu::<Real>(),
+                "m moment {i} differs after roundtrip"
+            );
+            assert_eq!(
+                va.to_cpu::<Real>(),
+                vb.to_cpu::<Real>(),
+                "v moment {i} differs after roundtrip"
+            );
+        }
     }
 }
 

@@ -175,6 +175,26 @@ impl<B: Backend> AdamW<B> {
         let raw: Vec<u32> = self.schedule_state.to_cpu();
         (raw[0], f32::from_bits(raw[1]))
     }
+
+    /// Restores a V3 checkpoint's optimizer state: m/v moments (in param order — the format contract)
+    /// and the schedule step counter
+    /// The lr field is left at 0; the schedule kernel recomputes it from the step
+    /// counter before the next AdamW node runs.
+    pub fn load_state(&self, moments: &[(Vec<Real>, Vec<Real>)], schedule_step: u32) {
+        assert_eq!(
+            moments.len(),
+            self.moments.len(),
+            "AdamW::load_state: checkpoint moment count doesn't match model"
+        );
+        for ((m_t, v_t), (m_d, v_d)) in self.moments.iter().zip(moments) {
+            m_t.copy_from_cpu(m_d);
+            v_t.copy_from_cpu(v_d);
+        }
+        self.schedule_state.copy_from_cpu(&[ScheduleState {
+            step: schedule_step,
+            lr: 0.0,
+        }]);
+    }
 }
 
 // test for loss diffs
