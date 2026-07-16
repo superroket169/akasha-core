@@ -56,9 +56,11 @@ pub struct AdamW<B: Backend> {
 }
 
 impl<B: Backend> AdamW<B> {
+    /// `params` entries are (weight, grad, decay): weight decay is applied
+    /// only where the flag is true (matmul weights yes, norm gains and the embedding table no).
     pub fn new(
         ctx: Arc<B>,
-        params: &[(Arc<Tensor<B>>, Arc<Tensor<B>>)],
+        params: &[(Arc<Tensor<B>>, Arc<Tensor<B>>, bool)],
         schedule: AdamWSchedule,
         beta1: Real,
         beta2: Real,
@@ -86,6 +88,15 @@ impl<B: Backend> AdamW<B> {
                 weight_decay,
             }],
         ));
+        let const_cfg_no_decay = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &[ConstCfg {
+                beta1,
+                beta2,
+                eps: DEFAULT_EPS,
+                weight_decay: 0.0,
+            }],
+        ));
 
         let mut graph = ComputeGraph::new(ctx.clone());
 
@@ -100,7 +111,7 @@ impl<B: Backend> AdamW<B> {
 
         let mut moments = Vec::with_capacity(params.len());
 
-        for (weight, grad) in params {
+        for (weight, grad, decay) in params {
             let len = elem_count(weight);
             assert_eq!(
                 len,
@@ -133,7 +144,15 @@ impl<B: Backend> AdamW<B> {
                     Binding::new(3, &v.buffer, TensorMode::InOut),
                     Binding::new(4, &param_meta.buffer, TensorMode::Meta),
                     Binding::new(5, &schedule_state.buffer, TensorMode::Input),
-                    Binding::new(6, &const_cfg.buffer, TensorMode::Meta),
+                    Binding::new(
+                        6,
+                        if *decay {
+                            &const_cfg.buffer
+                        } else {
+                            &const_cfg_no_decay.buffer
+                        },
+                        TensorMode::Meta,
+                    ),
                 ],
                 [groups_x, groups_y, 1],
             );
@@ -177,7 +196,7 @@ mod tests {
         let (lr_max, lr_min, warmup_steps, max_steps) = (6e-4 as Real, 6e-5 as Real, 5u32, 50u32);
         let opt = AdamW::new(
             ctx.clone(),
-            &[(weight.clone(), grad.clone())],
+            &[(weight.clone(), grad.clone(), true)],
             AdamWSchedule {
                 lr_max,
                 lr_min,

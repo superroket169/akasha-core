@@ -16,42 +16,55 @@ use crate::optim::{AdamW, AdamWSchedule};
 const ADAM_BETA1: Real = 0.9;
 const ADAM_BETA2: Real = 0.95;
 
+// The bool is the weight-decay flag (E1): decay applies only to matmul
+// weights; norm gains and the embedding table are scale/lookup parameters
+// that decay would just drag toward zero.
 fn collect_trainable_params<B: Backend>(
     embedding: &Embedding<B>,
     layers: &[TransformerBlock<B>],
     final_norm: &RMSNorm<B>,
     lm_head: &Linear<B>,
-) -> Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)> {
-    let mut params: Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)> =
-        vec![(embedding.table.clone(), embedding.grad_table.clone())];
+) -> Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>, bool)> {
+    let mut params: Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>, bool)> =
+        vec![(embedding.table.clone(), embedding.grad_table.clone(), false)];
     for layer in layers.iter() {
         params.push((
             layer.norm_1.weight.clone(),
             layer.norm_1.grad_weight.clone(),
+            false,
         ));
         params.push((
             layer.qkv_proj.weight.clone(),
             layer.qkv_proj.grad_weight.clone(),
+            true,
         ));
         params.push((
             layer.out_proj.weight.clone(),
             layer.out_proj.grad_weight.clone(),
+            true,
         ));
         params.push((
             layer.norm_2.weight.clone(),
             layer.norm_2.grad_weight.clone(),
+            false,
         ));
         params.push((
             layer.ffn_up.weight.clone(),
             layer.ffn_up.grad_weight.clone(),
+            true,
         ));
         params.push((
             layer.ffn_down.weight.clone(),
             layer.ffn_down.grad_weight.clone(),
+            true,
         ));
     }
-    params.push((final_norm.weight.clone(), final_norm.grad_weight.clone()));
-    params.push((lm_head.weight.clone(), lm_head.grad_weight.clone()));
+    params.push((
+        final_norm.weight.clone(),
+        final_norm.grad_weight.clone(),
+        false,
+    ));
+    params.push((lm_head.weight.clone(), lm_head.grad_weight.clone(), true));
     params
 }
 
@@ -192,7 +205,7 @@ impl<B: Backend> Trainer<B> {
         let mut zero_grads_graph = ComputeGraph::new(ctx.clone());
         {
             let mut gb = GraphBuilder::train(&mut zero_grads_graph);
-            for (_, grad) in &trainable_params {
+            for (_, grad, _) in &trainable_params {
                 ops::zero(&mut gb, grad, elems(grad));
             }
             for layer in &layers {
@@ -206,7 +219,7 @@ impl<B: Backend> Trainer<B> {
         // (a factor of 1.0 when the norm is under GRAD_CLIP_NORM).
         let total_partials: u32 = trainable_params
             .iter()
-            .map(|(_, grad)| ops::grad_sumsq_wgs(elems(grad)))
+            .map(|(_, grad, _)| ops::grad_sumsq_wgs(elems(grad)))
             .sum();
         let norm_partials = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
@@ -218,7 +231,7 @@ impl<B: Backend> Trainer<B> {
         {
             let mut gb = GraphBuilder::train(&mut clip_grads_graph);
             let mut out_offset = 0;
-            for (_, grad) in &trainable_params {
+            for (_, grad, _) in &trainable_params {
                 let len = elems(grad);
                 ops::grad_sumsq(
                     &mut gb,
@@ -237,7 +250,7 @@ impl<B: Backend> Trainer<B> {
                     max_norm: GRAD_CLIP_NORM,
                 },
             );
-            for (_, grad) in &trainable_params {
+            for (_, grad, _) in &trainable_params {
                 ops::grad_scale(&mut gb, grad, &clip_scale, elems(grad));
             }
         }
@@ -374,6 +387,9 @@ impl<B: Backend> Trainer<B> {
             &self.final_norm,
             &self.lm_head,
         )
+        .into_iter()
+        .map(|(w, g, _)| (w, g))
+        .collect()
     }
 
     pub fn forward(&self) {
