@@ -358,7 +358,8 @@ invariantı buraya bir satır olarak eklenir.
 - **`train_step`'in `batch_size` ARGÜMANI ≠ `cfg.batch_size`.** Argüman
   host-loop tekrar sayısıdır; gerçek batching için `cfg.batch_size = B` kur ve
   argümanı 1 ver (ayrıntı: BATCHING_PLAN.md). İkisini birden >1 vermek
-  tanımsızdır — bayat satırlar loss/grad'a karışır (assert bekliyor, B6).
+  tanımsızdır — train_step bunu assert'le reddeder; Trainer::new de
+  input_tokens'ın rows token tuttuğunu assert eder (B6).
 - **RMSNorm eps'i fiilen 1e-5'e sabittir**: layers.rs hardcode eder, inference
   cfg.norm_eps okur — tek kaynağa inene kadar `cfg.norm_eps` 1e-5'ten
   oynatılamaz, yoksa train/inference sessizce ayrışır (B14).
@@ -377,6 +378,9 @@ invariantı buraya bir satır olarak eklenir.
   varsa ağa çıkılmaz; ilk indirme yerel kopya bırakır.
 - **`checkpoints/model_final.bin` (v1) dokunulmazdır** — tek eğitilmiş model;
   migrasyonlar kopya üzerinde yapılır (`model_final.bin.v2.bin`).
+- **Weight decay yalnız matmul weight'lerine uygulanır** — norm gain'leri ve
+  embedding tablosu decay'siz (E1; bayrak `collect_trainable_params`'ta,
+  AdamW node'u ona göre decay'li/decay'siz ConstCfg'ye bağlanır).
 - **embedding_bwd atomik CAS kullanır** — token tekrarı yarışının çözümü ve
   2026-06'daki "WGSL'de atomics yok" kararının kayıtlı istisnası (eski wilupgu
   README'sindeki aksi beyan kaldırıldı).
