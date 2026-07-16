@@ -76,12 +76,24 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
     std::fs::create_dir_all("checkpoints").unwrap();
 
     let start_step = match find_latest_checkpoint("checkpoints") {
-        Some((path, step)) => {
-            model
-                .load_weights(&path)
-                .expect("Failed to load checkpoint");
+        Some((path, name_step)) => {
+            let file_step = model
+                .load_checkpoint(&path)
+                .expect("Failed to load checkpoint") as usize;
+            // The step recorded in the file wins; the filename is only a
+            // fallback for migrated files (they carry train_step 0).
+            let step = if file_step > 0 { file_step } else { name_step };
             println!("Resumed from: {} (step {})", path, step);
             step + 1
+        }
+        // Continued-pretraining entry point: a migrated final checkpoint
+        // starts a fresh schedule (step 0, cold optimizer) on trained weights.
+        None if std::path::Path::new("checkpoints/model_final.v3.bin").exists() => {
+            model
+                .load_checkpoint("checkpoints/model_final.v3.bin")
+                .expect("Failed to load checkpoints/model_final.v3.bin");
+            println!("Starting from migrated final weights (fresh schedule)");
+            0
         }
         None => {
             println!("Starting fresh training run");
@@ -120,12 +132,15 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
 
         if step % SAVE_EVERY == 0 && step > 0 {
             let path = format!("checkpoints/model_step_{}.bin", step);
-            model.save_weights(&path).unwrap();
+            model.save_checkpoint(&path, step as u64).unwrap();
             println!("--- Checkpoint saved: {} ---", path);
         }
     }
 
-    model.save_weights("checkpoints/model_final.bin").unwrap();
+    // NOT model_final.bin: that name is the untouchable v1 memento.
+    model
+        .save_checkpoint("checkpoints/model_final.v3.bin", MAX_STEPS as u64)
+        .unwrap();
 
     let config_json = format!(
         r#"{{
@@ -143,7 +158,7 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
 
     println!("Training complete!");
     println!("Best loss: {:.4}", best_loss);
-    println!("Model saved: checkpoints/model_final.bin");
+    println!("Model saved: checkpoints/model_final.v3.bin");
     println!("Run with: cargo run --release --bin akasha-core -- --chat");
 }
 
@@ -155,7 +170,7 @@ fn main() {
         .position(|a| a == "--weights")
         .and_then(|i| args.get(i + 1))
         .map(String::as_str)
-        .unwrap_or("checkpoints/model_final.bin")
+        .unwrap_or("checkpoints/model_final.v3.bin")
         .to_string();
     #[allow(unused_variables)]
     let force_cpu = args.iter().any(|a| a == "--cpu");

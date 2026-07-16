@@ -242,8 +242,8 @@ fn main() {
     let model = Trainer::new(ctx.clone(), weights, &t_input_tokens);
 
     if let Some(path) = load_path {
-        match model.load_weights(path) {
-            Ok(()) => println!("Resumed from '{}'", path),
+        match model.load_checkpoint(path) {
+            Ok(_) => println!("Resumed from '{}'", path),
             Err(e) => eprintln!("Could not load '{}': {} (starting from scratch)", path, e),
         }
     }
@@ -289,15 +289,15 @@ fn main() {
             }
             "save" => {
                 let path = arg.unwrap_or(DEFAULT_WEIGHTS_FILE);
-                match model.save_weights(path) {
+                match model.save_checkpoint(path, dashboard.epoch as u64) {
                     Ok(()) => println!("Saved to '{}'.", path),
                     Err(e) => eprintln!("Save failed: {}", e),
                 }
             }
             "load" => {
                 let path = arg.unwrap_or(DEFAULT_WEIGHTS_FILE);
-                match model.load_weights(path) {
-                    Ok(()) => println!("Loaded '{}'.", path),
+                match model.load_checkpoint(path) {
+                    Ok(_) => println!("Loaded '{}'.", path),
                     Err(e) => eprintln!("Load failed: {}", e),
                 }
             }
@@ -322,7 +322,7 @@ fn main() {
     }
 
     println!("Saving final weights to '{}'...", DEFAULT_WEIGHTS_FILE);
-    match model.save_weights(DEFAULT_WEIGHTS_FILE) {
+    match model.save_checkpoint(DEFAULT_WEIGHTS_FILE, dashboard.epoch as u64) {
         Ok(()) => println!("Saved."),
         Err(e) => eprintln!("Warning: failed to save weights: {}", e),
     }
