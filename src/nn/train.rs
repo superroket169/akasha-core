@@ -16,9 +16,8 @@ use crate::optim::{AdamW, AdamWSchedule};
 const ADAM_BETA1: Real = 0.9;
 const ADAM_BETA2: Real = 0.95;
 
-// The bool is the weight-decay flag (E1): decay applies only to matmul
-// weights; norm gains and the embedding table are scale/lookup parameters
-// that decay would just drag toward zero.
+// The boolean flag enables weight decay.
+// Applied only to matmul weights; norm gains and embeddings are excluded to prevent parameter collapse.
 fn collect_trainable_params<B: Backend>(
     embedding: &Embedding<B>,
     layers: &[TransformerBlock<B>],
@@ -721,7 +720,20 @@ mod batching_validation {
 
     #[test]
     fn real_batching_matches_sequential_accumulation() {
-        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        batching_parity(Arc::new(pollster::block_on(WgpuBackend::new())));
+    }
+
+    /// Same parity, on the REAL CUDA backend — the wgpu variant above proves
+    /// the design, this one proves the CUDA kernel twins (row_offset in
+    /// rope_qk/flash launches). Only compiles/runs on the nvidia machine.
+    #[cfg(feature = "cuda")]
+    #[test]
+    fn real_batching_matches_sequential_accumulation_cuda() {
+        let ctx = wilupgu::CudaBackend::new(0).expect("CUDA backend unavailable");
+        batching_parity(Arc::new(ctx));
+    }
+
+    fn batching_parity<B: Backend>(ctx: Arc<B>) {
         let batch: u32 = 3;
         let base_cfg = ModelConfig::new(37, 16, 4, 2, 11);
         let seq_len = base_cfg.seq_len as usize;
@@ -740,10 +752,8 @@ mod batching_validation {
             .flat_map(|b| rand_tokens(seq_len, vocab, 200 + b as u64))
             .collect();
 
-        // ---- reference: today's production path -- one batch_size=1
-        // Trainer, called `batch` times sequentially, gradients accumulating
-        // across the loop (no zero_grad in between) exactly like an
-        // accumulation cycle in Trainer::train_step ----
+        // Reference: Sequential trainer (batch_size=1) called in a loop to accumulate gradients.
+        // Used to verify mathematical parity with the batched forward/backward pass.
         let ref_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![0u32; seq_len]));
         let ref_trainer = Trainer::new(ctx.clone(), weights_ref, &ref_input_tokens);
         ref_trainer.cross_entropy.set_grad_scale(scale);

@@ -313,6 +313,7 @@ fn check4_rmsnorm_backward<B: Backend>(ctx: Arc<B>) -> bool {
         ctx.clone(),
         dim,
         seq_len,
+        1e-5,
         &w_buf,
         &x_buf,
         &grad_out,

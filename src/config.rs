@@ -7,8 +7,10 @@ pub const SEQ_LEN: u32 = 512;
 pub const FFN_HIDDEN: u32 = 3072; // 4 x DIM
 pub const VOCAB_SIZE: u32 = 50257; // GPT-2 tokenizer
 
-pub const BATCH_SIZE: usize = 2;
-pub const ACCUMULATION_STEPS: usize = 32; // effective batch = 64
+// Real fused batch execution. VRAM bounded: logits buffer alone is BATCH_SIZE x ~103MB.
+// Calibrate BATCH_SIZE based on GPU limits (e.g., RTX 4050 6GB handles ~4).
+pub const BATCH_SIZE: usize = 4;
+pub const ACCUMULATION_STEPS: usize = 16; // Effective batch = 64
 
 pub const LR_MAX: f32 = 6e-5;
 pub const LR_MIN: f32 = 6e-6;

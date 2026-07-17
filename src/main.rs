@@ -64,14 +64,17 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
     let mut dataset = Dataset::from_file("data/train.txt", &tokenizer, SEQ_LEN as usize);
     println!("Dataset: {} tokens", dataset.token_count());
 
-    let cfg = ModelConfig::akasha_hall_1();
+    let cfg = ModelConfig::akasha_hall_1().with_batch_size(BATCH_SIZE as u32);
     let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
     let input_tokens = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
-        &vec![0u32; cfg.seq_len as usize],
+        &vec![0u32; (cfg.batch_size * cfg.seq_len) as usize],
     ));
     let model = Trainer::new(ctx, weights, &input_tokens);
-    println!("Model ready - ~162M parameters (12-head attention)");
+    println!(
+        "Model ready - ~162M parameters (12-head attention, batch {})",
+        cfg.batch_size
+    );
 
     std::fs::create_dir_all("checkpoints").unwrap();
 
@@ -111,7 +114,9 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
     for step in start_step..MAX_STEPS {
         let (inputs, targets) = dataset.random_batch(BATCH_SIZE, &mut rng);
 
-        let loss = model.train_step(&inputs, &targets, BATCH_SIZE, step, ACCUMULATION_STEPS);
+        // BATCH_SIZE handles the fused execute inside the model.
+        // The host-loop argument must strictly remain 1.
+        let loss = model.train_step(&inputs, &targets, 1, step, ACCUMULATION_STEPS);
 
         if let Some(l) = loss {
             if l < best_loss {
