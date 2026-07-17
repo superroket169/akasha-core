@@ -676,12 +676,7 @@ pub(crate) fn cache_write<B: Backend, P: CachedPhase>(
 
 // ---- elementwise ----
 
-fn grid256(len: u32) -> [u32; 3] {
-    [(len + 255) / 256, 1, 1]
-}
-
-// For tensors that can exceed 65535 workgroups in x (embedding-sized);
-// the kernel must linearize (wg.y * num_wg.x + wg.x).
+// (wg.y * num_wg.x + wg.x).
 fn grid256_2d(len: u32) -> [u32; 3] {
     let total = (len + 255) / 256;
     let x = total.clamp(1, 8192);
@@ -696,7 +691,7 @@ pub(crate) fn silu<B: Backend, P: FwdPhase>(
     gb.graph.add_node(
         &shaders::SILU,
         &[Binding::new(0, &buf.buffer, TensorMode::InOut)],
-        grid256(len),
+        grid256_2d(len),
     );
 }
 
@@ -712,7 +707,7 @@ pub(crate) fn silu_out<B: Backend, P: FwdPhase>(
             Binding::new(0, &input.buffer, TensorMode::Input),
             Binding::new(1, &out.buffer, TensorMode::Output),
         ],
-        grid256(len),
+        grid256_2d(len),
     );
 }
 
@@ -731,7 +726,7 @@ pub(crate) fn silu_bwd<B: Backend>(
             Binding::new(1, &grad_output.buffer, TensorMode::Input),
             Binding::new(2, &grad_input.buffer, TensorMode::Output),
         ],
-        grid256(len),
+        grid256_2d(len),
     );
 }
 
@@ -748,7 +743,7 @@ pub(crate) fn residual_add<B: Backend, P: FwdPhase>(
             Binding::new(0, &target.buffer, TensorMode::Accumulate),
             Binding::new(1, &source.buffer, TensorMode::Input),
         ],
-        grid256(len),
+        grid256_2d(len),
     );
 }
 
@@ -766,7 +761,7 @@ pub(crate) fn add_out<B: Backend, P: FwdPhase>(
             Binding::new(1, &b.buffer, TensorMode::Input),
             Binding::new(2, &out.buffer, TensorMode::Output),
         ],
-        grid256(len),
+        grid256_2d(len),
     );
 }
 
@@ -783,7 +778,7 @@ pub(crate) fn add_inplace_bwd<B: Backend>(
             Binding::new(0, &target.buffer, TensorMode::Accumulate),
             Binding::new(1, &source.buffer, TensorMode::Input),
         ],
-        grid256(len),
+        grid256_2d(len),
     );
 }
 
@@ -1467,5 +1462,43 @@ mod decode_kernel_validation {
             max_abs_diff(&ref_c_add, &c_add.to_cpu::<Real>()) < 1e-4,
             "gemv_add mismatch"
         );
+    }
+}
+
+#[cfg(test)]
+mod elementwise_grid_validation {
+    use super::*;
+    use wilupgu::{ComputeGraph, WgpuBackend};
+
+    #[test]
+    fn elementwise_ops_past_1d_grid_limit() {
+        const LEN: usize = 17_000_003; // > 65535 * 256, not a multiple of 256
+        const BOUNDARY: usize = 65535 * 256;
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+
+        let data: Vec<Real> = (0..LEN)
+            .map(|i| ((i % 1000) as f32 - 500.0) / 250.0)
+            .collect();
+        let res: Vec<Real> = (0..LEN).map(|i| ((i % 777) as f32) / 777.0).collect();
+
+        let buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &data));
+        let res_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &res));
+        let mut graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::train(&mut graph);
+        silu(&mut gb, &buf, LEN as u32);
+        residual_add(&mut gb, &buf, &res_buf, LEN as u32);
+        graph.execute();
+        ctx.synchronize();
+
+        let out = buf.to_cpu::<Real>();
+        for &i in &[0usize, BOUNDARY - 1, BOUNDARY, 16_900_000, LEN - 1] {
+            let v = data[i];
+            let expected = v / (1.0 + (-v).exp()) + res[i];
+            assert!(
+                (out[i] - expected).abs() < 1e-5,
+                "idx {i}: got {} expected {expected}",
+                out[i]
+            );
+        }
     }
 }
