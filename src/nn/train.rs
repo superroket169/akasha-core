@@ -155,6 +155,7 @@ impl<B: Backend> Trainer<B> {
             ctx.clone(),
             dim,
             rows,
+            cfg.norm_eps,
             &weights.final_norm,
             &last_block.add_2.out_buffer,
             &g_lmhead_in,

@@ -127,6 +127,7 @@ impl<B: Backend> RMSNorm<B> {
         ctx: Arc<B>,
         dim: u32,
         seq_len: u32,
+        eps: f32,
         weight: &Arc<Tensor<B>>,
         input_buffer: &Arc<Tensor<B>>,
         grad_output: &Arc<Tensor<B>>,
@@ -141,7 +142,7 @@ impl<B: Backend> RMSNorm<B> {
         let shape = NormMeta {
             seq_len,
             size: dim,
-            eps: 1e-5,
+            eps,
         };
 
         let weight = weight.clone();
@@ -593,6 +594,7 @@ impl<B: Backend> TransformerBlock<B> {
             ctx.clone(),
             dim,
             rows,
+            cfg.norm_eps,
             &bw.norm_1,
             input_tensor,
             &g_qkvproj_in,
@@ -683,6 +685,7 @@ impl<B: Backend> TransformerBlock<B> {
             ctx.clone(),
             dim,
             rows,
+            cfg.norm_eps,
             &bw.norm_2,
             &add_1.out_buffer,
             &g_ffnup_in,

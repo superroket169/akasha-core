@@ -53,9 +53,10 @@ extern "C" __global__ void embedding_bwd_kernel(
 }
 "#;
 
+// The four elementwise kernels below use a 2D-linearized grid (grid256_2d):
 pub(crate) const SILU: &str = r#"
 extern "C" __global__ void silu_kernel(float* x, unsigned int n) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int idx = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < n) {
         float val = x[idx];
         x[idx] = val / (1.0f + expf(-val));
@@ -65,7 +66,7 @@ extern "C" __global__ void silu_kernel(float* x, unsigned int n) {
 
 pub(crate) const SILU_OUT: &str = r#"
 extern "C" __global__ void silu_out_kernel(const float* x, float* y, unsigned int n) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int idx = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < n) {
         float val = x[idx];
         y[idx] = val / (1.0f + expf(-val));
@@ -75,7 +76,7 @@ extern "C" __global__ void silu_out_kernel(const float* x, float* y, unsigned in
 
 pub(crate) const ADD: &str = r#"
 extern "C" __global__ void add_kernel(const float* a, const float* b, float* out, unsigned int n) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int idx = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < n) {
         out[idx] = a[idx] + b[idx];
     }
@@ -84,7 +85,7 @@ extern "C" __global__ void add_kernel(const float* a, const float* b, float* out
 
 pub(crate) const SILU_BWD: &str = r#"
 extern "C" __global__ void silu_bwd_kernel(const float* x, const float* dY, float* dX, unsigned int n) {
-    unsigned int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int idx = (blockIdx.y * gridDim.x + blockIdx.x) * blockDim.x + threadIdx.x;
     if (idx < n) {
         float val = x[idx];
         float sig = 1.0f / (1.0f + expf(-val));
