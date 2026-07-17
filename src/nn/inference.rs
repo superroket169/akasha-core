@@ -254,6 +254,10 @@ impl<B: Backend> InferenceSession<B> {
         top_k: usize,
         top_p: f32,
     ) -> Result<String, AkashaError> {
+        if prompt_tokens.is_empty() {
+            return Err(AkashaError::EmptyPrompt);
+        }
+
         if self.cache.is_none() {
             self.decode_graph = None;
             self.cache = Some(Cache::new(
