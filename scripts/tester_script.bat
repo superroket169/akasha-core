@@ -9,60 +9,26 @@ echo [%date% %time%] akasha-core test run > "%LOGFILE%"
 
 set ANY_FAILED=0
 
-echo.
-echo === [1/3] cargo check --lib --features cuda ===
-cargo check --lib --features cuda >> "%LOGFILE%" 2>&1
+echo === [1/2] cargo test --lib --features cuda -- --test-threads=1 ===
+cargo test --lib --features cuda -- --test-threads=1 >> "%LOGFILE%" 2>&1
 if errorlevel 1 (set S1=FAILED& set ANY_FAILED=1& echo FAILED) else (set S1=OK& echo OK)
 
-echo.
-echo === [2/3] cargo test --lib --features cuda -- --test-threads=1 ===
-cargo test --lib --features cuda -- --test-threads=1 >> "%LOGFILE%" 2>&1
+echo === [2/2] cargo build --release --features cuda --bin akasha-core ===
+cargo build --release --features cuda --bin akasha-core >> "%LOGFILE%" 2>&1
 if errorlevel 1 (set S2=FAILED& set ANY_FAILED=1& echo FAILED) else (set S2=OK& echo OK)
 
 echo.
-echo === [3/3] cargo build --release --features cuda --bin akasha-core ===
-cargo build --release --features cuda --bin akasha-core >> "%LOGFILE%" 2>&1
-if errorlevel 1 (set S3=FAILED& set ANY_FAILED=1& echo FAILED) else (set S3=OK& echo OK)
-
-echo.
 echo ============================================
-echo SUMMARY
-echo   [1/3] cargo check --lib --features cuda .......... !S1!
-echo   [2/3] cargo test  --lib --features cuda ........... !S2!
-echo   [3/3] cargo build --release --features cuda ....... !S3!
+echo   [1/2] test  --lib --features cuda ....... !S1!
+echo   [2/2] build --release --features cuda ... !S2!
 echo ============================================
 
 if "!ANY_FAILED!"=="1" (
-    echo ONE OR MORE STEPS FAILED. Full log: %LOGFILE%
-    echo Send the whole log back -- each step's own output is still in there
-    echo even though the script kept going past the failure.
+    echo FAILED -- send back the whole %LOGFILE%
     pause
     exit /b 1
 )
 
-echo ALL CHECKS PASSED: compile, existing test suite, release build.
-echo.
-echo IMPORTANT -- read this:
-echo This does NOT prove the CUDA-specific kernels (FlashAttention, fused
-echo RoPE/QKV, TF32, CUDA Graphs, on-device AdamW schedule, f16 GEMM) are
-echo numerically correct end-to-end. The existing tests in step 2 all run
-echo on wgpu/Vulkan internally, not CUDA -- that gap existed before today
-echo too, nothing new broke it, but it means "tests pass" here only proves
-echo the CUDA feature compiles cleanly, not that it computes the right
-echo numbers on real hardware.
-echo.
-echo The only real way to check that is a short manual training run:
-echo   1. Run train.bat yourself (or target\release\akasha-core.exe directly)
-echo   2. Watch training.log for the first few dozen steps
-echo   3. Loss should be a normal finite number and roughly trend down --
-echo      NOT "NaN" or "inf"
-echo.
-echo I did not automate that step here on purpose: if a real training run
-echo is already going in another window, a script that starts a second
-echo one and then kills "akasha-core.exe" by name could kill the wrong
-echo one. That decision needs a human looking at what's actually running,
-echo not a script guessing.
-echo.
-echo Full log: %LOGFILE%
+echo ALL PASSED. Log: %LOGFILE%
 pause
 exit /b 0
