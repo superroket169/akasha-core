@@ -347,8 +347,10 @@ Checkpoint:
   `checkpoints/model_final.v3.bin` → yoksa sıfırdan. Final kayıt
   `model_final.v3.bin`'e gider; `model_final.bin` adı v1 anı dosyasıdır,
   asla yazılmaz.
-- `checkpoint::save` tüm paramları VE momentleri tek seferde host'a toplar
-  (momentlerle tepe ~3×'e çıktı, ~2GB — B13).
+- `checkpoint::save` tensör-tensör streaming yazar (B13 fix): byte düzeni
+  bincode'un V3Body çıktısıyla birebir aynıdır (fixint LE, elle sıralanmış) —
+  host tepesi tek tensör (~150MB); `load` bincode parse'ında kaldığı için
+  roundtrip testi format sözleşmesini bekçiler.
 - Format sözleşmesinin bekçisi: train.rs `v3_save_load_roundtrip` testi
   (weight + moment + iki sayaç, taze trainer'a bit-exact dönüş).
 
@@ -366,9 +368,9 @@ invariantı buraya bir satır olarak eklenir.
   argümanı 1 ver (ayrıntı: BATCHING_PLAN.md). İkisini birden >1 vermek
   tanımsızdır — train_step bunu assert'le reddeder; Trainer::new de
   input_tokens'ın rows token tuttuğunu assert eder (B6).
-- **RMSNorm eps'i fiilen 1e-5'e sabittir**: layers.rs hardcode eder, inference
-  cfg.norm_eps okur — tek kaynağa inene kadar `cfg.norm_eps` 1e-5'ten
-  oynatılamaz, yoksa train/inference sessizce ayrışır (B14).
+- **RMSNorm eps'in tek kaynağı `cfg.norm_eps`'tir** (B14 fix) — train ve
+  inference aynı config alanını okur; yine de 1e-5'ten oynatmak eğitilmiş
+  checkpoint'in numeriğinden sapmaktır, model başına sabit tut.
 - **`l_cache` düzeni `[row, head]`, row_offset'siz** — her flash çağrısının
   kendi küçük scratch'i; fwd ile bwd aynı buffer'ı paylaşır.
 - **ADAMW_SCHEDULE, AdamW node'larından önce koşar** — AdamW step=0 görürse
@@ -402,6 +404,7 @@ invariantı buraya bir satır olarak eklenir.
 | emit.rs `flash_attention_validation` | flash fwd+bwd == bağımsız düz-Rust CPU referansı (sınır-dışı boyutlar dahil) |
 | emit.rs `kernel_fusion_validation` | rope_qk == 2×rope; qkv_split/scatter == head_gather/scatter zinciri (fused == unfused) |
 | emit.rs `decode_kernel_validation` | 3-dispatch cached attention == CPU ref (grid max'a göre, meta canlıyı sınırlar); m=1 GEMV yönlendirmesi |
+| emit.rs `elementwise_grid_validation` | elementwise kerneller 65535-workgroup (16.7M eleman) 1D sınırının ÜZERİNDE doğru — 2D-linearize grid'in bekçisi (B16) |
 | optim/adamw.rs | device schedule == host `cosine_lr`; weight'ler doğru yöne hareket ediyor |
 | sampling.rs | greedy / top-k / top-p özellikleri |
 | wilupgu `tests/` | backend parity (wgpu↔cuda↔CPU-ref), graph zinciri grid'i (T8), CUDA meta semantiği (**cfg(cuda) — yalnız nvidia makinede derlenir/koşar**), mode-mismatch paniği |

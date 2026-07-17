@@ -120,18 +120,27 @@ gerçek doğrulama arkadaşın RTX 4050'sinde bir round-trip gerektiriyor.
 `tester_script.bat`'a bu -- `cargo test --features cuda batching -- ...`
 gibi bir adım eklenip friend'e gönderilebilir (henüz eklenmedi).
 
-## Sıradaki adımlar (henüz yapılmadı)
+## Sıradaki adımlar
 
-1. wilupgu + akasha-core tester script'lerine CUDA-side doğrulama adımı
-   ekleyip arkadaşın makinesinde çalıştırmak.
-2. `main.rs`'i gerçekten `cfg.batch_size > 1` ile çalıştıracak şekilde
-   güncellemek: `ModelConfig::akasha_hall_1().with_batch_size(B)`,
-   `input_tokens`'ı `B*seq_len` boyutlu allocate etmek, `dataset.random_batch`
-   çıktısını `train_step(..., /*batch_size arg*/ 1, ...)` ile beslemek, VRAM'e
-   göre B seçmek. Bu adım production'ı etkileyeceği için AYRI onay ister --
-   şu an sacred `model_final.bin`'i etkileyen hiçbir şey değişmedi.
+1. ✅ (2026-07-17) CUDA-side doğrulama: `batching_validation` test gövdesi
+   backend-jenerik `batching_parity<B>()` fonksiyonuna çıkarıldı; wgpu testi
+   onu çağırıyor, yeni `real_batching_matches_sequential_accumulation_cuda`
+   (cfg cuda) aynı gövdeyi GERÇEK CudaBackend'de koşuyor — akasha
+   tester_script.bat'ın 2. adımı (`cargo test --lib --features cuda`) bunu
+   otomatik kapsıyor. Arkadaşın makinesinde koşması bekleniyor.
+2. ✅ (2026-07-17) `main.rs` gerçek batch'e geçti:
+   `akasha_hall_1().with_batch_size(BATCH_SIZE)`, input_tokens `B*seq_len`
+   allocate, `random_batch(BATCH_SIZE)` çıktısı `train_step(..., 1, ...)`
+   ile besleniyor. config.rs: BATCH_SIZE=4 (4050'de VRAM'e göre kalibre
+   edilecek; logits tek başına B×~103MB), ACCUMULATION_STEPS=16 → effective
+   batch 64 DEĞİŞMEDİ. Sacred model_final.bin hâlâ dokunulmadı; devam eden
+   koşular checkpoint formatı/şeması değişmediği için etkilenmez.
 3. `rmsnorm_weight_bwd.wgsl`'nin iç döngü sınırının `seq_len`'e değil zaten
    genel satır sayısına bağlı olduğu (yani `rows` ile de doğru çalıştığı)
    -- yukarıdaki test bunu dolaylı olarak zaten doğruladı (RMSNorm
    backward'ları test'te 2 katmanlı bir modelde çalıştı ve gradyanlar
    eşleşti), ayrı bir kontrole gerek kalmadı.
+
+Kalan (F1'in bilinçli DIŞINDA bırakılan kısmı): prefill/decode tarafında
+batch — pretraining için gereksiz, Big Refactor'un Block yüzeyi bunu zaten
+yeniden şekillendirecek.
