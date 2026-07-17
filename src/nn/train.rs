@@ -331,7 +331,7 @@ impl<B: Backend> Trainer<B> {
         assert!(
             batch_size == 1 || self.cfg.batch_size == 1,
             "train_step: the batch_size argument (host-loop count) and cfg.batch_size \
-             (real batching) cannot both be > 1 — see BATCHING_PLAN.md (B6)"
+             (real batching) cannot both be > 1 — see ARCHITECTURE.md invariants"
         );
 
         self.cross_entropy

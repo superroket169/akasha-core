@@ -326,13 +326,19 @@ her mikro-batch penceresi:
   node'larından ÖNCE gelir. step=0'da bias_correction = 1−β⁰ = 0 → sıfıra
   bölme → NaN; schedule önce koştuğu için AdamW hiçbir zaman step=0 görmez.
 - Host trafiği (steady state): pencere başına token upload + READ_LOSS'ta bir
-  losses dtoh. Grad'lar GPU'dan hiç inmez (clip H2'den beri device'ta).
+  losses dtoh. Grad'lar GPU'dan hiç inmez (clip zinciri device'ta).
   READ_LOSS bugün = LOG_EVERY = 50 (lib.rs alias'ı) — okuma ve yazdırma
   sıklığı ayrılabilir ama şu an çakışıktır.
+- **Eval harness** (main.rs): `data/eval.txt` varsa başlangıçta baseline +
+  her EVAL_EVERY step'te held-out loss/perplexity — sabit, örtüşmesiz,
+  batch'e hizalı pencereler, yalnız `forward_fused` + `loss()` (grad'lara,
+  optimizer'a, accumulation cycle'ına dokunmaz; döngünün her yerinde güvenli).
+  Sonuç konsola + `checkpoints/eval_log.txt`'ye (step, loss, ppl). Dosya
+  eğitim verisiyle örtüşmemeli — yoksa sayı ezberi ölçer.
 
 Checkpoint:
 
-- **V3 = TEK format** (B5) = `AKV3` magic + mimari başlığı (vocab/dim/heads/
+- **V3 = TEK format** = `AKV3` magic + mimari başlığı (vocab/dim/heads/
   layers/ffn; yüklerken eşleşmezse hata) + `train_step` (loop sayacı) +
   `schedule_step` (AdamW cycle sayacı — ikisi FARKLI sayaçlardır, accum > 1'de
   ayrışırlar) + weight'ler `weights.params()` sırasında + AdamW (m, v)
@@ -347,7 +353,7 @@ Checkpoint:
   `checkpoints/model_final.v3.bin` → yoksa sıfırdan. Final kayıt
   `model_final.v3.bin`'e gider; `model_final.bin` adı v1 anı dosyasıdır,
   asla yazılmaz.
-- `checkpoint::save` tensör-tensör streaming yazar (B13 fix): byte düzeni
+- `checkpoint::save` tensör-tensör streaming yazar: byte düzeni
   bincode'un V3Body çıktısıyla birebir aynıdır (fixint LE, elle sıralanmış) —
   host tepesi tek tensör (~150MB); `load` bincode parse'ında kaldığı için
   roundtrip testi format sözleşmesini bekçiler.
@@ -365,10 +371,11 @@ invariantı buraya bir satır olarak eklenir.
   açısı yerel `token_idx`'ten). `batching_validation` bunu kanıtlar.
 - **`train_step`'in `batch_size` ARGÜMANI ≠ `cfg.batch_size`.** Argüman
   host-loop tekrar sayısıdır; gerçek batching için `cfg.batch_size = B` kur ve
-  argümanı 1 ver (ayrıntı: BATCHING_PLAN.md). İkisini birden >1 vermek
-  tanımsızdır — train_step bunu assert'le reddeder; Trainer::new de
-  input_tokens'ın rows token tuttuğunu assert eder (B6).
-- **RMSNorm eps'in tek kaynağı `cfg.norm_eps`'tir** (B14 fix) — train ve
+  argümanı 1 ver. İkisini birden >1 vermek tanımsızdır — train_step bunu
+  assert'le reddeder; Trainer::new de input_tokens'ın rows token tuttuğunu
+  assert eder. Prefill/decode tarafında batch bilinçli olarak YOK — Big
+  Refactor'un Block yüzeyine bırakıldı.
+- **RMSNorm eps'in tek kaynağı `cfg.norm_eps`'tir** — train ve
   inference aynı config alanını okur; yine de 1e-5'ten oynatmak eğitilmiş
   checkpoint'in numeriğinden sapmaktır, model başına sabit tut.
 - **`l_cache` düzeni `[row, head]`, row_offset'siz** — her flash çağrısının
@@ -387,7 +394,7 @@ invariantı buraya bir satır olarak eklenir.
 - **`checkpoints/model_final.bin` (v1) dokunulmazdır** — tek eğitilmiş model;
   migrasyonlar kopya üzerinde yapılır (`model_final.bin.v2.bin`).
 - **Weight decay yalnız matmul weight'lerine uygulanır** — norm gain'leri ve
-  embedding tablosu decay'siz (E1; bayrak `collect_trainable_params`'ta,
+  embedding tablosu decay'siz (bayrak `collect_trainable_params`'ta,
   AdamW node'u ona göre decay'li/decay'siz ConstCfg'ye bağlanır).
 - **embedding_bwd atomik CAS kullanır** — token tekrarı yarışının çözümü ve
   2026-06'daki "WGSL'de atomics yok" kararının kayıtlı istisnası (eski wilupgu
@@ -401,10 +408,12 @@ invariantı buraya bir satır olarak eklenir.
 | train.rs `fused_ops_integration` | loss sonlu + grad embedding'e kadar akıyor (smoke) |
 | train.rs `batching_validation` | batch=N tek geçiş == N ardışık accumulation — row_offset tasarımının kanıtı |
 | train.rs `grad_clip_validation` | GPU clip zinciri == host formülü (kırpan ve kırpmayan iki rejim) |
+| inference.rs `prefill_validation` | prefill (flash + son-satır head_gather + GEMV) == aynı prompt'un token token decode'u — son-satır çıkarımının off-by-one bekçisi |
+| main.rs `eval_harness` | eval penceresi kesimi: sabit, örtüşmesiz, batch'e hizalı; küçük dosyada None (panik değil) |
 | emit.rs `flash_attention_validation` | flash fwd+bwd == bağımsız düz-Rust CPU referansı (sınır-dışı boyutlar dahil) |
 | emit.rs `kernel_fusion_validation` | rope_qk == 2×rope; qkv_split/scatter == head_gather/scatter zinciri (fused == unfused) |
 | emit.rs `decode_kernel_validation` | 3-dispatch cached attention == CPU ref (grid max'a göre, meta canlıyı sınırlar); m=1 GEMV yönlendirmesi |
-| emit.rs `elementwise_grid_validation` | elementwise kerneller 65535-workgroup (16.7M eleman) 1D sınırının ÜZERİNDE doğru — 2D-linearize grid'in bekçisi (B16) |
+| emit.rs `elementwise_grid_validation` | elementwise kerneller 65535-workgroup (16.7M eleman) 1D sınırının ÜZERİNDE doğru — 2D-linearize grid'in bekçisi |
 | optim/adamw.rs | device schedule == host `cosine_lr`; weight'ler doğru yöne hareket ediyor |
 | sampling.rs | greedy / top-k / top-p özellikleri |
 | wilupgu `tests/` | backend parity (wgpu↔cuda↔CPU-ref), graph zinciri grid'i (T8), CUDA meta semantiği (**cfg(cuda) — yalnız nvidia makinede derlenir/koşar**), mode-mismatch paniği |
@@ -426,8 +435,9 @@ arası kopya — ikisi de "Fikir kuyruğu → test mimarisi"nin konusu.
 
 ## Fikir kuyruğu (mimari)
 
-REFACTOR.md planlanmış/numaralı işleri tutar; burası mimariye dair fikir ve
-istekler. Olgunlaşan madde oradan bir K/H/V/T numarası alıp taşınır.
+[wilupgu/REFACTOR.md](../wilupgu/REFACTOR.md) iki projenin ortak
+numaralı/bekleyen iş listesini tutar; burası mimariye dair fikir ve
+istekler. Olgunlaşan madde orada numara alıp taşınır.
 
 - **Shader kataloğu tablosu**: shader başına tek satır — wgsl konumu (builtin ise
   sabiti) / varsa eski wgsl karşılaştırma versiyonu / cuda konumu (builtin ise
@@ -445,7 +455,7 @@ istekler. Olgunlaşan madde oradan bir K/H/V/T numarası alıp taşınır.
   en yüksek getirili tekil iş: `gemv.wgsl` / `gemv_add.wgsl`'in CUDA C çevirisi
   yazılıp GEMV/GEMV_ADD `CudaShape::Custom`(cuBLAS)'tan `Generic`'e geçer.
   Decode'daki TÜM matmul'lar m=1 → GEMV olduğundan decode graph'ında hiç cuBLAS
-  kalmaz. Sonuçlar: (1) dispatch-başı meta dtoh'u (B9) kökünden yok olur;
+  kalmaz. Sonuçlar: (1) dispatch-başı meta dtoh'ukökünden yok olur;
   (2) capture yasağının tek sebebi cuBLAS host-side boyutlarıydı → **decode
   graph'ı capture edilebilir olur** (token başına 100+ dispatch yerine tek
   graph launch; dinamik metalar device-pointer'dan replay'de güncel okunur);
@@ -521,9 +531,10 @@ istekler. Olgunlaşan madde oradan bir K/H/V/T numarası alıp taşınır.
 
 ## Big Refactor: Block trait ve heterojen stack
 
-**Statü: TASARIM — ertelendi (2026-07-17).** Ön koşul: F1 (gerçek batch) +
-bf16 entegrasyonu bitip optimize sürüm eğitim için arkadaşın makinesine
-paslanacak; refactor o ~10 günlük eğitim koşarken tasarlanır/yapılır.
+**Statü: TASARIM — sırada (2026-07-17).** Ön koşullar (gerçek batch + bf16 +
+eval harness) tamam; optimize sürüm eğitim için arkadaşın makinesine
+paslanıyor. Refactor o ~10 günlük continued-pretraining koşusu sırasında
+tasarlanır/yapılır.
 
 ### Motivasyon
 
