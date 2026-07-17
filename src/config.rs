@@ -19,8 +19,13 @@ pub const MAX_STEPS: usize = 200_000;
 pub const SAVE_EVERY: usize = 1000;
 pub const LOG_EVERY: usize = 50;
 
+pub const EVAL_EVERY: usize = 1000;
+pub const EVAL_WINDOWS: usize = 32;
+
 pub const ADAM_WEIGHT_DECAY: f32 = 0.01;
 pub const GRAD_CLIP_NORM: f32 = 1.0;
+
+pub const TRAIN_BF16_MATMUL: bool = true;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelConfig {
