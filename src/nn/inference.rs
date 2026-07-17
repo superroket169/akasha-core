@@ -1,7 +1,7 @@
 use super::inference_graphs::{Cache, DecodeScratch, build_decode_layer, build_prefill_layer};
 use super::ops;
 use super::ops::GraphBuilder;
-use super::ops::meta::{EmbeddingMeta, MatMulMeta, NormMeta};
+use super::ops::meta::{EmbeddingMeta, HeadMoveMeta, MatMulMeta, NormMeta};
 use super::sampling::sample_token;
 use super::weights::ModelWeights;
 use crate::config::ModelConfig;
@@ -117,17 +117,34 @@ impl<B: Backend> InferenceSession<B> {
             }
         }
 
+        // Only the last row feeds generation, so the tail shrinks to one row
+        let last_hidden = Arc::new(Tensor::init_from_cpu(
+            ctx.clone(),
+            &vec![0.0 as Real; dim as usize],
+        ));
+        ops::head_gather(
+            &mut gb,
+            &hidden,
+            &last_hidden,
+            HeadMoveMeta {
+                seq_len: 1,
+                full_dim: dim,
+                head_dim: dim,
+                head_offset: (prompt_len - 1) * dim,
+            },
+        );
+
         let final_out = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
-            &vec![0.0 as Real; (prompt_len * dim) as usize],
+            &vec![0.0 as Real; dim as usize],
         ));
         ops::rmsnorm(
             &mut gb,
-            &hidden,
+            &last_hidden,
             &weights.final_norm,
             &final_out,
             NormMeta {
-                seq_len: prompt_len,
+                seq_len: 1,
                 size: dim,
                 eps: cfg.norm_eps,
             },
@@ -135,15 +152,16 @@ impl<B: Backend> InferenceSession<B> {
 
         let logits = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
-            &vec![0.0 as Real; (prompt_len * vocab_size) as usize],
+            &vec![0.0 as Real; vocab_size as usize],
         ));
+
         ops::matmul(
             &mut gb,
             &final_out,
             &weights.lm_head,
             &logits,
             MatMulMeta {
-                m: prompt_len,
+                m: 1,
                 n: vocab_size,
                 k: dim,
             },
@@ -151,9 +169,7 @@ impl<B: Backend> InferenceSession<B> {
 
         graph.execute();
 
-        let all_logits: Vec<Real> = logits.to_cpu();
-        let last_row = (prompt_len - 1) as usize * vocab_size as usize;
-        let result = all_logits[last_row..last_row + vocab_size as usize].to_vec();
+        let result: Vec<Real> = logits.to_cpu();
 
         self.cache.as_mut().unwrap().cur_len = prompt_len;
         Ok(result)
@@ -295,5 +311,38 @@ impl<B: Backend> InferenceSession<B> {
         }
 
         Ok(tokenizer.decode(&generated))
+    }
+}
+
+#[cfg(test)]
+mod prefill_validation {
+    use super::*;
+    use wilupgu::WgpuBackend;
+
+    #[test]
+    fn prefill_logits_match_sequential_decode() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let cfg = ModelConfig::new(97, 32, 4, 2, 16);
+        let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+        let prompt: &[u32] = &[3, 41, 7, 96, 0, 25];
+
+        let mut session = InferenceSession::new(ctx.clone(), weights.clone(), 16);
+        session.replace_cache(Cache::new(ctx.clone(), cfg.num_layers, cfg.dim, 16));
+        let prefill_logits = session.prefill(prompt).expect("prefill failed");
+        assert_eq!(prefill_logits.len(), cfg.vocab_size as usize);
+
+        let mut session = InferenceSession::new(ctx.clone(), weights, 16);
+        session.replace_cache(Cache::new(ctx, cfg.num_layers, cfg.dim, 16));
+        let mut decode_logits = Vec::new();
+        for &t in prompt {
+            decode_logits = session.decode_step(t).expect("decode_step failed");
+        }
+
+        for (i, (p, d)) in prefill_logits.iter().zip(&decode_logits).enumerate() {
+            assert!(
+                (p - d).abs() < 1e-3,
+                "logit {i} diverged: prefill {p} vs decode {d}"
+            );
+        }
     }
 }
