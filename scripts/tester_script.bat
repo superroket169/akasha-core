@@ -9,8 +9,8 @@ echo [%date% %time%] akasha-core test run > "%LOGFILE%"
 
 set ANY_FAILED=0
 
-echo === [1/2] cargo test --lib --features cuda -- --test-threads=1 ===
-cargo test --lib --features cuda -- --test-threads=1 >> "%LOGFILE%" 2>&1
+echo === [1/2] cargo test --features cuda -- --test-threads=1 ===
+cargo test --features cuda -- --test-threads=1 >> "%LOGFILE%" 2>&1
 if errorlevel 1 (set S1=FAILED& set ANY_FAILED=1& echo FAILED) else (set S1=OK& echo OK)
 
 echo === [2/2] cargo build --release --features cuda --bin akasha-core ===
@@ -19,7 +19,7 @@ if errorlevel 1 (set S2=FAILED& set ANY_FAILED=1& echo FAILED) else (set S2=OK& 
 
 echo.
 echo ============================================
-echo   [1/2] test  --lib --features cuda ....... !S1!
+echo   [1/2] test  --features cuda ............. !S1!
 echo   [2/2] build --release --features cuda ... !S2!
 echo ============================================
 
