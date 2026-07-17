@@ -465,11 +465,6 @@ istekler. Olgunlaşan madde oradan bir K/H/V/T numarası alıp taşınır.
   (cuBLAS cached_meta hızlı yolu) düşer; kalan değeri dokümantasyon + guard —
   önceliği ona göre düşür.
 
-- **GraphBuilder<Decode> meta kaydı**: decode emitter'ları dinamik metaları
-  builder'a kaydetsin; `update_for_step` elle yazılmış 4 `write_to` yerine kayıtlı
-  listeyi dolaşsın. "Yeni dinamik meta ekledim, güncellemeyi unuttum" bug sınıfını
-  doğuştan öldürür. F1 (gerçek batch) dinamik meta sayısını artırınca değeri artar.
-
 - **Test mimarisi ("testleri adam etmek")**: bugün testler src dosyalarının
   dibinde `#[cfg(test)]` modülleri (train.rs'in ~yarısı test) ve `rand_vec` /
   `max_abs_diff` gibi yardımcılar 4+ dosyada kopya-yapıştır. Plan:
@@ -485,18 +480,6 @@ istekler. Olgunlaşan madde oradan bir K/H/V/T numarası alıp taşınır.
   kapalı-form CE) gerçek test modüllerine taşınır, refactor'lardan sağ çıkmış
   ölü check'ler silinir, kalan şey küçük bir "sağlık taraması" binary'si olur.
   İlke: test edilen yer değil, test edilmeyen yer patlar.
-
-- **Grad sınıflarını resmileştirmek (GradClass registry)**: Persistent /
-  Transient / Overwrite bugün yalnız bu dokümanda yaşayan isimler — kodda
-  karşılıkları iki elle-tutulan liste (`collect_trainable_params`'ın grad
-  tarafı, `transient_grads()`) ve "listeye girmeyenler". Öneri: `GradClass`
-  enum'u + layer'ların grad'larını sınıfıyla kaydettiği bir registry;
-  `zero_grads` / `zero_transient` graph'leri elle liste yerine registry'den
-  TÜRETİLİR. Overwrite kayıt dışı kalır (tanımı gereği zero istemez). Bonus
-  assert'lenebilir invariant: "Accumulate ile bağlanan her buffer bir zero
-  listesinde kayıtlı olmalı" — debug'da graph'leri tarayan tek kontrol,
-  "zero_grad şu buffer'ı unutmuş" bug sınıfını (geçmişte yaşandı) doğuştan
-  öldürür.
 
 - **GPU'nun eğitimde CPU'dan bağımsızlığının doğrulanması**: steady-state train
   loop'un kasıtlı trafiği dışında (pencere başına token htod + READ_LOSS'ta bir
@@ -530,3 +513,129 @@ istekler. Olgunlaşan madde oradan bir K/H/V/T numarası alıp taşınır.
   eksende paralelleşir (satır-başına vs özellik-başına reduction), fusion
   dWeight için atomik ister; mevcut model boyutunda değer/karmaşıklık oranı
   düşük.
+
+---
+
+## Big Refactor: Block trait ve heterojen stack
+
+**Statü: TASARIM — ertelendi (2026-07-17).** Ön koşul: F1 (gerçek batch) +
+bf16 entegrasyonu bitip optimize sürüm eğitim için arkadaşın makinesine
+paslanacak; refactor o ~10 günlük eğitim koşarken tasarlanır/yapılır.
+
+### Motivasyon
+
+1. **layers.rs ile inference_graphs.rs aynı matematiği iki kez tarif ediyor.**
+   Gerçek fark üç kalem: (a) bwd + grad buffer'ları, (b) attention'ın iki hali
+   (full-seq flash vs cached 3-dispatch), (c) train'in bwd için aktivasyon
+   saklaması. (a) ve (b) faz tip sistemi tarafından zaten kodlanmış — eksik
+   olan tek şey üstteki blok katmanı.
+2. **Mamba/Jamba vizyonu**: config.rs'ten katman listesi yazarak
+   (`[Attn, Attn, Mamba, ...]`) heterojen model kurabilmek — hardcode'suz.
+   Attention alternatifi her mimari aynı arayüze oturur; Jamba bir config
+   satırı olur ve yeni model serisi oradan başlar.
+
+### Trait yüzeyi (taslak)
+
+```rust
+trait Block {
+    /// BİR kez yazılır; prefill, decode ve train-fwd aynı fonksiyondan çıkar.
+    fn fwd<P: FwdPhase>(&self, gb: &mut GraphBuilder<P>, x: ..., tape: &mut P::Tape) -> Tensor;
+    /// Yalnız Train; aktivasyonları tape'ten okur.
+    fn bwd(&self, gb: &mut GraphBuilder<Train>, dx: ..., tape: &TrainTape) -> Tensor;
+    // + weight/grad kaydı (GradClass ile)
+    // + cached-phase state handle'ı (KV cache / SSM state) + dinamik meta kaydı
+}
+```
+
+- **Tape** — faza bağlı associated type (`P::Tape`). `TrainTape` bwd'nin
+  ihtiyaçlarını saklar (residual'lar, rms, pre-activation, l_cache);
+  inference fazlarının Tape'i boş ZST — sıfır maliyet. "Etiket tipin
+  kendisidir" ilkesinin bir kat üstü.
+- **State handle** — cached fazların adım-durumu blok türüne aittir:
+  attention'da KV cache, Mamba'da SSM state (sabit boyut, büyümez).
+  `update_for_step` elle yazılmış write_to listesi yerine blokların
+  kaydettiği dinamik metaları dolaşır. *(Eski kuyruk maddesi
+  "GraphBuilder\<Decode\> meta kaydı" buraya emildi.)*
+- **Weight/grad kaydı** — blok, weight'lerini (decay bayrağıyla) ve
+  grad'larını sınıfıyla (Persistent/Transient/Overwrite) kaydeder.
+  `params()` sırası "stack sırası" olur; checkpoint düzeni ve
+  zero_grads/zero_transient graph'leri registry'den TÜRETİLİR. Bonus assert:
+  "Accumulate ile bağlanan her buffer bir zero listesinde kayıtlı olmalı".
+  *(Eski kuyruk maddesi "GradClass registry" buraya emildi.)*
+- lm_head + CE + V1 aliasing stack DIŞINDA kalır — top-level ve train'e özgü.
+
+### Checkpoint etkisi
+
+V3 header'ı homojen (dim/heads/layers/ffn). Heterojen stack katman-spec
+listesi ister → V4 (ya da geriye uyumlu V3 uzantısı). **Refactor'un 1.
+gününde tasarlanır** ki üçüncü format migrasyonu yaşanmasın.
+
+### Mamba planı
+
+- Hedef **Mamba-2 (SSD formülasyonu)**: Mamba-1'in sequential selective
+  scan'i yerine chunk'lı matmul'lara ayrışır — mevcut matmul/cuBLAS
+  altyapısına oturur, bwd'si de aynı yapıdadır.
+- **Inference-first**: fwd/decode kernelleri önce yazılır ve hazır bir
+  checkpoint import'uyla (ör. state-spaces/mamba-130m) bilinen-doğru çıktıya
+  karşı doğrulanır; bwd (projenin bugüne kadarki en zor kernel'i) ondan sonra.
+- Mamba decode'u sabit bellek + sabit hesap/token — KV cache büyümez;
+  iGPU/düşük-donanım kimliğiyle birebir örtüşür.
+
+### Aday blok listesi (token-mixer koltuğu)
+
+Modern çerçeve: her blok = **token-mixer** (attention'ın koltuğu) +
+**channel-mixer** (FFN'in koltuğu). Adaylar token-mixer koltuğu için;
+hepsi aynı `Block` arayüzüne oturur.
+
+| Aday | Not |
+|---|---|
+| Attention (mevcut) | GQA / sliding-window / MLA ayrı blok DEĞİL, bu bloğun config varyantları |
+| **Linear attention (GLA / Gated DeltaNet)** | Muhtemelen en kolay ikinci blok — chunk'lı matmul'lara ayrışır (Mamba-2 kernel'leriyle akraba ama conv1d'siz), decode sabit-state. Qwen3-Next hibriti Gated DeltaNet kullanır. **Mamba-2'den ÖNCE gelmesi mantıklı: soyutlamayı en ucuz attention-dışı blokla doğrula.** Dikkat: "tek kernel + emit" değil — train fwd (chunk) + bwd + decode state-update üçlüsü ister; yine de projenin yazdığı flash bwd'den zor değil |
+| Mamba-2 (SSD) | Yukarıdaki plan |
+| RWKV(v7) / Griffin | Uzak takip listesi — arayüz bunları da taşır, aceleye gerek yok |
+
+**GQA notu (Big Refactor'dan BAĞIMSIZ, ucuz):** KV head sayısını düşürmek
+KV cache'i ve decode bant trafiğini `heads/kv_heads` kat küçültür — iGPU
+derdine birebir. Maliyet: config + kernellerde `head → kv_head = head/group`
+eşlemesi (flash fwd/bwd, cached attention, qkv split). **KARAR GEREKTİRİR:**
+GQA mimari değişikliğidir → sıfırdan init; hall 1.0 weight'lerinden continued
+pretraining ile BAĞDAŞMAZ. Sonraki koşu sıfırdansa gir, continued ise girme.
+
+### Block'un gelecek ihtiyaç listesi (tasarım günü kontrol listesi)
+
+Refactor günü trait yüzeyi çizilirken bunlar masada olmalı — hepsini
+İMPLEMENTE etme, ama hiçbirini imkânsız kılma:
+
+- **Token-mixer / channel-mixer ayrımı** — `Block` iki koltuğu ayrı görmeli;
+  MoE = FFN koltuğunun alternatifi (Mixtral deseni).
+- **MoE'nin isteyecekleri**: device'ta router top-k, expert weight'lerinin
+  `params()` sırasına girişi, ve **aux loss hook'u** (load-balancing loss
+  ana loss'a eklenir) — trait'te "bloğun loss'a katkısı" kapısı baştan
+  düşünülmeli, sonradan eklemesi acı verir.
+- **Pozisyon bilgisinin sahipliği**: RoPE attention BLOĞUNA aittir, global
+  pipeline'a değil — Mamba/GLA pozisyonsuz. `rope pos` dinamik metası da
+  bloğun kendi state/meta kaydına iner.
+- **Init'in stack bağlamı**: E2'nin 1/√(2L)'si L = "residual'a yazan blok
+  sayısı" — heterojen stack'te blok init'i stack uzunluğunu parametre almalı.
+- **Per-blok dtype**: bf16 entegrasyonu Block'tan önce geleceği için arayüz
+  weight dtype'ını blok başına taşıyabilmeli (mixed-precision zemini).
+- **BlockSpec hiperparamları**: head/kv_head sayısı, ffn boyutu, SSM state
+  boyutu — hepsi per-blok, config'te `Vec<BlockSpec>` içinde.
+- **Tape türü blok impl'ine aittir** — her blok türünün bwd ihtiyacı farklı
+  (attention: l_cache; GLA: chunk state'leri); trait tek somut TrainTape
+  dayatmasın.
+- **State handle "cache" değil "adım durumu"** — büyüyen (KV) ve sabit
+  (SSM/linear-attn) state'leri aynı arayüz taşımalı; `cur_len` KV'ye özgü
+  bir detay olarak blok içine iner.
+
+### Adım sırası
+
+1. **Block çıkarma refactor'u, YALNIZ transformer'la** — davranış bit-exact
+   aynı, bekçiler hazır (KV==naif CHECK 9, full_chain_gradcheck,
+   v3_save_load_roundtrip). layers.rs/inference_graphs.rs ikiliği burada
+   ölür. Mamba hiç gelmese bile tek başına kâr.
+2. Config-driven stack (`Vec<BlockSpec>`) + checkpoint header uzantısı.
+3. İlk attention-dışı blok — aday sırası: **Gated DeltaNet → Mamba-2**
+   (GDN soyutlamayı en ucuz doğrular; Mamba-2'de import doğrulaması
+   [state-spaces/mamba-130m] kullanılır: önce fwd/decode, sonra bwd).
+4. Jamba/hibrit = config satırı. Yeni model serisi buradan başlar.
