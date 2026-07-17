@@ -212,7 +212,7 @@ pub(crate) fn rmsnorm_bwd<B: Backend>(
             Binding::new(0, &grad_output.buffer, TensorMode::Input),
             Binding::new(1, &input.buffer, TensorMode::Input),
             Binding::new(2, &rsqrt_cache.buffer, TensorMode::Input),
-            Binding::new(3, &grad_weight.buffer, TensorMode::Output),
+            Binding::new(3, &grad_weight.buffer, TensorMode::Accumulate),
             Binding::new(4, &meta.buffer, TensorMode::Meta),
         ],
         [(shape.size + 255) / 256, 1, 1],
@@ -269,7 +269,7 @@ pub(crate) fn embedding_bwd<B: Backend>(
         &[
             Binding::new(0, &tokens.buffer, TensorMode::Input),
             Binding::new(1, &grad_output.buffer, TensorMode::Input),
-            Binding::new(2, &grad_table.buffer, TensorMode::Output),
+            Binding::new(2, &grad_table.buffer, TensorMode::Accumulate),
             Binding::new(3, &meta.buffer, TensorMode::Meta),
         ],
         grid_embedding(shape),

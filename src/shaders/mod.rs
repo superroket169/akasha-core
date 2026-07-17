@@ -2,7 +2,7 @@ mod cpu;
 mod cuda;
 
 use wilupgu::Shader;
-use wilupgu::TensorMode::{InOut, Input, Meta, Output};
+use wilupgu::TensorMode::{Accumulate, InOut, Input, Meta, Output};
 use wilupgu::{CudaShape, CudaSpec, MetaField};
 
 pub static EMBEDDING: Shader = Shader {
@@ -23,7 +23,7 @@ pub static EMBEDDING: Shader = Shader {
 
 pub static EMBEDDING_BWD: Shader = Shader {
     name: "EmbeddingBwd",
-    layout: &[Input, Input, Output, Meta],
+    layout: &[Input, Input, Accumulate, Meta],
     wgpu: Some(include_str!("bwd/embedding_bwd.wgsl")),
     cpu: Some(cpu::embedding_bwd),
     cuda: Some(CudaSpec {
@@ -283,7 +283,7 @@ pub static RMSNORM_BWD: Shader = Shader {
 /// No CPU implementation (pre-existing gap, see `SILU_BWD`).
 pub static RMSNORM_WEIGHT_BWD: Shader = Shader {
     name: "RMSNormWeightBwd",
-    layout: &[Input, Input, Input, Output, Meta],
+    layout: &[Input, Input, Input, Accumulate, Meta],
     wgpu: Some(include_str!("bwd/rmsnorm_weight_bwd.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
