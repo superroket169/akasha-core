@@ -54,30 +54,44 @@ pub fn save<B: Backend>(
 ) -> Result<(), Box<dyn Error>> {
     let cfg = weights.cfg;
     let (moments, schedule_step) = match optim {
-        Some((moments, schedule_step)) => (
-            moments
-                .iter()
-                .map(|(m, v)| (m.to_cpu(), v.to_cpu()))
-                .collect(),
-            schedule_step,
-        ),
-        None => (Vec::new(), 0),
+        Some((moments, schedule_step)) => (moments, schedule_step),
+        None => (&[][..], 0),
     };
-    let body = V3Body {
-        vocab_size: cfg.vocab_size,
-        dim: cfg.dim,
-        num_heads: cfg.num_heads,
-        num_layers: cfg.num_layers as u64,
-        seq_len: cfg.seq_len,
-        ffn_hidden: cfg.ffn_hidden,
-        train_step,
-        schedule_step,
-        params: weights.params().iter().map(|t| t.to_cpu()).collect(),
-        moments,
-    };
+
+    // Streams tensors individually to keep peak RAM at ~150MB (bypassing ~2GB full-body collect).
+    // Manually matches bincode 1.x LE fixint layout (structs back-to-back, Vec = u64 len + data).
+    // Fully compatible with `bincode::deserialize::<V3Body>`.
+
     let mut writer = BufWriter::new(File::create(path)?);
     writer.write_all(V3_MAGIC)?;
-    bincode::serialize_into(&mut writer, &body)?;
+    bincode::serialize_into(&mut writer, &cfg.vocab_size)?;
+    bincode::serialize_into(&mut writer, &cfg.dim)?;
+    bincode::serialize_into(&mut writer, &cfg.num_heads)?;
+    bincode::serialize_into(&mut writer, &(cfg.num_layers as u64))?;
+    bincode::serialize_into(&mut writer, &cfg.seq_len)?;
+    bincode::serialize_into(&mut writer, &cfg.ffn_hidden)?;
+    bincode::serialize_into(&mut writer, &train_step)?;
+    bincode::serialize_into(&mut writer, &schedule_step)?;
+
+    let params = weights.params();
+    bincode::serialize_into(&mut writer, &(params.len() as u64))?;
+    for t in &params {
+        write_tensor(&mut writer, &t.to_cpu())?;
+    }
+
+    bincode::serialize_into(&mut writer, &(moments.len() as u64))?;
+    for (m, v) in moments {
+        write_tensor(&mut writer, &m.to_cpu())?;
+        write_tensor(&mut writer, &v.to_cpu())?;
+    }
+    Ok(())
+}
+
+fn write_tensor(writer: &mut impl Write, data: &[Real]) -> Result<(), Box<dyn Error>> {
+    bincode::serialize_into(&mut *writer, &(data.len() as u64))?;
+    // Real = f32. Native-endian cast safely matches bincode's LE format,
+    // since our target architectures (x86_64 / aarch64) are strictly little-endian.
+    writer.write_all(bytemuck::cast_slice(data))?;
     Ok(())
 }
 
