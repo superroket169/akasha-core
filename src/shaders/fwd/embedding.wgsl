@@ -19,9 +19,14 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     let token_id = tokens[token_idx];
+    let out_idx = token_idx * config.embed_dim + dim_idx;
     if (token_id < config.vocab_size) {
-        let weight_idx = token_id * config.embed_dim + dim_idx;
-        let out_idx = token_idx * config.embed_dim + dim_idx;
-        output[out_idx] = weight[weight_idx];
+        output[out_idx] = weight[token_id * config.embed_dim + dim_idx];
+    } else {
+        
+        // Output contract: every element gets written, even for an invalid
+        // token id - otherwise pool garbage leaks into the hidden state.
+
+        output[out_idx] = 0.0;
     }
 }
