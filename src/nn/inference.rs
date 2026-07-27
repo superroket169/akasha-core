@@ -294,7 +294,7 @@ impl<B: Backend> InferenceSession<B> {
             last
         };
 
-        const EOS: u32 = 50256;
+        const EOS: u32 = 50256; // WARNING: <--
         let mut generated: Vec<u32> = Vec::with_capacity(max_new_tokens);
         for _ in 0..max_new_tokens {
             let next = sample_token(&logits, temperature, top_k, top_p);
