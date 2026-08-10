@@ -208,11 +208,6 @@ impl<B: Backend> Trainer<B> {
             for (_, grad, _) in &trainable_params {
                 ops::zero(&mut gb, grad, elems(grad));
             }
-            for layer in &layers {
-                for grad in layer.transient_grads() {
-                    ops::zero(&mut gb, grad, elems(grad));
-                }
-            }
         }
 
         // ---- grad clip graph ----
@@ -539,6 +534,7 @@ mod fused_ops_integration {
         let trainer = Trainer::new(ctx.clone(), weights, &input_tokens);
         trainer.cross_entropy.target_tokens.copy_from_cpu(&targets);
         trainer.zero_grad();
+        trainer.zero_transient_grads();
 
         trainer.fused_forward_graph.execute_captured();
         let loss = trainer.cross_entropy.loss();

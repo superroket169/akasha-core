@@ -37,6 +37,7 @@ pub struct ModelConfig {
     pub ffn_hidden: u32,
     pub norm_eps: f32,
     pub batch_size: u32,
+    pub eos_token: u32,
 }
 
 impl ModelConfig {
@@ -52,6 +53,8 @@ impl ModelConfig {
             ffn_hidden: dim * 4,
             norm_eps: 1e-5,
             batch_size: 1,
+            // GPT-2 BPE convention: <|endoftext|> is the last vocab id.
+            eos_token: vocab_size - 1,
         }
     }
 

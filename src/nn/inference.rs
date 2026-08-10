@@ -294,12 +294,12 @@ impl<B: Backend> InferenceSession<B> {
             last
         };
 
-        const EOS: u32 = 50256; // WARNING: <--
+        let eos = self.cfg.eos_token;
         let mut generated: Vec<u32> = Vec::with_capacity(max_new_tokens);
         for _ in 0..max_new_tokens {
             let next = sample_token(&logits, temperature, top_k, top_p);
             generated.push(next);
-            if next == EOS {
+            if next == eos {
                 break;
             }
             logits = match self.decode_step(next) {
