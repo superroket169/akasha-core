@@ -29,6 +29,16 @@ impl AkashaTokenizer {
         self.inner.encode(text, false).unwrap().get_ids().to_vec()
     }
 
+    /// Unlike `encode`, runs across `tokenizers`' internal rayon pool.
+    pub fn encode_batch(&self, texts: &[&str]) -> Vec<Vec<u32>> {
+        self.inner
+            .encode_batch(texts.to_vec(), false)
+            .unwrap()
+            .iter()
+            .map(|e| e.get_ids().to_vec())
+            .collect()
+    }
+
     pub fn decode(&self, ids: &[u32]) -> String {
         self.inner.decode(ids, true).unwrap()
     }
@@ -38,7 +48,6 @@ impl AkashaTokenizer {
     }
 }
 
-// ---- Tokenizer Struct ----
 pub struct Tokenizer {
     pub vocab: HashMap<String, u32>,
     pub inverse_vocab: HashMap<u32, String>,
@@ -46,7 +55,6 @@ pub struct Tokenizer {
 }
 
 impl Tokenizer {
-    // ---- Initialize a new Tokenizer ----
     pub fn new() -> Self {
         Self {
             vocab: HashMap::new(),
@@ -55,7 +63,6 @@ impl Tokenizer {
         }
     }
 
-    // ---- Train the BPE model on given text to reach target vocabulary size ----
     pub fn train(&mut self, text: &str, target_vocab_size: u32) {
         let mut current_id = 0;
 
@@ -72,7 +79,6 @@ impl Tokenizer {
             })
             .collect();
 
-        // ---- Iteratively merging ----
         while current_id < target_vocab_size {
             let mut pair_counts = HashMap::new();
 
@@ -97,7 +103,6 @@ impl Tokenizer {
             self.inverse_vocab.insert(current_id, new_token_string);
             self.merges.insert(best_pair, current_id);
 
-            // ---- Replace pairs in the token stream with the new ID ----
             let mut new_tokens = Vec::with_capacity(tokens.len());
             let mut i = 0;
             while i < tokens.len() {
@@ -152,7 +157,6 @@ impl Tokenizer {
         tokens
     }
 
-    // ---- Decode token IDs back into a string ----
     pub fn decode(&self, tokens: &[u32]) -> String {
         tokens
             .iter()

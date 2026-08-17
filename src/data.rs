@@ -1,12 +1,8 @@
-//! Streaming dataset. A large raw corpus is tokenized ONCE, chunk by
-//! chunk with a bounded working set, into on-disk token shards; training then
-//! samples random windows from a small resident pool of shards instead of
-//! holding the whole corpus in RAM.
-//!
-//! Layout: `data/train.txt` -> `data/train_shards/shard_00000.bin`, ... —
-//! raw little-endian u32 tokens, no header (token count = file size / 4).
-//! If the shard directory already exists it is reused as-is; delete it to
-//! force re-tokenization (e.g. after changing the corpus or tokenizer).
+//! Streaming dataset: a large corpus is tokenized ONCE into on-disk shards
+//! (`data/train.txt` -> `data/train_shards/shard_00000.bin`, ..., raw LE u32
+//! tokens, no header); training then samples random windows from a small
+//! resident pool instead of holding the whole corpus in RAM. Existing shard
+//! dirs are reused as-is — delete to force re-tokenization.
 
 use crate::tokenizer::AkashaTokenizer;
 use std::io::{Read, Write};
@@ -41,7 +37,7 @@ impl Dataset {
             );
             tokenize_to_shards(
                 path,
-                |s| tokenizer.encode(s),
+                |texts| tokenizer.encode_batch(texts),
                 &shard_dir,
                 SHARD_TOKENS,
                 CHUNK_BYTES,
@@ -68,8 +64,7 @@ impl Dataset {
             .collect();
         shard_paths.sort();
 
-        // A window needs seq_len inputs + 1 target; shards below that (at most
-        // the final partial one) can't serve a single window - drop them
+        // A window needs seq_len + 1 tokens; drop shards below that.
         let mut total_tokens = 0usize;
         shard_paths.retain(|p| {
             let tokens = std::fs::metadata(p)
@@ -195,13 +190,12 @@ fn load_shard(path: &Path) -> Vec<u32> {
         .collect()
 }
 
-/// Tokenizes `input_path` into shard files under `dir` with a bounded
-/// working set: at most ~chunk_bytes of raw text plus one shard of tokens
-/// is in memory at any point. `encode` is a parameter (not a tokenizer)
-/// so the chunking mechanics are testable without one.
+/// Tokenizes `input_path` into shard files under `dir`, bounded to
+/// ~chunk_bytes of text in memory at a time. `encode` takes a batch (order
+/// preserved) so a real tokenizer can run it across all cores instead of one.
 fn tokenize_to_shards(
     input_path: &str,
-    encode: impl Fn(&str) -> Vec<u32>,
+    encode: impl Fn(&[&str]) -> Vec<Vec<u32>>,
     dir: &Path,
     shard_tokens: usize,
     chunk_bytes: usize,
@@ -231,10 +225,8 @@ fn tokenize_to_shards(
         }
         let text = std::str::from_utf8(&carry[..valid_len]).unwrap();
 
-        // Mid-run, also hold back the last partial line/word so BPE never
-        // sees a word cut in half. The separator itself goes to the NEXT
-        // chunk: GPT-2 BPE attaches whitespace to the following word
-        // (Ġword) — cutting after it would tokenize that word space-less.
+        // Hold back the last partial line/word; GPT-2 BPE attaches
+        // whitespace to the following word, so the cut must land on \n or ' '.
         let cut = if eof {
             text.len()
         } else {
@@ -244,7 +236,11 @@ fn tokenize_to_shards(
         };
 
         if cut > 0 {
-            pending.extend(encode(&text[..cut]));
+            // split_inclusive keeps \n attached — it's its own BPE token too.
+            let pieces: Vec<&str> = text[..cut].split_inclusive('\n').collect();
+            for tokens in encode(&pieces) {
+                pending.extend(tokens);
+            }
             carry.drain(..cut);
         }
 
@@ -282,8 +278,11 @@ mod tests {
 
     /// Fake tokenizer: one token per char. Makes chunked-vs-whole tokenization
     /// exactly comparable (real BPE only approximately so at boundaries).
-    fn char_encode(s: &str) -> Vec<u32> {
-        s.chars().map(|c| c as u32).collect()
+    fn char_encode(texts: &[&str]) -> Vec<Vec<u32>> {
+        texts
+            .iter()
+            .map(|s| s.chars().map(|c| c as u32).collect())
+            .collect()
     }
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -315,8 +314,8 @@ mod tests {
         assert!(paths.len() > 1, "test should produce multiple shards");
 
         let roundtrip: Vec<u32> = paths.iter().flat_map(|p| load_shard(p)).collect();
-        assert_eq!(roundtrip, char_encode(&text));
-        // All but the last shard are exactly full.
+        let expected: Vec<u32> = text.chars().map(|c| c as u32).collect();
+        assert_eq!(roundtrip, expected);
         for p in &paths[..paths.len() - 1] {
             assert_eq!(load_shard(p).len(), 1000);
         }
@@ -342,7 +341,6 @@ mod tests {
             let (inputs, targets) = ds.random_batch(3, &mut rng);
             assert_eq!(inputs.len(), 3 * seq_len);
             assert_eq!(targets.len(), 3 * seq_len);
-            // targets are inputs shifted by one within each window
             for b in 0..3 {
                 let i = &inputs[b * seq_len..(b + 1) * seq_len];
                 let t = &targets[b * seq_len..(b + 1) * seq_len];
