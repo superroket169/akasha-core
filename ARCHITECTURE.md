@@ -527,6 +527,24 @@ istekler. Olgunlaşan madde orada numara alıp taşınır.
   dWeight için atomik ister; mevcut model boyutunda değer/karmaşıklık oranı
   düşük.
 
+- **Gradient checkpointing**: 2026-08-10'da Intel HD 620 (5.58GB aperture,
+  i7-7500U) üzerinde ölçüldü — `--chat` (inference) ~700MB-1GB ile sorunsuz
+  çalışırken `train_step` "Parent device is lost" ile çöküyor. Sebep kernel/
+  dispatch bug'ı değil: persistent captured graph tasarımı gereği 12 katmanın
+  TÜMÜNÜN forward aktivasyonları (rsqrt cache, attention scores, silu
+  pre-activation, qkv split, ...) backward katmanlara ters sırada ulaşana
+  kadar canlı kalıyor — ölçülen ~5.4GB'ın ~1.8GB'ı bu. Kalanı weight+grad+2
+  AdamW momenti (aynı tensörün 4 kopyası, ~2.6GB) — checkpointing'in
+  dokunamayacağı kısım. Gradient checkpointing (aktivasyonları saklamak
+  yerine backward'da yeniden hesaplamak) tam bu ~1.8GB'lık kısmı hedefler;
+  fazladan forward hesabı pahasına. Doğal ev sahibi: Big Refactor'daki
+  `Tape` soyutlaması (bkz. "Block'un gelecek ihtiyaç listesi" → "Tape türü
+  blok impl'ine aittir") — Tape zaten "backward için ne saklanır" sorusunu
+  taşıyacağı için checkpoint/no-checkpoint kararı orada doğal bir uzantı.
+  Not: batch_size zaten 1 (küçültülecek yer yok); model küçültmek (katman/
+  dim/vocab veya lm_head'i embedding'e geri bağlamak) ayrı bir lever ama
+  mimari değişiklik = sıfırdan eğitim gerektirir.
+
 ---
 
 ## Big Refactor: Block trait ve heterojen stack

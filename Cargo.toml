@@ -11,6 +11,7 @@ pollster = "0.3"
 bytemuck = { version = "1.15", features = ["derive", "extern_crate_alloc"] }
 rand = "0.8"
 tokenizers = { version = "0.19", features = ["http"] }
+parquet = { version = "59.2.0", default-features = false, features = ["snap", "zstd"] }
 
 [features]
 default = ["vulkan"]
