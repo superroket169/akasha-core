@@ -9,12 +9,12 @@ fn find(bindings: &[CpuBinding], slot: u32) -> &CpuBinding {
 
 fn read_f32(b: &CpuBinding) -> Vec<f32> {
     let g = b.buffer.lock().unwrap();
-    bytemuck::cast_slice::<u8, f32>(&g).to_vec()
+    bytemuck::pod_collect_to_vec::<u8, f32>(&g)
 }
 
 fn read_u32(b: &CpuBinding) -> Vec<u32> {
     let g = b.buffer.lock().unwrap();
-    bytemuck::cast_slice::<u8, u32>(&g).to_vec()
+    bytemuck::pod_collect_to_vec::<u8, u32>(&g)
 }
 
 fn write_f32(b: &CpuBinding, data: &[f32]) {
