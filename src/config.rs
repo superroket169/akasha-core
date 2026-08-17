@@ -9,8 +9,8 @@ pub const VOCAB_SIZE: u32 = 50257; // GPT-2 tokenizer
 
 // Real fused batch execution. VRAM bounded: logits buffer alone is BATCH_SIZE x ~103MB.
 // Calibrate BATCH_SIZE based on GPU limits (e.g., RTX 4050 6GB handles ~4).
-pub const BATCH_SIZE: usize = 1;
-pub const ACCUMULATION_STEPS: usize = 1; // Effective batch = 64
+pub const BATCH_SIZE: usize = 4;
+pub const ACCUMULATION_STEPS: usize = 16; // Effective batch = 64
 
 pub const LR_MAX: f32 = 6e-5;
 pub const LR_MIN: f32 = 6e-6;
