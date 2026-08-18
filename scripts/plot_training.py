@@ -1,8 +1,5 @@
 #!/usr/bin/env python3
-"""Reads checkpoints/train_log.txt + checkpoints/eval_log.txt and renders
-academic-style PNG plots (loss, perplexity, learning-rate schedule) for the
-training report. Both log files are tab-separated and append-only, written
-by src/main.rs during training.
+"""Reads checkpoints/train_log.txt + checkpoints/eval_log.txt and renders PNG plots
 
 Usage: python3 scripts/plot_training.py [--checkpoints-dir checkpoints] [--out-dir report_figures]
 """
