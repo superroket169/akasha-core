@@ -9,7 +9,8 @@ use super::layers::{CrossEntropy, Embedding, Layer, Linear, RMSNorm, Transformer
 use super::ops::{self, GraphBuilder};
 use super::weights::ModelWeights;
 use crate::config::{
-    ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, LR_MAX, LR_MIN, MAX_STEPS, ModelConfig, WARMUP_STEPS,
+    ACCUMULATION_STEPS, ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, LR_MAX, LR_MIN, MAX_STEPS, ModelConfig,
+    WARMUP_STEPS,
 };
 use crate::optim::{AdamW, AdamWSchedule};
 
@@ -182,8 +183,8 @@ impl<B: Backend> Trainer<B> {
             AdamWSchedule {
                 lr_max: LR_MAX,
                 lr_min: LR_MIN,
-                warmup_steps: WARMUP_STEPS as u32,
-                max_steps: MAX_STEPS as u32,
+                warmup_steps: (WARMUP_STEPS / ACCUMULATION_STEPS) as u32,
+                max_steps: (MAX_STEPS / ACCUMULATION_STEPS) as u32,
             },
             ADAM_BETA1,
             ADAM_BETA2,
