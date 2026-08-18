@@ -95,6 +95,17 @@ fn run_eval<B: Backend>(model: &Trainer<B>, set: &EvalSet, step: usize) {
     }
 }
 
+fn log_train_step(step: usize, loss: f32, lr: f32) {
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("checkpoints/train_log.txt")
+    {
+        use std::io::Write;
+        let _ = writeln!(f, "{}\t{:.4}\t{:.2}\t{:.6e}", step, loss, loss.exp(), lr);
+    }
+}
+
 fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str) {
     let tokenizer = AkashaTokenizer::from_pretrained();
     let cfg = ModelConfig::akasha_hall_1();
@@ -206,6 +217,7 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
             if step % LOG_EVERY == 0 {
                 let (_, lr) = model.optimizer.current_schedule();
                 println!("step {:6} | loss {:.4} | lr {:.2e}", step, l, lr);
+                log_train_step(step, l, lr);
             }
 
             if l.is_nan() || l.is_infinite() {
