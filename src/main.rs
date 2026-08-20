@@ -29,31 +29,50 @@ struct EvalSet {
     windows: usize,
 }
 
-fn load_eval_set(tokenizer: &AkashaTokenizer, seq_len: usize) -> Option<EvalSet> {
+fn load_eval_set(
+    tokenizer: &AkashaTokenizer,
+    seq_len: usize,
+    batch_size: usize,
+    eval_windows_max: usize,
+) -> Option<EvalSet> {
     let text = std::fs::read_to_string("data/eval.txt").ok()?;
-    let set = eval_windows(&tokenizer.encode(&text), seq_len, BATCH_SIZE);
+    let set = eval_windows(
+        &tokenizer.encode(&text),
+        seq_len,
+        batch_size,
+        eval_windows_max,
+    );
     if set.is_none() {
         eprintln!(
             "WARNING: data/eval.txt is too small (need > {} tokens), eval disabled",
-            BATCH_SIZE * seq_len
+            batch_size * seq_len
         );
     }
     set
 }
 
-fn eval_windows(tokens: &[u32], seq_len: usize, batch_size: usize) -> Option<EvalSet> {
+fn eval_windows(
+    tokens: &[u32],
+    seq_len: usize,
+    batch_size: usize,
+    eval_windows_max: usize,
+) -> Option<EvalSet> {
     let max_windows = tokens.len().saturating_sub(1) / seq_len;
-    let windows = max_windows.min(EVAL_WINDOWS) / batch_size * batch_size;
+    let windows = max_windows.min(eval_windows_max) / batch_size * batch_size;
+
     if windows == 0 {
         return None;
     }
+
     let mut inputs = Vec::with_capacity(windows * seq_len);
     let mut targets = Vec::with_capacity(windows * seq_len);
+
     for w in 0..windows {
         let start = w * seq_len;
         inputs.extend_from_slice(&tokens[start..start + seq_len]);
         targets.extend_from_slice(&tokens[start + 1..start + seq_len + 1]);
     }
+
     Some(EvalSet {
         inputs,
         targets,
@@ -65,6 +84,7 @@ fn eval_loss<B: Backend>(model: &Trainer<B>, set: &EvalSet) -> f32 {
     let rows = model.cross_entropy.seq_len as usize;
     let passes = set.inputs.len() / rows;
     let mut total = 0.0;
+
     for p in 0..passes {
         let span = p * rows..(p + 1) * rows;
         model.input_tokens.copy_from_cpu(&set.inputs[span.clone()]);
@@ -75,6 +95,7 @@ fn eval_loss<B: Backend>(model: &Trainer<B>, set: &EvalSet) -> f32 {
         model.forward_fused();
         total += model.cross_entropy.loss();
     }
+
     total / passes as f32
 }
 
@@ -85,6 +106,7 @@ fn run_eval<B: Backend>(model: &Trainer<B>, set: &EvalSet, step: usize) {
         "--- eval @ step {}: loss {:.4} | ppl {:.2} ({} windows) ---",
         step, loss, ppl, set.windows
     );
+
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -95,16 +117,16 @@ fn run_eval<B: Backend>(model: &Trainer<B>, set: &EvalSet, step: usize) {
     }
 }
 
-fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str) {
+fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str, cfg: ModelConfig) {
     let tokenizer = AkashaTokenizer::from_pretrained();
-    let cfg = ModelConfig::akasha_hall_1();
 
     let weights = Arc::new(ModelWeights::zeros(ctx.clone(), &cfg));
     checkpoint::load(&weights, weights_path)
         .unwrap_or_else(|e| panic!("Failed to load {weights_path}: {e}"));
     println!("Weights: {weights_path}");
 
-    let mut session = InferenceSession::new(ctx, weights, SEQ_LEN);
+    let seq_len = cfg.seq_len;
+    let mut session = InferenceSession::new(ctx, weights, seq_len);
 
     println!("Model loaded. Type a prompt (Ctrl+C to exit):\n");
     println!("Tip: type \\n for a literal newline, e.g. User: hi\\nAssistant:\n");
@@ -133,23 +155,23 @@ fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str) {
     }
 }
 
-fn run_training<B: Backend>(ctx: Arc<B>) {
+fn run_training<B: Backend>(ctx: Arc<B>, model_cfg: ModelConfig, train_cfg: TrainConfig) {
     let tokenizer = AkashaTokenizer::from_pretrained();
     println!("Vocab size: {}", tokenizer.vocab_size());
 
-    let mut dataset = Dataset::from_file("data/train.txt", &tokenizer, SEQ_LEN as usize);
+    let mut dataset = Dataset::from_file("data/train.txt", &tokenizer, model_cfg.seq_len as usize);
     println!("Dataset: {} tokens", dataset.token_count());
 
-    let cfg = ModelConfig::akasha_hall_1().with_batch_size(BATCH_SIZE as u32);
+    let cfg = model_cfg.with_batch_size(train_cfg.batch_size as u32);
     let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
     let input_tokens = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
         &vec![0u32; (cfg.batch_size * cfg.seq_len) as usize],
     ));
-    let model = Trainer::new(ctx, weights, &input_tokens);
+    let model = Trainer::new(ctx, weights, &input_tokens, train_cfg);
     println!(
-        "Model ready - ~162M parameters (12-head attention, batch {})",
-        cfg.batch_size
+        "Model ready - profile '{}', {} layers, batch {}",
+        train_cfg.name, cfg.num_layers, cfg.batch_size
     );
 
     std::fs::create_dir_all("checkpoints").unwrap();
@@ -183,7 +205,12 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
     let mut rng = rand::thread_rng();
     let mut best_loss = f32::MAX;
 
-    let eval_set = load_eval_set(&tokenizer, SEQ_LEN as usize);
+    let eval_set = load_eval_set(
+        &tokenizer,
+        cfg.seq_len as usize,
+        train_cfg.batch_size,
+        train_cfg.eval_windows,
+    );
     match &eval_set {
         // Baseline BEFORE any continued-pretraining step: the whole point is
         // seeing the curve move from this number.
@@ -195,37 +222,40 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
     println!("{:>8} | {:>8} | {:>10}", "step", "loss", "lr");
     println!("{}", "-".repeat(35));
 
-    for step in start_step..MAX_STEPS {
-        let (inputs, targets) = dataset.random_batch(BATCH_SIZE, &mut rng);
+    for step in start_step..train_cfg.max_steps {
+        let (inputs, targets) = dataset.random_batch(train_cfg.batch_size, &mut rng);
 
-        // BATCH_SIZE handles the fused execute inside the model.
+        // cfg.batch_size handles the fused execute inside the model.
         // The host-loop argument must strictly remain 1.
-        let loss = model.train_step(&inputs, &targets, 1, step, ACCUMULATION_STEPS);
+        let loss = model.train_step(&inputs, &targets, 1, step, train_cfg.accumulation_steps);
 
         if let Some(l) = loss {
             if l < best_loss {
                 best_loss = l;
             }
 
-            if step % LOG_EVERY == 0 {
+            if step % train_cfg.log_every == 0 {
                 let (_, lr) = model.optimizer.current_schedule();
                 println!("step {:6} | loss {:.4} | lr {:.2e}", step, l, lr);
             }
 
             if l.is_nan() || l.is_infinite() {
                 eprintln!("ERROR: Loss is NaN at step {}. Stopping.", step);
-                eprintln!("Try reducing LR_MAX to 1e-4 and restart.");
+                eprintln!(
+                    "Try reducing lr_max (see TrainConfig::{}) and restart.",
+                    train_cfg.name
+                );
                 std::process::exit(1);
             }
         }
 
-        if step % SAVE_EVERY == 0 && step > 0 {
+        if step % train_cfg.save_every == 0 && step > 0 {
             let path = format!("checkpoints/model_step_{}.bin", step);
             model.save_checkpoint(&path, step as u64).unwrap();
             println!("--- Checkpoint saved: {} ---", path);
         }
 
-        if step % EVAL_EVERY == 0 && step > start_step {
+        if step % train_cfg.eval_every == 0 && step > start_step {
             if let Some(set) = &eval_set {
                 run_eval(&model, set, step);
             }
@@ -234,11 +264,12 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
 
     // NOT model_final.bin: that name is the untouchable v1 memento.
     model
-        .save_checkpoint("checkpoints/model_final.v3.bin", MAX_STEPS as u64)
+        .save_checkpoint("checkpoints/model_final.v3.bin", train_cfg.max_steps as u64)
         .unwrap();
 
     let config_json = format!(
         r#"{{
+  "profile": "{}",
   "dim": {},
   "num_layers": {},
   "seq_len": {},
@@ -247,7 +278,14 @@ fn run_training<B: Backend>(ctx: Arc<B>) {
   "trained_steps": {},
   "best_loss": {:.4}
 }}"#,
-        DIM, NUM_LAYERS, SEQ_LEN, FFN_HIDDEN, VOCAB_SIZE, MAX_STEPS, best_loss
+        train_cfg.name,
+        cfg.dim,
+        cfg.num_layers,
+        cfg.seq_len,
+        cfg.ffn_hidden,
+        cfg.vocab_size,
+        train_cfg.max_steps,
+        best_loss
     );
     std::fs::write("checkpoints/config.json", config_json).unwrap();
 
@@ -270,6 +308,22 @@ fn main() {
     #[allow(unused_variables)]
     let force_cpu = args.iter().any(|a| a == "--cpu");
 
+    let train_config_name = args
+        .iter()
+        .position(|a| a == "--train-config")
+        .and_then(|i| args.get(i + 1))
+        .map(String::as_str)
+        .unwrap_or("hall1_pretrain");
+    let (model_cfg, train_cfg) = resolve_profile(train_config_name).unwrap_or_else(|| {
+        panic!(
+            "Unknown --train-config '{train_config_name}' \
+             (known: hall1_pretrain, dolly_finetune, pidgeon_pretrain)"
+        )
+    });
+    if !is_chat {
+        println!("[akasha-core] train-config profile: {}", train_cfg.name);
+    }
+
     #[cfg(not(feature = "cpu"))]
     if force_cpu {
         eprintln!(
@@ -284,9 +338,9 @@ fn main() {
         println!("[wilupgu] CPU backend selected");
         let ctx = Arc::new(CpuBackend::new());
         if is_chat {
-            run_chat(ctx, &weights_path);
+            run_chat(ctx, &weights_path, model_cfg);
         } else {
-            run_training(ctx);
+            run_training(ctx, model_cfg, train_cfg);
         }
         return;
     }
@@ -296,15 +350,15 @@ fn main() {
         use wilupgu::CudaBackend;
         if let Ok(ctx) = CudaBackend::new(0) {
             println!("[wilupgu] CUDA backend selected");
-            if !is_chat && TRAIN_BF16_MATMUL {
+            if !is_chat && train_cfg.train_bf16_matmul {
                 ctx.set_bf16_matmul(true);
                 println!("[wilupgu] bf16 tensor-core matmul compute enabled");
             }
             let ctx = Arc::new(ctx);
             if is_chat {
-                run_chat(ctx, &weights_path);
+                run_chat(ctx, &weights_path, model_cfg);
             } else {
-                run_training(ctx);
+                run_training(ctx, model_cfg, train_cfg);
             }
             return;
         }
@@ -312,9 +366,9 @@ fn main() {
     println!("[wilupgu] Vulkan backend selected");
     let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
     if is_chat {
-        run_chat(ctx, &weights_path);
+        run_chat(ctx, &weights_path, model_cfg);
     } else {
-        run_training(ctx);
+        run_training(ctx, model_cfg, train_cfg);
     }
 }
 
@@ -325,7 +379,7 @@ mod eval_harness {
     #[test]
     fn eval_windows_are_fixed_shifted_and_batch_aligned() {
         let tokens: Vec<u32> = (0..41).collect();
-        let set = eval_windows(&tokens, 4, 2).unwrap();
+        let set = eval_windows(&tokens, 4, 2, 32).unwrap();
 
         // 40 usable tokens / 4 = 10 windows, floored to a multiple of 2.
         assert_eq!(set.windows, 10);
@@ -337,11 +391,15 @@ mod eval_harness {
         assert_eq!(set.targets[39], 40);
 
         // Batch alignment floors odd window counts.
-        let set = eval_windows(&(0..29).collect::<Vec<u32>>(), 4, 2).unwrap();
+        let set = eval_windows(&(0..29).collect::<Vec<u32>>(), 4, 2, 32).unwrap();
         assert_eq!(set.windows, 6);
 
         // Too small for a single batch -> None, not a panic.
-        assert!(eval_windows(&(0..8).collect::<Vec<u32>>(), 4, 2).is_none());
-        assert!(eval_windows(&[], 4, 2).is_none());
+        assert!(eval_windows(&(0..8).collect::<Vec<u32>>(), 4, 2, 32).is_none());
+        assert!(eval_windows(&[], 4, 2, 32).is_none());
+
+        // max_eval_windows caps the count even when more tokens are available.
+        let set = eval_windows(&(0..41).collect::<Vec<u32>>(), 4, 2, 4).unwrap();
+        assert_eq!(set.windows, 4);
     }
 }
