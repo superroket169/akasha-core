@@ -445,6 +445,34 @@ impl<B: Backend> Trainer<B> {
         }
         Ok(loaded.train_step)
     }
+
+    pub fn to_flat_weights(&self) -> Vec<Real> {
+        self.weights
+            .params()
+            .iter()
+            .flat_map(|t| t.to_cpu::<Real>())
+            .collect()
+    }
+
+    pub fn set_flat_weights(&self, flat: &[Real]) {
+        let params = self.weights.params();
+        let total: usize = params
+            .iter()
+            .map(|t| (t.size / std::mem::size_of::<Real>() as u64) as usize)
+            .sum();
+        assert_eq!(
+            flat.len(),
+            total,
+            "set_flat_weights: flat length {} doesn't match model's {total} parameters",
+            flat.len()
+        );
+        let mut offset = 0;
+        for t in &params {
+            let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
+            t.copy_from_cpu(&flat[offset..offset + len]);
+            offset += len;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -462,10 +490,17 @@ mod checkpoint_roundtrip {
         // A few real steps so moments and the schedule counter are nonzero.
         let input_a = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
         let weights_a = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-        let a = Trainer::new(ctx.clone(), weights_a, &input_a, TrainConfig::hall1_pretrain());
+        let a = Trainer::new(
+            ctx.clone(),
+            weights_a,
+            &input_a,
+            TrainConfig::hall1_pretrain(),
+        );
+
         for step in 0..3 {
             a.train_step(&tokens, &targets, 1, step, 1);
         }
+
         ctx.synchronize();
 
         let path = std::env::temp_dir().join("akasha_v3_roundtrip_test.bin");
@@ -474,8 +509,16 @@ mod checkpoint_roundtrip {
 
         let input_b = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
         let weights_b = Arc::new(ModelWeights::zeros(ctx.clone(), &cfg));
-        let b = Trainer::new(ctx.clone(), weights_b, &input_b, TrainConfig::hall1_pretrain());
+
+        let b = Trainer::new(
+            ctx.clone(),
+            weights_b,
+            &input_b,
+            TrainConfig::hall1_pretrain(),
+        );
+
         let train_step = b.load_checkpoint(path).unwrap();
+
         ctx.synchronize();
         std::fs::remove_file(path).ok();
 
@@ -520,6 +563,69 @@ mod checkpoint_roundtrip {
 }
 
 #[cfg(test)]
+mod flat_weights_roundtrip {
+    use super::*;
+    use wilupgu::WgpuBackend;
+
+    #[test]
+    fn set_flat_weights_overwrites_weights_not_optimizer() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
+        let targets: Vec<u32> = (0..cfg.seq_len).map(|i| (i + 1) % cfg.vocab_size).collect();
+        let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
+        let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+        let trainer = Trainer::new(
+            ctx.clone(),
+            weights,
+            &input_tokens,
+            TrainConfig::hall1_pretrain(),
+        );
+
+        // A few real steps so AdamW moments are nonzero -- otherwise "moments
+        // unchanged" would be trivially true.
+        for step in 0..3 {
+            trainer.train_step(&tokens, &targets, 1, step, 1);
+        }
+
+        ctx.synchronize();
+        let moments_before: Vec<Real> = trainer.optimizer.moments[0].0.to_cpu();
+
+        let flat = trainer.to_flat_weights();
+        let mutated: Vec<Real> = flat.iter().map(|w| w + 1.0).collect();
+        trainer.set_flat_weights(&mutated);
+        ctx.synchronize();
+
+        let roundtrip = trainer.to_flat_weights();
+        assert_eq!(roundtrip, mutated, "set_flat_weights didn't apply exactly");
+
+        let moments_after: Vec<Real> = trainer.optimizer.moments[0].0.to_cpu();
+        assert_eq!(
+            moments_before, moments_after,
+            "set_flat_weights must not touch optimizer state"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "doesn't match")]
+    fn set_flat_weights_rejects_wrong_length() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
+        let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
+        let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
+        let trainer = Trainer::new(
+            ctx.clone(),
+            weights,
+            &input_tokens,
+            TrainConfig::hall1_pretrain(),
+        );
+
+        trainer.set_flat_weights(&[0.0; 3]);
+    }
+}
+
+#[cfg(test)]
 mod fused_ops_integration {
     use super::*;
     use wilupgu::WgpuBackend;
@@ -535,7 +641,12 @@ mod fused_ops_integration {
         let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
 
         let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens, TrainConfig::hall1_pretrain());
+        let trainer = Trainer::new(
+            ctx.clone(),
+            weights,
+            &input_tokens,
+            TrainConfig::hall1_pretrain(),
+        );
         trainer.cross_entropy.target_tokens.copy_from_cpu(&targets);
         trainer.zero_grad();
         trainer.zero_transient_grads();
@@ -623,7 +734,12 @@ mod full_chain_gradcheck {
         let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
 
         let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens, TrainConfig::hall1_pretrain());
+        let trainer = Trainer::new(
+            ctx.clone(),
+            weights,
+            &input_tokens,
+            TrainConfig::hall1_pretrain(),
+        );
         trainer.cross_entropy.target_tokens.copy_from_cpu(&targets);
         trainer.cross_entropy.set_grad_scale(1.0 / seq_len as Real);
 
