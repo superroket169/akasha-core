@@ -1,32 +1,3 @@
-// ~162M parameters (lm_head untied from embedding) - GPT-2 Small scale
-pub const DIM: u32 = 768;
-pub const NUM_HEADS: u32 = 12;
-pub const HEAD_DIM: u32 = DIM / NUM_HEADS; // 64
-pub const NUM_LAYERS: usize = 12;
-pub const SEQ_LEN: u32 = 512;
-pub const FFN_HIDDEN: u32 = 3072; // 4 x DIM
-pub const VOCAB_SIZE: u32 = 50257; // GPT-2 tokenizer
-
-// Real fused batch execution. VRAM bounded: logits buffer alone is BATCH_SIZE x ~103MB.
-// Calibrate BATCH_SIZE based on GPU limits. BATCH_SIZE=4 OOM'd during setup
-pub const BATCH_SIZE: usize = 2;
-pub const ACCUMULATION_STEPS: usize = 32; // Effective batch = 64
-
-pub const LR_MAX: f32 = 6e-5;
-pub const LR_MIN: f32 = 6e-6;
-pub const WARMUP_STEPS: usize = 1000;
-pub const MAX_STEPS: usize = 200_000;
-pub const SAVE_EVERY: usize = 1000;
-pub const LOG_EVERY: usize = 50;
-
-pub const EVAL_EVERY: usize = 1000;
-pub const EVAL_WINDOWS: usize = 32;
-
-pub const ADAM_WEIGHT_DECAY: f32 = 0.01;
-pub const GRAD_CLIP_NORM: f32 = 1.0;
-
-pub const TRAIN_BF16_MATMUL: bool = true;
-
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelConfig {
     pub vocab_size: u32,
@@ -64,13 +35,114 @@ impl ModelConfig {
         self
     }
 
-    /// The shipped akasha-hall 1.0 architecture (matches the constants above).
-    pub fn akasha_hall_1() -> Self {
-        Self::new(VOCAB_SIZE, DIM, NUM_HEADS, NUM_LAYERS, SEQ_LEN)
-    }
-
     pub fn head_dim(&self) -> u32 {
         self.dim / self.num_heads
+    }
+
+    /// about last flash attention patch. head_dim must be 64
+    fn assert_flash_attention_head_dim(self) -> Self {
+        assert_eq!(
+            self.head_dim(),
+            64,
+            "head_dim={} but wilupgu's flash-attention shaders assume 64 -- see \
+             wilupgu/REFACTOR.md before shipping this profile",
+            self.head_dim()
+        );
+        self
+    }
+
+    pub fn akasha_hall_1() -> Self {
+        Self::new(50257, 768, 12, 12, 512).assert_flash_attention_head_dim()
+    }
+
+    pub fn pidgeon() -> Self {
+        Self::new(50257, 320, 5, 8, 512).assert_flash_attention_head_dim()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TrainConfig {
+    pub name: &'static str,
+    pub batch_size: usize,
+    pub accumulation_steps: usize,
+    pub lr_max: f32,
+    pub lr_min: f32,
+    pub warmup_steps: usize,
+    pub max_steps: usize,
+    pub save_every: usize,
+    pub log_every: usize,
+    pub eval_every: usize,
+    pub eval_windows: usize,
+    pub adam_weight_decay: f32,
+    pub grad_clip_norm: f32,
+    pub train_bf16_matmul: bool,
+}
+
+impl TrainConfig {
+    pub fn hall1_pretrain() -> Self {
+        Self {
+            name: "hall1_pretrain",
+            batch_size: 2,
+            accumulation_steps: 32, // effective batch = 64
+            lr_max: 6e-5,
+            lr_min: 6e-6,
+            warmup_steps: 1000,
+            max_steps: 200_000,
+            save_every: 1000,
+            log_every: 50,
+            eval_every: 1000,
+            eval_windows: 32,
+            adam_weight_decay: 0.01,
+            grad_clip_norm: 1.0,
+            train_bf16_matmul: true,
+        }
+    }
+
+    pub fn dolly_finetune() -> Self {
+        Self {
+            name: "dolly_finetune",
+            batch_size: 2,
+            accumulation_steps: 32,
+            lr_max: 3e-5,
+            lr_min: 3e-6,
+            warmup_steps: 40,
+            max_steps: 800,
+            save_every: 50,
+            log_every: 10,
+            eval_every: 25,
+            eval_windows: 32,
+            adam_weight_decay: 0.01,
+            grad_clip_norm: 1.0,
+            train_bf16_matmul: true,
+        }
+    }
+
+    pub fn pidgeon_pretrain() -> Self {
+        Self {
+            name: "pidgeon_pretrain",
+            batch_size: 10,
+            accumulation_steps: 6, // effective batch = 60
+            lr_max: 6e-5,
+            lr_min: 6e-6,
+            warmup_steps: 1000,
+            max_steps: 200_000,
+            save_every: 1000,
+            log_every: 50,
+            eval_every: 1000,
+            eval_windows: 32,
+            adam_weight_decay: 0.01,
+            grad_clip_norm: 1.0,
+            train_bf16_matmul: true,
+        }
+    }
+}
+
+pub fn resolve_profile(name: &str) -> Option<(ModelConfig, TrainConfig)> {
+    match name {
+        "hall1_pretrain" => Some((ModelConfig::akasha_hall_1(), TrainConfig::hall1_pretrain())),
+        "dolly_finetune" => Some((ModelConfig::akasha_hall_1(), TrainConfig::dolly_finetune())),
+        "pidgeon_pretrain" => Some((ModelConfig::pidgeon(), TrainConfig::pidgeon_pretrain())),
+        _ => None,
     }
 }
 
@@ -97,7 +169,7 @@ pub fn cosine_lr(
 
 #[cfg(test)]
 mod tests {
-    use super::cosine_lr;
+    use super::*;
 
     /// B4 boundary cases: t=0, warmup edge, max_steps edge and beyond,
     /// degenerate max_steps == warmup_steps.
@@ -122,5 +194,21 @@ mod tests {
         let lr = cosine_lr(warmup, warmup, warmup, lr_max, lr_min);
         assert!(lr.is_finite());
         assert!((lr - lr_min).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resolve_profile_known_names_roundtrip() {
+        for name in ["hall1_pretrain", "dolly_finetune", "pidgeon_pretrain"] {
+            let (_, train) =
+                resolve_profile(name).unwrap_or_else(|| panic!("missing profile: {name}"));
+            assert_eq!(train.name, name);
+        }
+        assert!(resolve_profile("nonexistent").is_none());
+    }
+
+    #[test]
+    fn named_model_profiles_pass_head_dim_guard() {
+        assert_eq!(ModelConfig::akasha_hall_1().head_dim(), 64);
+        assert_eq!(ModelConfig::pidgeon().head_dim(), 64);
     }
 }
