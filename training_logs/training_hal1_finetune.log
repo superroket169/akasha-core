@@ -1,0 +1,1230 @@
+[Wed Aug 19 20:47:00 +03 2026] Starting/resuming training...
+   Compiling ahash v0.8.12
+   Compiling rand_chacha v0.9.0
+   Compiling cudarc v0.19.8
+   Compiling libloading v0.9.0
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (7781) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+warning: build failed, waiting for other jobs to finish...
+[Wed Aug 19 20:47:01 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:47:11 +03 2026] Starting/resuming training...
+   Compiling hashbrown v0.14.5
+   Compiling rand v0.9.4
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (7831) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+warning: build failed, waiting for other jobs to finish...
+[Wed Aug 19 20:47:11 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:47:21 +03 2026] Starting/resuming training...
+   Compiling rand_distr v0.5.1
+   Compiling gpu-descriptor v0.2.4
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (7868) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+warning: build failed, waiting for other jobs to finish...
+[Wed Aug 19 20:47:21 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:47:31 +03 2026] Starting/resuming training...
+   Compiling half v2.7.1
+   Compiling wgpu-hal v0.19.5
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (7905) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+warning: build failed, waiting for other jobs to finish...
+[Wed Aug 19 20:47:33 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:47:43 +03 2026] Starting/resuming training...
+   Compiling wgpu-core v0.19.4
+   Compiling cudarc v0.19.8
+   Compiling parquet v59.2.0
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (7971) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+warning: build failed, waiting for other jobs to finish...
+[Wed Aug 19 20:47:49 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:47:59 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+   Compiling wgpu v0.19.4
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8070) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+warning: build failed, waiting for other jobs to finish...
+[Wed Aug 19 20:48:04 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:48:14 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8126) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:48:14 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:48:24 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8145) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:48:24 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:48:34 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8162) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:48:34 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:48:44 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8179) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:48:44 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:48:54 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8196) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:48:54 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:49:04 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8215) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:49:04 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:49:14 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8248) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:49:14 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:49:24 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8265) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:49:24 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:49:34 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8282) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:49:34 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:49:44 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8300) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:49:45 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:49:55 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8317) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:49:55 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:50:05 +03 2026] Starting/resuming training...
+   Compiling cudarc v0.19.8
+error: failed to run custom build command for `cudarc v0.19.8`
+
+Caused by:
+  process didn't exit successfully: `/home/user-4f12/Documents/akasha-core/target/release/build/cudarc-be09fc5f11daf171/build-script-build` (exit status: 101)
+  --- stdout
+  cargo:rustc-cfg=feature="dynamic-loading"
+  cargo:rerun-if-changed=build.rs
+  cargo:rerun-if-env-changed=CUDARC_CUDA_VERSION
+  cargo:rerun-if-env-changed=CUDA_HOME
+  cargo:rerun-if-env-changed=CUDA_PATH
+  cargo:rerun-if-env-changed=CUDA_ROOT
+  cargo:rerun-if-env-changed=CUDA_TOOLKIT_ROOT_DIR
+  cargo:rerun-if-env-changed=CUDNN_LIB
+
+  --- stderr
+
+  thread 'main' (8353) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/cudarc-0.19.8/build.rs:168:13:
+  `nvcc --version` failed.
+  Err(Os { code: 2, kind: NotFound, message: "No such file or directory" })
+  note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:50:05 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:50:58 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Tokenizing data/train.txt into shards at data/train_shards...
+  data/train_shards/shard_00000.bin (2609039 tokens)
+Tokenized into 1 shard(s), 2609039 tokens total
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8406) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:51:05 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:51:15 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8459) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:51:21 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:51:31 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8496) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:51:38 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:51:48 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8515) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:51:54 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:52:04 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8550) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:52:10 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:52:20 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8581) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:52:27 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:53:46 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8686) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:53:52 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:54:02 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8708) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:54:07 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:54:17 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8727) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:54:23 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:54:33 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8746) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:54:39 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:54:49 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8767) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:54:54 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:55:04 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8788) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:55:10 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:55:20 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8808) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:55:26 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:55:36 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8827) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:55:43 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:55:53 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8848) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:55:59 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:56:09 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8893) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:56:15 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:56:25 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8953) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:56:32 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:56:42 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8973) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:56:48 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:56:58 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (8992) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:57:04 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:57:14 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (9030) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:57:21 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:57:31 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (9070) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:57:36 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:57:46 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (9090) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:57:52 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:58:02 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (9128) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:58:08 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:58:18 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (9147) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:58:24 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:58:34 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (9167) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:58:39 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 20:58:49 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (9244) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 20:58:56 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:00:35 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1257) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:00:44 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:00:54 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1294) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:01:03 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:01:13 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1315) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:01:23 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:01:33 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1336) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:01:42 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:01:52 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1356) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:02:01 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:02:11 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1378) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:02:20 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:02:30 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1398) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:02:40 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:02:50 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1433) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:02:59 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:03:09 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1453) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:03:19 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:03:29 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1473) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:03:38 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 21:03:48 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+radv/amdgpu: The CS has been cancelled because the context is lost. This context is innocent.
+
+thread 'main' (1507) panicked at /home/user-4f12/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/wgpu-0.19.4/src/backend/wgpu_core.rs:2225:30:
+Error in Queue::submit: Validation Error
+
+Caused by:
+    Parent device is lost
+
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+[Wed Aug 19 21:04:15 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Starting from migrated final weights (fresh schedule)
+--- eval @ step 0: loss 5.6497 | ppl 284.21 (32 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+step      0 | loss 5.8694 | lr 0.00e0
+step     10 | loss 5.5933 | lr 0.00e0
+step     20 | loss 5.6553 | lr 0.00e0
+--- eval @ step 25: loss 5.6497 | ppl 284.21 (32 windows) ---
+step     30 | loss 5.6260 | lr 0.00e0
+step     40 | loss 5.3272 | lr 3.00e-5
+step     50 | loss 5.8308 | lr 3.00e-5
+--- Checkpoint saved: checkpoints/model_step_50.bin ---
+--- eval @ step 50: loss 5.5095 | ppl 247.03 (32 windows) ---
+step     60 | loss 5.4753 | lr 3.00e-5
+step     70 | loss 5.1308 | lr 2.99e-5
+--- eval @ step 75: loss 5.2899 | ppl 198.32 (32 windows) ---
+step     80 | loss 7.0289 | lr 2.99e-5
+step     90 | loss 5.2226 | lr 2.99e-5
+step    100 | loss 5.3550 | lr 2.95e-5
+--- Checkpoint saved: checkpoints/model_step_100.bin ---
+--- eval @ step 100: loss 5.1613 | ppl 174.39 (32 windows) ---
+step    110 | loss 4.8387 | lr 2.95e-5
+step    120 | loss 5.2510 | lr 2.95e-5
+--- eval @ step 125: loss 5.1613 | ppl 174.39 (32 windows) ---
+step    130 | loss 5.1670 | lr 2.90e-5
+step    140 | loss 4.9199 | lr 2.90e-5
+step    150 | loss 4.5674 | lr 2.90e-5
+--- Checkpoint saved: checkpoints/model_step_150.bin ---
+--- eval @ step 150: loss 5.0947 | ppl 163.16 (32 windows) ---
+step    160 | loss 4.8990 | lr 2.82e-5
+step    170 | loss 4.5653 | lr 2.82e-5
+--- eval @ step 175: loss 5.0203 | ppl 151.46 (32 windows) ---
+step    180 | loss 5.1357 | lr 2.82e-5
+step    190 | loss 5.1071 | lr 2.82e-5
+step    200 | loss 4.8543 | lr 2.72e-5
+--- Checkpoint saved: checkpoints/model_step_200.bin ---
+--- eval @ step 200: loss 4.9784 | ppl 145.24 (32 windows) ---
+step    210 | loss 5.3296 | lr 2.72e-5
+step    220 | loss 4.5662 | lr 2.72e-5
+--- eval @ step 225: loss 4.9432 | ppl 140.21 (32 windows) ---
+step    230 | loss 5.3201 | lr 2.60e-5
+step    240 | loss 5.0138 | lr 2.60e-5
+step    250 | loss 5.0914 | lr 2.60e-5
+--- Checkpoint saved: checkpoints/model_step_250.bin ---
+--- eval @ step 250: loss 4.9432 | ppl 140.21 (32 windows) ---
+step    260 | loss 4.8165 | lr 2.47e-5
+step    270 | loss 5.0355 | lr 2.47e-5
+--- eval @ step 275: loss 4.8992 | ppl 134.18 (32 windows) ---
+step    280 | loss 4.9699 | lr 2.47e-5
+step    290 | loss 4.6894 | lr 2.32e-5
+step    300 | loss 5.2702 | lr 2.32e-5
+--- Checkpoint saved: checkpoints/model_step_300.bin ---
+--- eval @ step 300: loss 4.8664 | ppl 129.85 (32 windows) ---
+step    310 | loss 4.9814 | lr 2.32e-5
+step    320 | loss 4.7067 | lr 2.17e-5
+--- eval @ step 325: loss 4.8390 | ppl 126.34 (32 windows) ---
+step    330 | loss 4.6741 | lr 2.17e-5
+step    340 | loss 4.8343 | lr 2.17e-5
+step    350 | loss 5.7942 | lr 2.17e-5
+--- Checkpoint saved: checkpoints/model_step_350.bin ---
+--- eval @ step 350: loss 4.8390 | ppl 126.34 (32 windows) ---
+step    360 | loss 4.7455 | lr 2.00e-5
+step    370 | loss 5.0155 | lr 2.00e-5
+--- eval @ step 375: loss 4.8126 | ppl 123.05 (32 windows) ---
+step    380 | loss 4.1995 | lr 2.00e-5
+step    390 | loss 4.8014 | lr 1.83e-5
+step    400 | loss 4.9427 | lr 1.83e-5
+--- Checkpoint saved: checkpoints/model_step_400.bin ---
+--- eval @ step 400: loss 4.7935 | ppl 120.72 (32 windows) ---
+step    410 | loss 4.7276 | lr 1.83e-5
+step    420 | loss 4.0431 | lr 1.65e-5
+--- eval @ step 425: loss 4.7799 | ppl 119.09 (32 windows) ---
+step    430 | loss 5.2733 | lr 1.65e-5
+step    440 | loss 4.8345 | lr 1.65e-5
+step    450 | loss 5.0902 | lr 1.47e-5
+--- Checkpoint saved: checkpoints/model_step_450.bin ---
+--- eval @ step 450: loss 4.7661 | ppl 117.46 (32 windows) ---
+step    460 | loss 4.3906 | lr 1.47e-5
+step    470 | loss 5.0596 | lr 1.47e-5
+--- eval @ step 475: loss 4.7661 | ppl 117.46 (32 windows) ---
+step    480 | loss 4.4884 | lr 1.30e-5
+step    490 | loss 5.2538 | lr 1.30e-5
+step    500 | loss 4.1347 | lr 1.30e-5
+--- Checkpoint saved: checkpoints/model_step_500.bin ---
+--- eval @ step 500: loss 4.7528 | ppl 115.91 (32 windows) ---
+step    510 | loss 4.7662 | lr 1.30e-5
+step    520 | loss 4.7896 | lr 1.13e-5
+--- eval @ step 525: loss 4.7426 | ppl 114.73 (32 windows) ---
+step    530 | loss 4.9668 | lr 1.13e-5
+step    540 | loss 4.4409 | lr 1.13e-5
+step    550 | loss 4.9112 | lr 9.75e-6
+--- Checkpoint saved: checkpoints/model_step_550.bin ---
+--- eval @ step 550: loss 4.7350 | ppl 113.86 (32 windows) ---
+step    560 | loss 4.6864 | lr 9.75e-6
+[Wed Aug 19 22:56:30 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 22:56:40 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Resumed from: checkpoints/model_step_550.bin (step 550)
+[Wed Aug 19 22:56:58 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 22:57:08 +03 2026] Starting/resuming training...
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - ~162M parameters (12-head attention, batch 2)
+Resumed from: checkpoints/model_step_550.bin (step 550)
+--- eval @ step 551: loss 4.7350 | ppl 113.86 (32 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+step    560 | loss 4.1298 | lr 0.00e0

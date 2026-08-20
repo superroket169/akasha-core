@@ -1,0 +1,351 @@
+[Wed Aug 19 13:59:01 +03 2026] Starting/resuming training...
+    Finished `release` profile [optimized] target(s) in 0.34s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 749936757 tokens
+Model ready - pidgeon ~42M parameters (5-head attention, batch 10)
+Starting fresh training run
+--- eval @ step 0: loss 11.2948 | ppl 80404.05 (30 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+step      0 | loss 11.2992 | lr 0.00e0
+step     50 | loss 11.1071 | lr 2.89e-6
+step    100 | loss 10.6189 | lr 5.78e-6
+step    150 | loss 10.2043 | lr 9.04e-6
+step    200 | loss 9.8531 | lr 1.19e-5
+step    250 | loss 9.8380 | lr 1.48e-5
+step    300 | loss 9.6548 | lr 1.81e-5
+step    350 | loss 9.5996 | lr 2.10e-5
+step    400 | loss 9.4750 | lr 2.39e-5
+step    450 | loss 9.4529 | lr 2.71e-5
+step    500 | loss 9.2460 | lr 3.00e-5
+step    550 | loss 9.1160 | lr 3.29e-5
+step    600 | loss 9.0802 | lr 3.61e-5
+step    650 | loss 8.9000 | lr 3.90e-5
+step    700 | loss 8.7651 | lr 4.19e-5
+step    750 | loss 8.7797 | lr 4.52e-5
+step    800 | loss 8.5105 | lr 4.81e-5
+step    850 | loss 8.5873 | lr 5.10e-5
+step    900 | loss 8.2299 | lr 5.42e-5
+step    950 | loss 8.1934 | lr 5.71e-5
+step   1000 | loss 8.1633 | lr 6.00e-5
+--- Checkpoint saved: checkpoints/model_step_1000.bin ---
+--- eval @ step 1000: loss 8.0920 | ppl 3268.12 (30 windows) ---
+step   1050 | loss 7.8948 | lr 6.00e-5
+step   1100 | loss 7.8193 | lr 6.00e-5
+step   1150 | loss 7.8046 | lr 6.00e-5
+step   1200 | loss 7.6076 | lr 6.00e-5
+step   1250 | loss 7.6915 | lr 6.00e-5
+step   1300 | loss 7.5315 | lr 6.00e-5
+step   1350 | loss 7.3057 | lr 6.00e-5
+step   1400 | loss 7.4291 | lr 6.00e-5
+step   1450 | loss 7.1739 | lr 6.00e-5
+[Wed Aug 19 14:36:54 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 14:37:04 +03 2026] Starting/resuming training...
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 749936757 tokens
+Model ready - pidgeon ~42M parameters (5-head attention, batch 10)
+Resumed from: checkpoints/model_step_1000.bin (step 1000)
+--- eval @ step 1001: loss 8.0920 | ppl 3268.12 (30 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+step   1050 | loss 8.1034 | lr 6.00e-5
+step   1100 | loss 7.9534 | lr 6.00e-5
+step   1150 | loss 7.8426 | lr 6.00e-5
+[Wed Aug 19 02:42:21 PM +03 2026] Starting/resuming training...
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 749936757 tokens
+step   1200 | loss 7.6558 | lr 6.00e-5
+[Wed Aug 19 02:43:22 PM +03 2026] Starting/resuming training...
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 749936757 tokens
+Model ready - pidgeon ~42M parameters (5-head attention, batch 10)
+Resumed from: checkpoints/model_step_1000.bin (step 1000)
+--- eval @ step 1001: loss 8.0920 | ppl 3268.12 (30 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+step   1250 | loss 7.8090 | lr 6.00e-5
+[Wed Aug 19 14:45:25 +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 02:45:25 PM +03 2026] Process exited -- restarting in 10 seconds...
+[Wed Aug 19 14:45:35 +03 2026] Starting/resuming training...
+[Wed Aug 19 02:45:35 PM +03 2026] Starting/resuming training...
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Blocking waiting for file lock on package cache
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+    Finished `release` profile [optimized] target(s) in 0.10s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 749936757 tokens
+Dataset: 749936757 tokens
+Model ready - pidgeon ~42M parameters (5-head attention, batch 10)
+Model ready - pidgeon ~42M parameters (5-head attention, batch 10)
+Resumed from: checkpoints/model_step_1000.bin (step 1000)
+Resumed from: checkpoints/model_step_1000.bin (step 1000)
+--- eval @ step 1001: loss 8.0920 | ppl 3268.12 (30 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+--- eval @ step 1001: loss 8.0920 | ppl 3268.12 (30 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+[Wed Aug 19 14:46:07 +03 2026] Starting/resuming training...
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 749936757 tokens
+Model ready - pidgeon ~42M parameters (5-head attention, batch 10)
+Resumed from: checkpoints/model_step_1000.bin (step 1000)
+--- eval @ step 1001: loss 8.0920 | ppl 3268.12 (30 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+step   1050 | loss 7.9650 | lr 6.00e-5
+step   1100 | loss 7.9130 | lr 6.00e-5
+step   1150 | loss 7.8078 | lr 6.00e-5
+step   1200 | loss 7.7100 | lr 6.00e-5
+step   1250 | loss 7.7275 | lr 6.00e-5
+step   1300 | loss 7.4692 | lr 6.00e-5
+step   1350 | loss 7.5583 | lr 6.00e-5
+step   1400 | loss 7.3602 | lr 6.00e-5
+step   1450 | loss 7.4009 | lr 6.00e-5
+step   1500 | loss 7.3714 | lr 6.00e-5
+step   1550 | loss 7.2539 | lr 6.00e-5
+step   1600 | loss 7.3541 | lr 6.00e-5
+step   1650 | loss 7.1547 | lr 6.00e-5
+step   1700 | loss 7.2892 | lr 6.00e-5
+step   1750 | loss 6.9886 | lr 6.00e-5
+step   1800 | loss 7.1446 | lr 6.00e-5
+step   1850 | loss 6.9925 | lr 6.00e-5
+step   1900 | loss 6.9942 | lr 6.00e-5
+step   1950 | loss 7.0648 | lr 6.00e-5
+step   2000 | loss 7.0933 | lr 6.00e-5
+--- Checkpoint saved: checkpoints/model_step_2000.bin ---
+--- eval @ step 2000: loss 7.0175 | ppl 1116.01 (30 windows) ---
+step   2050 | loss 6.9410 | lr 6.00e-5
+step   2100 | loss 7.0425 | lr 6.00e-5
+step   2150 | loss 6.9405 | lr 6.00e-5
+step   2200 | loss 6.9666 | lr 6.00e-5
+step   2250 | loss 6.6741 | lr 6.00e-5
+step   2300 | loss 6.8045 | lr 6.00e-5
+step   2350 | loss 6.7313 | lr 6.00e-5
+step   2400 | loss 6.9494 | lr 6.00e-5
+step   2450 | loss 6.8061 | lr 6.00e-5
+step   2500 | loss 6.6923 | lr 6.00e-5
+step   2550 | loss 6.9526 | lr 6.00e-5
+step   2600 | loss 6.7111 | lr 6.00e-5
+step   2650 | loss 6.8267 | lr 6.00e-5
+step   2700 | loss 6.5798 | lr 6.00e-5
+step   2750 | loss 6.7600 | lr 6.00e-5
+step   2800 | loss 7.0046 | lr 6.00e-5
+step   2850 | loss 6.7189 | lr 6.00e-5
+step   2900 | loss 6.6581 | lr 6.00e-5
+step   2950 | loss 6.5926 | lr 6.00e-5
+step   3000 | loss 6.6164 | lr 6.00e-5
+--- Checkpoint saved: checkpoints/model_step_3000.bin ---
+--- eval @ step 3000: loss 6.7154 | ppl 825.00 (30 windows) ---
+step   3050 | loss 6.7123 | lr 6.00e-5
+step   3100 | loss 6.7017 | lr 6.00e-5
+step   3150 | loss 6.9658 | lr 6.00e-5
+step   3200 | loss 6.6022 | lr 6.00e-5
+step   3250 | loss 6.9318 | lr 6.00e-5
+step   3300 | loss 6.5825 | lr 6.00e-5
+step   3350 | loss 6.4512 | lr 6.00e-5
+step   3400 | loss 6.7439 | lr 6.00e-5
+step   3450 | loss 6.6091 | lr 6.00e-5
+step   3500 | loss 6.6572 | lr 6.00e-5
+step   3550 | loss 6.4909 | lr 6.00e-5
+step   3600 | loss 6.8286 | lr 6.00e-5
+step   3650 | loss 6.5053 | lr 6.00e-5
+step   3700 | loss 6.6938 | lr 6.00e-5
+step   3750 | loss 6.6298 | lr 6.00e-5
+step   3800 | loss 6.5295 | lr 6.00e-5
+step   3850 | loss 6.3690 | lr 6.00e-5
+step   3900 | loss 6.7789 | lr 6.00e-5
+step   3950 | loss 6.5991 | lr 6.00e-5
+step   4000 | loss 6.5220 | lr 6.00e-5
+--- Checkpoint saved: checkpoints/model_step_4000.bin ---
+--- eval @ step 4000: loss 6.5033 | ppl 667.35 (30 windows) ---
+[Wed Aug 19 11:04:17 PM +03 2026] Starting/resuming training...
+    Finished `release` profile [optimized] target(s) in 0.34s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - pidgeon ~42M parameters (5-head attention, batch 10)
+Resumed from: checkpoints/model_step_4000.bin (step 4000)
+--- eval @ step 4001: loss 6.6810 | ppl 797.15 (30 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+step   4050 | loss 6.7270 | lr 6.00e-5
+step   4100 | loss 6.5155 | lr 6.00e-5
+step   4150 | loss 6.4227 | lr 6.00e-5
+step   4200 | loss 6.1895 | lr 6.00e-5
+step   4250 | loss 6.4671 | lr 6.00e-5
+step   4300 | loss 6.4168 | lr 6.00e-5
+step   4350 | loss 6.3126 | lr 6.00e-5
+step   4400 | loss 6.4433 | lr 6.00e-5
+step   4450 | loss 6.3936 | lr 6.00e-5
+[Thu Aug 20 12:25:29 AM +03 2026] Starting/resuming training...
+    Finished `release` profile [optimized] target(s) in 0.07s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - pidgeon ~42M parameters (5-head attention, batch 10)
+Resumed from: checkpoints/model_step_4000.bin (step 4000)
+--- eval @ step 4001: loss 6.6810 | ppl 797.15 (30 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+[Thu Aug 20 12:28:52 AM +03 2026] Starting/resuming training...
+    Finished `release` profile [optimized] target(s) in 0.33s
+     Running `target/release/akasha-core`
+[wilupgu] Vulkan backend selected
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+[wgpu] adapter: AMD Radeon RX 7600 (RADV NAVI33) (Vulkan, DiscreteGpu) | max_storage_buffer_binding_size=2147483648 max_buffer_size=2147483647 max_compute_workgroups_per_dimension=65535 max_compute_invocations_per_workgroup=1024
+Vocab size: 50257
+Reusing existing shards at data/train_shards (delete the directory to re-tokenize)
+Dataset: 2609039 tokens
+Model ready - pidgeon ~42M parameters (5-head attention, batch 10)
+Resumed from: checkpoints/model_step_4000.bin (step 4000)
+--- eval @ step 4001: loss 6.6810 | ppl 797.15 (30 windows) ---
+Training started.
+    step |     loss |         lr
+-----------------------------------
+step   4050 | loss 7.0718 | lr 6.00e-5
+step   4100 | loss 6.5764 | lr 6.00e-5
+step   4150 | loss 6.5649 | lr 6.00e-5
+step   4200 | loss 6.3961 | lr 6.00e-5
+step   4250 | loss 6.5396 | lr 6.00e-5
+step   4300 | loss 6.5582 | lr 6.00e-5
+step   4350 | loss 6.4027 | lr 6.00e-5
+step   4400 | loss 6.1816 | lr 6.00e-5
+step   4450 | loss 6.3100 | lr 6.00e-5
+step   4500 | loss 6.2011 | lr 6.00e-5
+step   4550 | loss 6.2079 | lr 6.00e-5
+step   4600 | loss 6.3701 | lr 6.00e-5
+step   4650 | loss 5.9467 | lr 6.00e-5
+step   4700 | loss 6.0270 | lr 6.00e-5
+step   4750 | loss 6.0223 | lr 6.00e-5
+step   4800 | loss 6.3014 | lr 6.00e-5
+step   4850 | loss 6.1046 | lr 6.00e-5
+step   4900 | loss 6.0711 | lr 5.99e-5
+step   4950 | loss 6.1147 | lr 5.99e-5
+step   5000 | loss 6.1546 | lr 5.99e-5
+--- Checkpoint saved: checkpoints/model_step_5000.bin ---
+--- eval @ step 5000: loss 6.0472 | ppl 422.92 (30 windows) ---
+step   5050 | loss 5.8628 | lr 5.99e-5
+step   5100 | loss 6.1683 | lr 5.99e-5
+step   5150 | loss 5.9438 | lr 5.99e-5
+step   5200 | loss 6.1147 | lr 5.99e-5
+step   5250 | loss 6.0160 | lr 5.99e-5
+step   5300 | loss 5.9825 | lr 5.99e-5
+step   5350 | loss 5.9702 | lr 5.99e-5
+step   5400 | loss 5.9508 | lr 5.99e-5
+step   5450 | loss 5.9915 | lr 5.99e-5
+step   5500 | loss 5.9370 | lr 5.99e-5
+step   5550 | loss 5.8899 | lr 5.99e-5
+step   5600 | loss 5.8917 | lr 5.99e-5
+step   5650 | loss 5.7111 | lr 5.99e-5
+step   5700 | loss 5.7949 | lr 5.99e-5
+step   5750 | loss 6.0530 | lr 5.99e-5
+step   5800 | loss 5.7547 | lr 5.99e-5
+step   5850 | loss 5.6148 | lr 5.99e-5
+step   5900 | loss 5.7604 | lr 5.99e-5
+step   5950 | loss 5.8073 | lr 5.99e-5
+step   6000 | loss 5.6274 | lr 5.99e-5
+--- Checkpoint saved: checkpoints/model_step_6000.bin ---
+--- eval @ step 6000: loss 5.8552 | ppl 349.03 (30 windows) ---
+step   6050 | loss 5.9447 | lr 5.99e-5
+step   6100 | loss 6.0503 | lr 5.99e-5
+step   6150 | loss 5.6687 | lr 5.99e-5
+step   6200 | loss 5.7219 | lr 5.99e-5
+step   6250 | loss 5.7544 | lr 5.99e-5
+step   6300 | loss 5.8709 | lr 5.99e-5
+step   6350 | loss 5.7127 | lr 5.99e-5
+step   6400 | loss 5.7149 | lr 5.99e-5
+step   6450 | loss 5.5895 | lr 5.99e-5
+step   6500 | loss 5.7668 | lr 5.99e-5
+step   6550 | loss 5.7094 | lr 5.99e-5
+step   6600 | loss 5.7464 | lr 5.99e-5
+step   6650 | loss 5.6566 | lr 5.99e-5
+step   6700 | loss 5.2960 | lr 5.99e-5
+step   6750 | loss 5.4817 | lr 5.99e-5
+step   6800 | loss 5.7923 | lr 5.99e-5
+step   6850 | loss 5.7142 | lr 5.99e-5
+step   6900 | loss 5.4130 | lr 5.99e-5
+step   6950 | loss 5.6772 | lr 5.99e-5
+step   7000 | loss 5.7056 | lr 5.99e-5
+--- Checkpoint saved: checkpoints/model_step_7000.bin ---
+--- eval @ step 7000: loss 5.7322 | ppl 308.64 (30 windows) ---
+step   7050 | loss 5.5733 | lr 5.99e-5
+step   7100 | loss 5.5513 | lr 5.99e-5
+step   7150 | loss 5.7343 | lr 5.99e-5
+step   7200 | loss 5.3625 | lr 5.99e-5
+step   7250 | loss 5.7740 | lr 5.99e-5
+step   7300 | loss 5.7396 | lr 5.99e-5
+step   7350 | loss 5.6637 | lr 5.99e-5
+step   7400 | loss 5.5274 | lr 5.99e-5
+step   7450 | loss 5.5019 | lr 5.99e-5
+step   7500 | loss 5.6445 | lr 5.99e-5
+step   7550 | loss 5.4668 | lr 5.99e-5
+step   7600 | loss 5.3745 | lr 5.99e-5
+step   7650 | loss 5.6363 | lr 5.99e-5
+step   7700 | loss 5.5754 | lr 5.98e-5
+step   7750 | loss 5.5596 | lr 5.98e-5
+step   7800 | loss 5.5060 | lr 5.98e-5
+step   7850 | loss 5.3978 | lr 5.98e-5
+step   7900 | loss 5.3837 | lr 5.98e-5
+step   7950 | loss 5.4778 | lr 5.98e-5
+step   8000 | loss 5.6858 | lr 5.98e-5
+--- Checkpoint saved: checkpoints/model_step_8000.bin ---
+--- eval @ step 8000: loss 5.6186 | ppl 275.49 (30 windows) ---
