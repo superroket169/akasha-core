@@ -13,8 +13,13 @@ struct Meta {
 @group(0) @binding(4) var<storage, read_write> l_cache: array<f32>;
 @group(0) @binding(5) var<storage, read> m: Meta;
 
-// Fixed accumulator size -- caller asserts head_dim <= 128.
-const MAX_HEAD_DIM: u32 = 128u;
+// EXPERIMENT (not yet the final fix -- see chat): hardcoded to match this
+// model's fixed head_dim (config.rs DIM/NUM_HEADS = 64) so the compiler can
+// unroll the loops and keep acc in registers instead of spilling it to
+// scratch memory (root cause of the RADV GPU hang -- runtime-bound
+// m.head_dim prevented unrolling). Only valid while every caller's head_dim
+// is 64; a debug_assert at the Rust call site should guard this.
+const HEAD_DIM: u32 = 64u;
 
 // One invocation per (query row, head): fused QK^T + causal softmax + AV,
 // online-softmax so the `[seq_len, seq_len]` scores matrix is never
@@ -33,8 +38,8 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let head_off = head * m.head_dim;
     let q_off = (m.row_offset + row) * m.dim + head_off;
 
-    var acc: array<f32, MAX_HEAD_DIM>;
-    for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
+    var acc: array<f32, HEAD_DIM>;
+    for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
         acc[d] = 0.0;
     }
 
@@ -45,7 +50,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let kv_off = (m.row_offset + j) * m.dim + head_off;
 
         var score: f32 = 0.0;
-        for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
+        for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
             score = score + q[q_off + d] * k[kv_off + d];
         }
         score = score * m.scale;
@@ -55,7 +60,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let p = exp(score - new_max);
 
         row_sum = row_sum * correction + p;
-        for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
+        for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
             acc[d] = acc[d] * correction + p * v[kv_off + d];
         }
 
@@ -63,7 +68,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     }
 
     let out_off = (m.row_offset + row) * m.dim + head_off;
-    for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
+    for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
         out[out_off + d] = acc[d] / row_sum;
     }
 

@@ -16,7 +16,13 @@ struct Meta {
 @group(0) @binding(7) var<storage, read_write> d_v: array<f32>;
 @group(0) @binding(8) var<storage, read> m: Meta;
 
-const MAX_HEAD_DIM: u32 = 128u;
+// EXPERIMENT (not yet the final fix -- see chat): hardcoded to match this
+// model's fixed head_dim (config.rs DIM/NUM_HEADS = 64) so the compiler can
+// unroll the loops and keep dk_acc/dv_acc in registers instead of spilling
+// them to scratch memory (root cause of the RADV GPU hang -- runtime-bound
+// m.head_dim prevented unrolling). Only valid while every caller's head_dim
+// is 64; a debug_assert at the Rust call site should guard this.
+const HEAD_DIM: u32 = 64u;
 
 //   dV_j = sum_i P_ij * dO_i
 //   dK_j = scale * sum_i dS_ij * Q_i
@@ -33,9 +39,9 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
     let head_off = head * m.head_dim;
     let kv_off = (m.row_offset + col) * m.dim + head_off;
 
-    var dk_acc: array<f32, MAX_HEAD_DIM>;
-    var dv_acc: array<f32, MAX_HEAD_DIM>;
-    for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
+    var dk_acc: array<f32, HEAD_DIM>;
+    var dv_acc: array<f32, HEAD_DIM>;
+    for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
         dk_acc[d] = 0.0;
         dv_acc[d] = 0.0;
     }
@@ -45,7 +51,7 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         let l_i = l_cache[i * num_heads + head];
 
         var score: f32 = 0.0;
-        for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
+        for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
             score = score + q[qo_off + d] * k[kv_off + d];
         }
         score = score * m.scale;
@@ -53,19 +59,19 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
 
         var d_i: f32 = 0.0;
         var dp: f32 = 0.0;
-        for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
+        for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
             d_i = d_i + d_o[qo_off + d] * o[qo_off + d];
             dp = dp + d_o[qo_off + d] * v[kv_off + d];
         }
         let d_s = p * (dp - d_i);
 
-        for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
+        for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
             dv_acc[d] = dv_acc[d] + p * d_o[qo_off + d];
             dk_acc[d] = dk_acc[d] + d_s * q[qo_off + d];
         }
     }
 
-    for (var d: u32 = 0u; d < m.head_dim; d = d + 1u) {
+    for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
         d_k[kv_off + d] = dk_acc[d] * m.scale;
         d_v[kv_off + d] = dv_acc[d];
     }
