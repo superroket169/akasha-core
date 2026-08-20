@@ -107,6 +107,7 @@ fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str) {
     let mut session = InferenceSession::new(ctx, weights, SEQ_LEN);
 
     println!("Model loaded. Type a prompt (Ctrl+C to exit):\n");
+    println!("Tip: type \\n for a literal newline, e.g. User: hi\\nAssistant:\n");
     loop {
         print!("> ");
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
@@ -118,11 +119,14 @@ fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str) {
         if input.is_empty() {
             continue;
         }
-        let tokens = tokenizer.encode(input);
+        let input = input.replace("\\n", "\n");
+        let tokens = tokenizer.encode(&input);
 
         session.take_cache();
+
         // temperature 0.8, top-k 40, top-p 0.95 - llama.cpp-style defaults - for now
-        match session.generate(&tokenizer, &tokens, 200, 0.8, 40, 0.95) {
+        // repetition_penalty 1.15 - small models loop without it
+        match session.generate(&tokenizer, &tokens, 200, 0.8, 40, 0.95, 1.15) {
             Ok(output) => println!("{}\n", output),
             Err(e) => eprintln!("generation failed: {e}\n"),
         }

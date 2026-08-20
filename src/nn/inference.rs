@@ -269,6 +269,7 @@ impl<B: Backend> InferenceSession<B> {
         temperature: f32,
         top_k: usize,
         top_p: f32,
+        repetition_penalty: f32,
     ) -> Result<String, AkashaError> {
         if prompt_tokens.is_empty() {
             return Err(AkashaError::EmptyPrompt);
@@ -296,9 +297,20 @@ impl<B: Backend> InferenceSession<B> {
 
         let eos = self.cfg.eos_token;
         let mut generated: Vec<u32> = Vec::with_capacity(max_new_tokens);
+
+        let mut history: Vec<u32> = prompt_tokens.to_vec();
+
         for _ in 0..max_new_tokens {
-            let next = sample_token(&logits, temperature, top_k, top_p);
+            let next = sample_token(
+                &logits,
+                temperature,
+                top_k,
+                top_p,
+                &history,
+                repetition_penalty,
+            );
             generated.push(next);
+            history.push(next);
             if next == eos {
                 break;
             }
