@@ -1,4 +1,4 @@
-use akasha_core::config::ModelConfig;
+use akasha_core::config::{ModelConfig, TrainConfig};
 use akasha_core::nn::{ModelWeights, Trainer};
 use akasha_core::tokenizer::Tokenizer;
 use std::collections::VecDeque;
@@ -239,7 +239,23 @@ fn main() {
     ));
     let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, NUM_WORDS);
     let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let model = Trainer::new(ctx.clone(), weights, &t_input_tokens);
+    let train_cfg = TrainConfig {
+        name: "train_dashboard_example",
+        batch_size: BATCH_SIZE,
+        accumulation_steps: ACCUMULATION_STEPS,
+        lr_max: lr,
+        lr_min: FINAL_LR,
+        warmup_steps: 0,
+        max_steps: 1_000_000,
+        save_every: usize::MAX,
+        log_every: usize::MAX,
+        eval_every: usize::MAX,
+        eval_windows: 0,
+        adam_weight_decay: 0.01,
+        grad_clip_norm: 1.0,
+        train_bf16_matmul: false,
+    };
+    let model = Trainer::new(ctx.clone(), weights, &t_input_tokens, train_cfg);
 
     if let Some(path) = load_path {
         match model.load_checkpoint(path) {

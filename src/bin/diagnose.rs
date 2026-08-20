@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use akasha_core::config::{ADAM_WEIGHT_DECAY, ModelConfig};
+use akasha_core::config::{ModelConfig, TrainConfig};
 use akasha_core::nn::{
     Cache, CrossEntropy, InferenceSession, Layer, ModelWeights, RMSNorm, Trainer,
 };
@@ -64,16 +64,28 @@ fn check1_param_count<B: Backend>(model: &Trainer<B>) -> (bool, u64) {
 }
 
 fn check2_grad_flow<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
-    use akasha_core::config::{DIM, NUM_HEADS, NUM_LAYERS};
+    let arch = ModelConfig::akasha_hall_1();
     let seq_len = 16u32;
 
     let input_tokens = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
         &rand_u32_vec(seq_len as usize, vocab_size),
     ));
-    let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, seq_len);
+    let cfg = ModelConfig::new(
+        vocab_size,
+        arch.dim,
+        arch.num_heads,
+        arch.num_layers,
+        seq_len,
+    );
     let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let model = Trainer::new(ctx.clone(), weights, &input_tokens);
+    let model = Trainer::new(
+        ctx.clone(),
+        weights,
+        &input_tokens,
+        TrainConfig::hall1_pretrain(),
+    );
+    let num_layers = model.layers.len();
 
     model.zero_grad();
     model.zero_transient_grads();
@@ -88,13 +100,14 @@ fn check2_grad_flow<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
     model.backward_fused();
 
     println!(
-        "CHECK 2: 1-step grad flow test (seq_len={seq_len}, dim={DIM}, layers={NUM_LAYERS}, heads={NUM_HEADS})"
+        "CHECK 2: 1-step grad flow test (seq_len={seq_len}, dim={}, layers={num_layers}, heads={})",
+        arch.dim, arch.num_heads
     );
     println!("  forward loss = {loss:.4}");
 
     let mut any_zero = false;
     let mut any_explosion = false;
-    let mut layer_total_norms = Vec::with_capacity(NUM_LAYERS);
+    let mut layer_total_norms = Vec::with_capacity(num_layers);
 
     for (i, layer) in model.layers.iter().enumerate() {
         let entries = [
@@ -128,13 +141,13 @@ fn check2_grad_flow<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
     }
 
     let vanishing = if layer_total_norms[0] > 1e-9 {
-        let ratio = layer_total_norms[0] / layer_total_norms[NUM_LAYERS - 1].max(1e-12);
+        let ratio = layer_total_norms[0] / layer_total_norms[num_layers - 1].max(1e-12);
         if ratio > 1e3 {
             println!(
                 "  RED FLAG: layer-0 grad sum ({:.4}) / layer-{} grad sum ({:.4}) = {:.1} -- looks like vanishing gradient",
                 layer_total_norms[0],
-                NUM_LAYERS - 1,
-                layer_total_norms[NUM_LAYERS - 1],
+                num_layers - 1,
+                layer_total_norms[num_layers - 1],
                 ratio
             );
             true
@@ -368,16 +381,27 @@ fn check4_rmsnorm_backward<B: Backend>(ctx: Arc<B>) -> bool {
 }
 
 fn check5_accumulation<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
-    use akasha_core::config::{DIM, NUM_HEADS, NUM_LAYERS};
+    let arch = ModelConfig::akasha_hall_1();
     let seq_len = 16u32;
 
     let input_tokens = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
         &rand_u32_vec(seq_len as usize, vocab_size),
     ));
-    let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, seq_len);
+    let cfg = ModelConfig::new(
+        vocab_size,
+        arch.dim,
+        arch.num_heads,
+        arch.num_layers,
+        seq_len,
+    );
     let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let model = Trainer::new(ctx.clone(), weights, &input_tokens);
+    let model = Trainer::new(
+        ctx.clone(),
+        weights,
+        &input_tokens,
+        TrainConfig::hall1_pretrain(),
+    );
 
     let inputs = rand_u32_vec(seq_len as usize, vocab_size);
     let targets = rand_u32_vec(seq_len as usize, vocab_size);
@@ -420,7 +444,7 @@ fn check5_accumulation<B: Backend>(ctx: Arc<B>, vocab_size: u32) -> bool {
     pass
 }
 
-fn check6_weight_decay_groups<B: Backend>(model: &Trainer<B>) -> bool {
+fn check6_weight_decay_groups<B: Backend>(model: &Trainer<B>, adam_weight_decay: f32) -> bool {
     let params = model.trainable_params();
     let emb_in_group = params
         .iter()
@@ -436,7 +460,7 @@ fn check6_weight_decay_groups<B: Backend>(model: &Trainer<B>) -> bool {
     println!("  Embedding table in the (only) weight_decay group: {emb_in_group}");
     println!("  RMSNorm (final_norm) weight in the (only) weight_decay group: {norm_in_group}");
     println!("  ADVISORY (not a correctness bug): embeddings and RMSNorm scale weights ARE being");
-    println!("  weight-decayed at ADAM_WEIGHT_DECAY={ADAM_WEIGHT_DECAY}, which is non-standard --");
+    println!("  weight-decayed at adam_weight_decay={adam_weight_decay}, which is non-standard --");
     println!(
         "  most GPT-2-style training setups exempt 1D params (norms, embeddings, biases) from decay."
     );
@@ -491,7 +515,23 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
     ));
     let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
     let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let model = Trainer::new(ctx.clone(), weights, &input_tokens);
+    let train_cfg = TrainConfig {
+        name: "diagnose_check8",
+        batch_size,
+        accumulation_steps: 1,
+        lr_max: lr,
+        lr_min: lr,
+        warmup_steps: 0,
+        max_steps: 600,
+        save_every: usize::MAX,
+        log_every: 40,
+        eval_every: usize::MAX,
+        eval_windows: 0,
+        adam_weight_decay: 0.01,
+        grad_clip_norm: 1.0,
+        train_bf16_matmul: false,
+    };
+    let model = Trainer::new(ctx.clone(), weights, &input_tokens, train_cfg);
 
     let inputs = rand_u32_vec(batch_size * seq_len as usize, vocab_size);
     let targets = rand_u32_vec(batch_size * seq_len as usize, vocab_size);
@@ -650,7 +690,12 @@ fn check9_kv_cache_equivalence<B: Backend>(ctx: Arc<B>) -> bool {
     ));
     let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
     let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let model = Trainer::new(ctx.clone(), weights, &input_tokens);
+    let model = Trainer::new(
+        ctx.clone(),
+        weights,
+        &input_tokens,
+        TrainConfig::hall1_pretrain(),
+    );
 
     let mut logits_a: Vec<Vec<f32>> = Vec::new();
     let seq_len_us = seq_len as usize;
@@ -715,7 +760,12 @@ fn check10_kv_cache_speed<B: Backend>(ctx: Arc<B>) {
     ));
     let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
     let weights_a = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let model_a = Trainer::new(ctx.clone(), weights_a, &input_tokens_a);
+    let model_a = Trainer::new(
+        ctx.clone(),
+        weights_a,
+        &input_tokens_a,
+        TrainConfig::hall1_pretrain(),
+    );
     let mut tokens = prompt.clone();
     let seq_len_us = seq_len as usize;
     let vocab_us = vocab_size as usize;
@@ -794,30 +844,38 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
 
     println!("\n================= AKASHA TRAINING DIAGNOSTICS =================\n");
 
-    use akasha_core::config::{DIM, NUM_HEADS, NUM_LAYERS, SEQ_LEN, VOCAB_SIZE};
+    let arch = ModelConfig::akasha_hall_1();
+    let train_cfg = TrainConfig::hall1_pretrain();
 
     let vocab_size: u32 = std::env::var("DIAGNOSE_VOCAB_SIZE")
         .ok()
         .and_then(|s| s.parse().ok())
-        .unwrap_or(VOCAB_SIZE);
-    if vocab_size != VOCAB_SIZE {
+        .unwrap_or(arch.vocab_size);
+    if vocab_size != arch.vocab_size {
         println!(
-            "NOTE: DIAGNOSE_VOCAB_SIZE override active -- using vocab_size={vocab_size} instead of {VOCAB_SIZE}\n"
+            "NOTE: DIAGNOSE_VOCAB_SIZE override active -- using vocab_size={vocab_size} instead of {}\n",
+            arch.vocab_size
         );
     }
 
     let (c1_pass, c1_count, c6_pass) = {
         let input_tokens = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
-            &vec![0u32; SEQ_LEN as usize],
+            &vec![0u32; arch.seq_len as usize],
         ));
-        let cfg = ModelConfig::new(vocab_size, DIM, NUM_HEADS, NUM_LAYERS, SEQ_LEN);
+        let cfg = ModelConfig::new(
+            vocab_size,
+            arch.dim,
+            arch.num_heads,
+            arch.num_layers,
+            arch.seq_len,
+        );
         let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-        let full_model = Trainer::new(ctx.clone(), weights, &input_tokens);
+        let full_model = Trainer::new(ctx.clone(), weights, &input_tokens, train_cfg);
 
         let (c1_pass, c1_count) = check1_param_count(&full_model);
         println!();
-        let c6_pass = check6_weight_decay_groups(&full_model);
+        let c6_pass = check6_weight_decay_groups(&full_model, train_cfg.adam_weight_decay);
         println!();
         (c1_pass, c1_count, c6_pass)
     };

@@ -1,4 +1,3 @@
-use crate::READ_LOSS;
 use crate::Real;
 use std::error::Error;
 use std::sync::Arc;
@@ -8,10 +7,7 @@ use super::checkpoint;
 use super::layers::{CrossEntropy, Embedding, Layer, Linear, RMSNorm, TransformerBlock};
 use super::ops::{self, GraphBuilder};
 use super::weights::ModelWeights;
-use crate::config::{
-    ACCUMULATION_STEPS, ADAM_WEIGHT_DECAY, GRAD_CLIP_NORM, LR_MAX, LR_MIN, MAX_STEPS, ModelConfig,
-    WARMUP_STEPS,
-};
+use crate::config::{ModelConfig, TrainConfig};
 use crate::optim::{AdamW, AdamWSchedule};
 
 const ADAM_BETA1: Real = 0.9;
@@ -71,6 +67,7 @@ fn collect_trainable_params<B: Backend>(
 pub struct Trainer<B: Backend> {
     pub ctx: Arc<B>,
     pub cfg: ModelConfig,
+    pub train_cfg: TrainConfig,
     pub weights: Arc<ModelWeights<B>>,
     pub input_tokens: Arc<Tensor<B>>,
     pub embedding: Embedding<B>,
@@ -92,7 +89,12 @@ fn elems<B: Backend>(t: &Tensor<B>) -> u32 {
 }
 
 impl<B: Backend> Trainer<B> {
-    pub fn new(ctx: Arc<B>, weights: Arc<ModelWeights<B>>, input_tokens: &Arc<Tensor<B>>) -> Self {
+    pub fn new(
+        ctx: Arc<B>,
+        weights: Arc<ModelWeights<B>>,
+        input_tokens: &Arc<Tensor<B>>,
+        train_cfg: TrainConfig,
+    ) -> Self {
         let cfg = weights.cfg;
         let ModelConfig {
             vocab_size,
@@ -181,14 +183,14 @@ impl<B: Backend> Trainer<B> {
             ctx.clone(),
             &trainable_params,
             AdamWSchedule {
-                lr_max: LR_MAX,
-                lr_min: LR_MIN,
-                warmup_steps: (WARMUP_STEPS / ACCUMULATION_STEPS) as u32,
-                max_steps: (MAX_STEPS / ACCUMULATION_STEPS) as u32,
+                lr_max: train_cfg.lr_max,
+                lr_min: train_cfg.lr_min,
+                warmup_steps: (train_cfg.warmup_steps / train_cfg.accumulation_steps) as u32,
+                max_steps: (train_cfg.max_steps / train_cfg.accumulation_steps) as u32,
             },
             ADAM_BETA1,
             ADAM_BETA2,
-            ADAM_WEIGHT_DECAY,
+            train_cfg.adam_weight_decay,
         );
 
         // ---- zero-grad graphs ----
@@ -212,7 +214,7 @@ impl<B: Backend> Trainer<B> {
         }
 
         // ---- grad clip graph ----
-        // (a factor of 1.0 when the norm is under GRAD_CLIP_NORM).
+        // (a factor of 1.0 when the norm is under train_cfg.grad_clip_norm).
         let total_partials: u32 = trainable_params
             .iter()
             .map(|(_, grad, _)| ops::grad_sumsq_wgs(elems(grad)))
@@ -243,7 +245,7 @@ impl<B: Backend> Trainer<B> {
                 &clip_scale,
                 ops::meta::GradNormMeta {
                     num_partials: total_partials,
-                    max_norm: GRAD_CLIP_NORM,
+                    max_norm: train_cfg.grad_clip_norm,
                 },
             );
             for (_, grad, _) in &trainable_params {
@@ -287,6 +289,7 @@ impl<B: Backend> Trainer<B> {
         Self {
             ctx,
             cfg,
+            train_cfg,
             weights,
             input_tokens: input_tokens.clone(),
             embedding,
@@ -340,7 +343,7 @@ impl<B: Backend> Trainer<B> {
             self.zero_grad();
         }
 
-        let read_loss = step % READ_LOSS == 0;
+        let read_loss = step % self.train_cfg.log_every == 0;
         let mut total_loss = 0.0 as Real;
         for i in 0..batch_size {
             let window = i * seq_len..(i + 1) * seq_len;
@@ -459,7 +462,7 @@ mod checkpoint_roundtrip {
         // A few real steps so moments and the schedule counter are nonzero.
         let input_a = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
         let weights_a = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-        let a = Trainer::new(ctx.clone(), weights_a, &input_a);
+        let a = Trainer::new(ctx.clone(), weights_a, &input_a, TrainConfig::hall1_pretrain());
         for step in 0..3 {
             a.train_step(&tokens, &targets, 1, step, 1);
         }
@@ -471,7 +474,7 @@ mod checkpoint_roundtrip {
 
         let input_b = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
         let weights_b = Arc::new(ModelWeights::zeros(ctx.clone(), &cfg));
-        let b = Trainer::new(ctx.clone(), weights_b, &input_b);
+        let b = Trainer::new(ctx.clone(), weights_b, &input_b, TrainConfig::hall1_pretrain());
         let train_step = b.load_checkpoint(path).unwrap();
         ctx.synchronize();
         std::fs::remove_file(path).ok();
@@ -532,7 +535,7 @@ mod fused_ops_integration {
         let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
 
         let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens);
+        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens, TrainConfig::hall1_pretrain());
         trainer.cross_entropy.target_tokens.copy_from_cpu(&targets);
         trainer.zero_grad();
         trainer.zero_transient_grads();
@@ -620,7 +623,7 @@ mod full_chain_gradcheck {
         let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
 
         let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens);
+        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens, TrainConfig::hall1_pretrain());
         trainer.cross_entropy.target_tokens.copy_from_cpu(&targets);
         trainer.cross_entropy.set_grad_scale(1.0 / seq_len as Real);
 
@@ -752,7 +755,12 @@ mod batching_validation {
         // Reference: Sequential trainer (batch_size=1) called in a loop to accumulate gradients.
         // Used to verify mathematical parity with the batched forward/backward pass.
         let ref_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![0u32; seq_len]));
-        let ref_trainer = Trainer::new(ctx.clone(), weights_ref, &ref_input_tokens);
+        let ref_trainer = Trainer::new(
+            ctx.clone(),
+            weights_ref,
+            &ref_input_tokens,
+            TrainConfig::hall1_pretrain(),
+        );
         ref_trainer.cross_entropy.set_grad_scale(scale);
         ref_trainer.zero_grad();
         let mut ref_total_loss = 0.0 as Real;
@@ -782,7 +790,12 @@ mod batching_validation {
         // ---- new: one batch_size=3 Trainer, ONE execute over all 33 rows ----
         let rows = batch as usize * seq_len;
         let batched_input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &vec![0u32; rows]));
-        let batched_trainer = Trainer::new(ctx.clone(), weights_batched, &batched_input_tokens);
+        let batched_trainer = Trainer::new(
+            ctx.clone(),
+            weights_batched,
+            &batched_input_tokens,
+            TrainConfig::hall1_pretrain(),
+        );
         batched_trainer.cross_entropy.set_grad_scale(scale);
         batched_trainer.zero_grad();
         batched_trainer.input_tokens.copy_from_cpu(&all_inputs);
@@ -841,7 +854,8 @@ mod grad_clip_validation {
         let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
         let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
         let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens);
+        let train_cfg = TrainConfig::hall1_pretrain();
+        let trainer = Trainer::new(ctx.clone(), weights, &input_tokens, train_cfg);
 
         let params = trainer.trainable_params();
         let mut host_grads: Vec<Vec<Real>> = Vec::new();
@@ -863,8 +877,8 @@ mod grad_clip_validation {
             .map(|&g| (g as f64) * (g as f64))
             .sum();
         let norm = total_sq.sqrt() as f32;
-        let scale = if norm > GRAD_CLIP_NORM {
-            GRAD_CLIP_NORM / (norm + 1e-6)
+        let scale = if norm > train_cfg.grad_clip_norm {
+            train_cfg.grad_clip_norm / (norm + 1e-6)
         } else {
             1.0
         };
