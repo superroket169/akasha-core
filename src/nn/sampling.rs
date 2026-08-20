@@ -1,6 +1,32 @@
 use crate::Real;
 
-pub fn sample_token(logits: &[Real], temperature: f32, top_k: usize, top_p: f32) -> u32 {
+/// CTRL-style repetition penalty
+fn apply_repetition_penalty(logits: &mut [Real], seen: &[u32], penalty: f32) {
+    if penalty == 1.0 {
+        return;
+    }
+    let mut ids: Vec<u32> = seen.to_vec();
+    ids.sort_unstable();
+    ids.dedup();
+    for id in ids {
+        if let Some(l) = logits.get_mut(id as usize) {
+            *l = if *l > 0.0 { *l / penalty } else { *l * penalty };
+        }
+    }
+}
+
+pub fn sample_token(
+    logits: &[Real],
+    temperature: f32,
+    top_k: usize,
+    top_p: f32,
+    seen: &[u32],
+    repetition_penalty: f32,
+) -> u32 {
+    let mut logits = logits.to_vec();
+    apply_repetition_penalty(&mut logits, seen, repetition_penalty);
+    let logits = logits.as_slice();
+
     if temperature <= 0.0 {
         return argmax(logits);
     }
@@ -73,21 +99,21 @@ mod tests {
     #[test]
     fn zero_temperature_is_greedy() {
         for _ in 0..20 {
-            assert_eq!(sample_token(&LOGITS, 0.0, 0, 1.0), 3);
+            assert_eq!(sample_token(&LOGITS, 0.0, 0, 1.0, &[], 1.0), 3);
         }
     }
 
     #[test]
     fn top_k_one_is_greedy() {
         for _ in 0..20 {
-            assert_eq!(sample_token(&LOGITS, 1.5, 1, 1.0), 3);
+            assert_eq!(sample_token(&LOGITS, 1.5, 1, 1.0, &[], 1.0), 3);
         }
     }
 
     #[test]
     fn top_k_restricts_candidates() {
         for _ in 0..50 {
-            let t = sample_token(&LOGITS, 2.0, 2, 1.0);
+            let t = sample_token(&LOGITS, 2.0, 2, 1.0, &[], 1.0);
             assert!(t == 3 || t == 1, "sampled outside top-2: {t}");
         }
     }
@@ -95,7 +121,7 @@ mod tests {
     #[test]
     fn tiny_top_p_is_greedy() {
         for _ in 0..20 {
-            assert_eq!(sample_token(&LOGITS, 1.0, 0, 0.01), 3);
+            assert_eq!(sample_token(&LOGITS, 1.0, 0, 0.01, &[], 1.0), 3);
         }
     }
 
@@ -103,8 +129,14 @@ mod tests {
     fn filters_off_can_reach_every_token() {
         let mut seen = [false; 5];
         for _ in 0..2000 {
-            seen[sample_token(&LOGITS, 100.0, 0, 1.0) as usize] = true;
+            seen[sample_token(&LOGITS, 100.0, 0, 1.0, &[], 1.0) as usize] = true;
         }
         assert_eq!(seen, [true; 5], "some tokens never sampled: {seen:?}");
+    }
+
+    #[test]
+    fn repetition_penalty_demotes_seen_token_in_greedy_mode() {
+        assert_eq!(sample_token(&LOGITS, 0.0, 0, 1.0, &[], 1.0), 3);
+        assert_eq!(sample_token(&LOGITS, 0.0, 0, 1.0, &[3], 100.0), 1);
     }
 }
