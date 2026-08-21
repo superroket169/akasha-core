@@ -4,9 +4,9 @@ cd "$(dirname "$0")/.."
 
 export PATH="$PATH:$HOME/.cargo/bin"
 
-SHARD="${1:-000_00000}"
-URL="https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu/resolve/main/sample/10BT/${SHARD}.parquet"
-PARQUET="data/fineweb_${SHARD}.parquet"
+SHARD="${1:-0000}"
+URL="https://huggingface.co/datasets/Skylion007/openwebtext/resolve/refs%2Fconvert%2Fparquet/plain_text/train/${SHARD}.parquet"
+PARQUET="data/openwebtext_${SHARD}.parquet"
 
 mkdir -p data
 echo "Downloading $URL"

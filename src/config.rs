@@ -87,7 +87,7 @@ impl TrainConfig {
             lr_max: 6e-5,
             lr_min: 6e-6,
             warmup_steps: 1000,
-            max_steps: 200_000,
+            max_steps: 3_000_000,
             save_every: 1000,
             log_every: 50,
             eval_every: 1000,
