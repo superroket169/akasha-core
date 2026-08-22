@@ -163,6 +163,9 @@ fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str, cfg: ModelConfig) {
             Ok(output) => println!("{}\n", output),
             Err(e) => eprintln!("generation failed: {e}\n"),
         }
+
+        println!("<<<AKASHA_END>>>");
+        std::io::Write::flush(&mut std::io::stdout()).unwrap();
     }
 }
 
