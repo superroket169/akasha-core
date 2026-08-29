@@ -1,3 +1,10 @@
+/// What kind of block occupies a layer slot. One variant today
+/// (transformer-only stacks); a second (e.g. Mamba) is a new arm here, not
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockKind {
+    Transformer,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ModelConfig {
     pub vocab_size: u32,
@@ -39,6 +46,10 @@ impl ModelConfig {
         self.dim / self.num_heads
     }
 
+    pub fn layers(&self) -> Vec<BlockKind> {
+        vec![BlockKind::Transformer; self.num_layers]
+    }
+
     /// about last flash attention patch. head_dim must be 64
     fn assert_flash_attention_head_dim(self) -> Self {
         assert_eq!(
@@ -60,6 +71,47 @@ impl ModelConfig {
     }
 }
 
+/// One variant today (AdamW) -- a second optimizer is a new arm here and
+/// in `AnyOptimizer`, not a new config shape. See ARCHITECTURE.md.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum OptimizerKind {
+    AdamW,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct OptimizerConfig {
+    pub kind: OptimizerKind,
+    pub beta1: f32,
+    pub beta2: f32,
+    pub weight_decay: f32,
+    pub lr_max: f32,
+    pub lr_min: f32,
+    pub warmup_steps: usize,
+    pub max_steps: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum GradClipKind {
+    GlobalNorm,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct GradClipConfig {
+    pub kind: GradClipKind,
+    pub max_norm: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RunConfig {
+    pub batch_size: usize,
+    pub accumulation_steps: usize,
+    pub save_every: usize,
+    pub log_every: usize,
+    pub eval_every: usize,
+    pub eval_windows: usize,
+    pub train_bf16_matmul: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrainConfig {
     pub name: &'static str,
@@ -76,6 +128,9 @@ pub struct TrainConfig {
     pub adam_weight_decay: f32,
     pub grad_clip_norm: f32,
     pub train_bf16_matmul: bool,
+    pub optimizer: OptimizerConfig,
+    pub grad_clip: GradClipConfig,
+    pub run: RunConfig,
 }
 
 impl TrainConfig {
@@ -95,6 +150,29 @@ impl TrainConfig {
             adam_weight_decay: 0.01,
             grad_clip_norm: 1.0,
             train_bf16_matmul: true,
+            optimizer: OptimizerConfig {
+                kind: OptimizerKind::AdamW,
+                beta1: 0.9,
+                beta2: 0.95,
+                weight_decay: 0.01,
+                lr_max: 6e-5,
+                lr_min: 6e-6,
+                warmup_steps: 1000,
+                max_steps: 3_000_000,
+            },
+            grad_clip: GradClipConfig {
+                kind: GradClipKind::GlobalNorm,
+                max_norm: 1.0,
+            },
+            run: RunConfig {
+                batch_size: 2,
+                accumulation_steps: 32,
+                save_every: 1000,
+                log_every: 50,
+                eval_every: 1000,
+                eval_windows: 32,
+                train_bf16_matmul: true,
+            },
         }
     }
 
@@ -114,6 +192,29 @@ impl TrainConfig {
             adam_weight_decay: 0.01,
             grad_clip_norm: 1.0,
             train_bf16_matmul: true,
+            optimizer: OptimizerConfig {
+                kind: OptimizerKind::AdamW,
+                beta1: 0.9,
+                beta2: 0.95,
+                weight_decay: 0.01,
+                lr_max: 3e-5,
+                lr_min: 3e-6,
+                warmup_steps: 40,
+                max_steps: 800,
+            },
+            grad_clip: GradClipConfig {
+                kind: GradClipKind::GlobalNorm,
+                max_norm: 1.0,
+            },
+            run: RunConfig {
+                batch_size: 2,
+                accumulation_steps: 32,
+                save_every: 50,
+                log_every: 10,
+                eval_every: 25,
+                eval_windows: 32,
+                train_bf16_matmul: true,
+            },
         }
     }
 
@@ -133,6 +234,29 @@ impl TrainConfig {
             adam_weight_decay: 0.01,
             grad_clip_norm: 1.0,
             train_bf16_matmul: true,
+            optimizer: OptimizerConfig {
+                kind: OptimizerKind::AdamW,
+                beta1: 0.9,
+                beta2: 0.95,
+                weight_decay: 0.01,
+                lr_max: 6e-5,
+                lr_min: 6e-6,
+                warmup_steps: 1000,
+                max_steps: 200_000,
+            },
+            grad_clip: GradClipConfig {
+                kind: GradClipKind::GlobalNorm,
+                max_norm: 1.0,
+            },
+            run: RunConfig {
+                batch_size: 10,
+                accumulation_steps: 6,
+                save_every: 1000,
+                log_every: 50,
+                eval_every: 1000,
+                eval_windows: 32,
+                train_bf16_matmul: true,
+            },
         }
     }
 }
@@ -210,5 +334,35 @@ mod tests {
     fn named_model_profiles_pass_head_dim_guard() {
         assert_eq!(ModelConfig::akasha_hall_1().head_dim(), 64);
         assert_eq!(ModelConfig::pidgeon().head_dim(), 64);
+    }
+
+    #[test]
+    fn nested_config_matches_flat_fields_in_every_profile() {
+        for train in [
+            TrainConfig::hall1_pretrain(),
+            TrainConfig::dolly_finetune(),
+            TrainConfig::pidgeon_pretrain(),
+        ] {
+            assert_eq!(train.optimizer.weight_decay, train.adam_weight_decay);
+            assert_eq!(train.optimizer.lr_max, train.lr_max);
+            assert_eq!(train.optimizer.lr_min, train.lr_min);
+            assert_eq!(train.optimizer.warmup_steps, train.warmup_steps);
+            assert_eq!(train.optimizer.max_steps, train.max_steps);
+            assert_eq!(train.grad_clip.max_norm, train.grad_clip_norm);
+            assert_eq!(train.run.batch_size, train.batch_size);
+            assert_eq!(train.run.accumulation_steps, train.accumulation_steps);
+            assert_eq!(train.run.save_every, train.save_every);
+            assert_eq!(train.run.log_every, train.log_every);
+            assert_eq!(train.run.eval_every, train.eval_every);
+            assert_eq!(train.run.eval_windows, train.eval_windows);
+            assert_eq!(train.run.train_bf16_matmul, train.train_bf16_matmul);
+        }
+    }
+
+    #[test]
+    fn model_config_layers_are_all_transformer() {
+        let cfg = ModelConfig::akasha_hall_1();
+        assert_eq!(cfg.layers().len(), cfg.num_layers);
+        assert!(cfg.layers().iter().all(|k| *k == BlockKind::Transformer));
     }
 }
