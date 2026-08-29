@@ -548,12 +548,8 @@ fn grid_flash(shape: FlashAttnMeta) -> [u32; 3] {
     [(shape.seq_len + 63) / 64, num_heads, 1]
 }
 
-/// flash_attention*.wgsl hardcodes `const HEAD_DIM: u32 = 64u` as a
-/// compile-time loop bound (register-spill/RADV-hang fix, see wilupgu
-/// SHADERS.md) -- any other head_dim silently reads/writes past the wrong
-/// head's slice instead of erroring. CUDA's kernel has no such limit and
-/// stays fully general; this guard is wgpu-only in spirit but applied
-/// uniformly since every caller here shares one FlashAttnMeta.
+/// wgsl kernel is hardcoded to head_dim=64 (register-spill fix); other
+/// values silently corrupt instead of erroring, hence the assert.
 fn assert_flash_head_dim(shape: FlashAttnMeta) {
     assert_eq!(
         shape.head_dim, 64,

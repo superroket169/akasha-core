@@ -447,6 +447,21 @@ birlikte kapsar — her shader'ın wgsl/cuda/cpu/meta/emitter satırı orada
   (`include_str!("cuda/foo.cu")` — NVRTC zaten string alır, davranış değişmez;
   syntax highlighting + diff okunabilirliği bedavaya gelir).
 
+- **Flash attention head_dim'i WGSL `override` ile genelleştirmek** — bugün
+  `flash_attention*.wgsl` üçü de `const HEAD_DIM: u32 = 64u` hardcode'lu
+  (register-spill/RADV-hang fix, 2026-08-30, guard: `assert_flash_head_dim`
+  ops/emit.rs'te). Gerçek genel çözüm WGSL'nin pipeline-overridable
+  constant'ı (`override`, kaynak metne değil pipeline oluşturmaya gömülü,
+  derleyici yine unroll edebiliyor) — ama wilupgu'nun `Shader`/pipeline-cache
+  API'sinde bu kavram hiç yok (cache tek `Shader` adresine anahtarlı, override
+  değeri anahtara girmeli). Bilinçli olarak yapılmıyor — akasha tek modelin
+  motoru, head_dim zaten hep 64. **Not:** kullanıcı flash attention'ın HD620'de
+  eğitimi (öncesine göre) sığdırmak yerine taşırdığını gözlemledi (chat ise
+  "mucizevi" sığıyor, CPU backend'e karşı hız farkı da yok) — bu, tam da
+  register-spill'in düzeltilmeden önceki VRAM-scratch spill'iyle örtüşüyor
+  olabilir; HEAD_DIM=64 fix'i sonrası HD620'de training tekrar denenmedi,
+  denenirse bu not güncellensin.
+
 - **Decode'u cuBLAS'sızlaştırmak (GEMV'yi CUDA Generic'e taşımak)** — muhtemelen
   en yüksek getirili tekil iş: `gemv.wgsl` / `gemv_add.wgsl`'in CUDA C çevirisi
   yazılıp GEMV/GEMV_ADD `CudaShape::Custom`(cuBLAS)'tan `Generic`'e geçer.
