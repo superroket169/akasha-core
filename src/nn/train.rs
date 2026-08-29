@@ -483,7 +483,7 @@ mod checkpoint_roundtrip {
     #[test]
     fn v3_save_load_roundtrip() {
         let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
-        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
         let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
         let targets: Vec<u32> = (0..cfg.seq_len).map(|i| (i + 1) % cfg.vocab_size).collect();
 
@@ -570,7 +570,7 @@ mod flat_weights_roundtrip {
     #[test]
     fn set_flat_weights_overwrites_weights_not_optimizer() {
         let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
-        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
         let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
         let targets: Vec<u32> = (0..cfg.seq_len).map(|i| (i + 1) % cfg.vocab_size).collect();
         let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
@@ -610,7 +610,7 @@ mod flat_weights_roundtrip {
     #[should_panic(expected = "doesn't match")]
     fn set_flat_weights_rejects_wrong_length() {
         let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
-        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
         let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
         let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));
         let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
@@ -634,7 +634,7 @@ mod fused_ops_integration {
     fn trainer_forward_backward_stays_finite_with_fused_ops() {
         let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
 
-        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
 
         let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
         let targets: Vec<u32> = (0..cfg.seq_len).map(|i| (i + 1) % cfg.vocab_size).collect();
@@ -722,7 +722,7 @@ mod full_chain_gradcheck {
     #[test]
     fn backward_matches_numerical_gradients_through_full_chain() {
         let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
-        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
         let seq_len = cfg.seq_len as usize;
 
         let tokens: Vec<u32> = (0..cfg.seq_len)
@@ -851,7 +851,7 @@ mod batching_validation {
 
     fn batching_parity<B: Backend>(ctx: Arc<B>) {
         let batch: u32 = 3;
-        let base_cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let base_cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
         let seq_len = base_cfg.seq_len as usize;
         let vocab = base_cfg.vocab_size;
         let dim = base_cfg.dim as usize;
@@ -965,7 +965,7 @@ mod grad_clip_validation {
 
     fn check_clip(amplitude: Real) {
         let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
-        let cfg = ModelConfig::new(37, 16, 4, 2, 11);
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
 
         let tokens: Vec<u32> = (0..cfg.seq_len).map(|i| i % cfg.vocab_size).collect();
         let input_tokens = Arc::new(Tensor::init_from_cpu(ctx.clone(), &tokens));

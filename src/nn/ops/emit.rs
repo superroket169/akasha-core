@@ -548,6 +548,19 @@ fn grid_flash(shape: FlashAttnMeta) -> [u32; 3] {
     [(shape.seq_len + 63) / 64, num_heads, 1]
 }
 
+/// flash_attention*.wgsl hardcodes `const HEAD_DIM: u32 = 64u` as a
+/// compile-time loop bound (register-spill/RADV-hang fix, see wilupgu
+/// SHADERS.md) -- any other head_dim silently reads/writes past the wrong
+/// head's slice instead of erroring. CUDA's kernel has no such limit and
+/// stays fully general; this guard is wgpu-only in spirit but applied
+/// uniformly since every caller here shares one FlashAttnMeta.
+fn assert_flash_head_dim(shape: FlashAttnMeta) {
+    assert_eq!(
+        shape.head_dim, 64,
+        "flash_attention: head_dim must be 64 (wgsl kernel is hardcoded to it)"
+    );
+}
+
 pub(crate) struct FlashAttnBuffers<B: Backend> {
     pub out: Arc<Tensor<B>>,
     pub l_cache: Arc<Tensor<B>>,
@@ -561,10 +574,7 @@ pub(crate) fn flash_attention<B: Backend, P: FullSeqPhase>(
     out_buffer: &Arc<Tensor<B>>,
     shape: FlashAttnMeta,
 ) -> FlashAttnBuffers<B> {
-    assert!(
-        shape.head_dim <= 128,
-        "flash_attention: head_dim must be <= 128 (fixed kernel accumulator size)"
-    );
+    assert_flash_head_dim(shape);
     assert_eq!(
         shape.dim % shape.head_dim,
         0,
@@ -609,6 +619,7 @@ pub(crate) fn flash_attention_bwd<B: Backend>(
     grad_v: &Arc<Tensor<B>>,
     shape: FlashAttnMeta,
 ) {
+    assert_flash_head_dim(shape);
     let meta = shape.upload(&q_buf.ctx);
     let grid = grid_flash(shape);
 
@@ -1000,9 +1011,18 @@ mod flash_attention_validation {
 
     #[test]
     fn flash_attention_matches_cpu_reference() {
-        check(8, 2, 4);
-        check(37, 3, 16);
+        // head_dim is pinned at 64 everywhere -- the wgsl kernel is
+        // hardcoded to it (see assert_flash_head_dim); seq_len/num_heads
+        // still vary for coverage.
+        check(8, 2, 64);
+        check(37, 3, 64);
         check(65, 12, 64);
+    }
+
+    #[test]
+    #[should_panic(expected = "head_dim must be 64")]
+    fn flash_attention_rejects_wrong_head_dim() {
+        check(8, 2, 16);
     }
 
     fn check(seq_len: u32, num_heads: u32, head_dim: u32) {

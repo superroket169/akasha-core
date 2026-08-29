@@ -13,12 +13,6 @@ struct Meta {
 @group(0) @binding(4) var<storage, read_write> l_cache: array<f32>;
 @group(0) @binding(5) var<storage, read> m: Meta;
 
-// EXPERIMENT (not yet the final fix -- see chat): hardcoded to match this
-// model's fixed head_dim (config.rs DIM/NUM_HEADS = 64) so the compiler can
-// unroll the loops and keep acc in registers instead of spilling it to
-// scratch memory (root cause of the RADV GPU hang -- runtime-bound
-// m.head_dim prevented unrolling). Only valid while every caller's head_dim
-// is 64; a debug_assert at the Rust call site should guard this.
 const HEAD_DIM: u32 = 64u;
 
 // One invocation per (query row, head): fused QK^T + causal softmax + AV,

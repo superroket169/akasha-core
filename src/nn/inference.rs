@@ -334,7 +334,7 @@ mod prefill_validation {
     #[test]
     fn prefill_logits_match_sequential_decode() {
         let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
-        let cfg = ModelConfig::new(97, 32, 4, 2, 16);
+        let cfg = ModelConfig::new(97, 128, 2, 2, 16); // head_dim=64: flash attention's wgsl is hardcoded to it
         let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
         let prompt: &[u32] = &[3, 41, 7, 96, 0, 25];
 
