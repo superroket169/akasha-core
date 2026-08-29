@@ -155,6 +155,19 @@ fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str, cfg: ModelConfig) {
         let input = input.replace("\\n", "\n");
         let tokens = tokenizer.encode(&input);
 
+        let max_prompt_tokens = (seq_len as usize).saturating_sub(200);
+        let tokens = if tokens.len() > max_prompt_tokens {
+            eprintln!(
+                "WARNING: prompt is {} tokens (context window {}), truncating to the last {}",
+                tokens.len(),
+                seq_len,
+                max_prompt_tokens
+            );
+            tokens[tokens.len() - max_prompt_tokens..].to_vec()
+        } else {
+            tokens
+        };
+
         session.take_cache();
 
         // temperature 0.8, top-k 40, top-p 0.95 - llama.cpp-style defaults - for now
