@@ -44,14 +44,14 @@ impl<B: Backend> CrossEntropyOp<B> {
         losses.iter().sum::<Real>() / losses.len() as Real
     }
 
-    /// `logits` becomes probs in place.
-    pub(crate) fn forward(
-        &self,
-        gb: &mut GraphBuilder<'_, B, Train>,
-        logits: &Arc<Tensor<B>>,
-        targets: &[u32],
-    ) {
+    /// Call before executing the graph each step -- separate from
+    /// `forward()`, which only emits the node once at construction.
+    pub(crate) fn set_targets(&self, targets: &[u32]) {
         self.target_tokens.copy_from_cpu(targets);
+    }
+
+    /// `logits` becomes probs in place.
+    pub(crate) fn forward(&self, gb: &mut GraphBuilder<'_, B, Train>, logits: &Arc<Tensor<B>>) {
         ops::cross_entropy(gb, logits, &self.target_tokens, &self.losses, self.shape);
     }
 
@@ -66,14 +66,15 @@ pub(crate) enum AnyLoss<B: Backend> {
 }
 
 impl<B: Backend> AnyLoss<B> {
-    pub(crate) fn forward(
-        &self,
-        gb: &mut GraphBuilder<'_, B, Train>,
-        logits: &Arc<Tensor<B>>,
-        targets: &[u32],
-    ) {
+    pub(crate) fn set_targets(&self, targets: &[u32]) {
         match self {
-            AnyLoss::CrossEntropy(op) => op.forward(gb, logits, targets),
+            AnyLoss::CrossEntropy(op) => op.set_targets(targets),
+        }
+    }
+
+    pub(crate) fn forward(&self, gb: &mut GraphBuilder<'_, B, Train>, logits: &Arc<Tensor<B>>) {
+        match self {
+            AnyLoss::CrossEntropy(op) => op.forward(gb, logits),
         }
     }
 
