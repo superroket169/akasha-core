@@ -1,8 +1,13 @@
+use super::chain::{
+    CacheWriteOp, CachedAttentionOp, DecodeOp, HeadGatherOp, PrefillOp, RopeOffsetOp,
+    push_norm1_qkv, push_post_attn,
+};
 use super::grad_clip::{AnyGradClip, GlobalNormClip};
 use super::loss::{AnyLoss, CrossEntropyOp};
 use super::ops::meta::{MatMulMeta, NormMeta};
-use super::ops::{GraphBuilder, Train};
-use super::tape::{NodeId, Tape};
+use super::ops::{GraphBuilder, Prefill, Train};
+use super::sampling;
+use super::tape::{NodeId, Tape, zeros};
 use super::transformer::{
     AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
     TransformerOp,
@@ -148,6 +153,230 @@ fn build_transformer_block<B: Backend>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_prefill_forward<B: Backend>(
+    gb: &mut GraphBuilder<'_, B, Prefill>,
+    weights: &ModelWeights<B>,
+    cfg: &ModelConfig,
+    prompt_len: u32,
+    cache_k: &[Arc<Tensor<B>>],
+    cache_v: &[Arc<Tensor<B>>],
+) -> (Tape<B, PrefillOp<B>>, Arc<Tensor<B>>, NodeId) {
+    let dim = cfg.dim;
+    let head_dim = cfg.head_dim();
+    let hidden = cfg.ffn_hidden;
+    let ctx = &weights.embedding.ctx;
+
+    let mut tape = Tape::new();
+
+    let embedding_op = EmbeddingOp::new(&weights.embedding, prompt_len, cfg.vocab_size, dim);
+    let tokens = embedding_op.tokens_handle();
+    let mut x = tape.push(gb, PrefillOp::Embedding(embedding_op), &[]);
+
+    for ((bw, ck), cv) in weights.blocks.iter().zip(cache_k).zip(cache_v) {
+        let block_input = x;
+        let qkv = push_norm1_qkv(
+            &mut tape,
+            gb,
+            bw,
+            prompt_len,
+            dim,
+            cfg.norm_eps,
+            block_input,
+        );
+
+        let split = tape.push(
+            gb,
+            PrefillOp::QkvSplit(QkvSplitOp::new(ctx, prompt_len, dim)),
+            &[(qkv, 0)],
+        );
+        let rope = tape.push(
+            gb,
+            PrefillOp::RopeQk(RopeQkOp::new(prompt_len, dim, head_dim, 1)),
+            &[(split, 0), (split, 1)],
+        );
+        let k_written = tape.push(
+            gb,
+            PrefillOp::CacheWrite(CacheWriteOp::new(ck.clone(), prompt_len, dim)),
+            &[(rope, 1)],
+        );
+        let v_written = tape.push(
+            gb,
+            PrefillOp::CacheWrite(CacheWriteOp::new(cv.clone(), prompt_len, dim)),
+            &[(split, 2)],
+        );
+        let attn = tape.push(
+            gb,
+            PrefillOp::Attention(AttentionOp::new(ctx, prompt_len, dim, head_dim, 1)),
+            &[(rope, 0), (k_written, 0), (v_written, 0)],
+        );
+
+        x = push_post_attn(
+            &mut tape,
+            gb,
+            bw,
+            prompt_len,
+            dim,
+            hidden,
+            cfg.norm_eps,
+            block_input,
+            attn,
+        );
+    }
+
+    let norm_shape = NormMeta {
+        seq_len: prompt_len,
+        size: dim,
+        eps: cfg.norm_eps,
+    };
+    let final_norm = tape.push(
+        gb,
+        PrefillOp::RmsNorm(RmsNormOp::new(&weights.final_norm, norm_shape)),
+        &[(x, 0)],
+    );
+    let lm_shape = MatMulMeta {
+        m: prompt_len,
+        n: cfg.vocab_size,
+        k: dim,
+    };
+    let logits = tape.push(
+        gb,
+        PrefillOp::Linear(LinearOp::new(&weights.lm_head, lm_shape, true)),
+        &[(final_norm, 0)],
+    );
+
+    (tape, tokens, logits)
+}
+
+struct DecodeGraph<B: Backend> {
+    graph: ComputeGraph<B>,
+    tape: Tape<B, DecodeOp<B>>,
+    tokens: Arc<Tensor<B>>,
+    logits_id: NodeId,
+}
+
+fn build_decode_forward<B: Backend>(
+    ctx: &Arc<B>,
+    weights: &ModelWeights<B>,
+    cfg: &ModelConfig,
+    cache_k: &[Arc<Tensor<B>>],
+    cache_v: &[Arc<Tensor<B>>],
+    max_context_len: u32,
+) -> DecodeGraph<B> {
+    let dim = cfg.dim;
+    let head_dim = cfg.head_dim();
+    let hidden = cfg.ffn_hidden;
+
+    let mut graph = ComputeGraph::new(ctx.clone());
+    let mut gb = GraphBuilder::decode(&mut graph);
+    let mut tape = Tape::new();
+
+    let embedding_op = EmbeddingOp::new(&weights.embedding, 1, cfg.vocab_size, dim);
+    let tokens = embedding_op.tokens_handle();
+    let mut x = tape.push(&mut gb, DecodeOp::Embedding(embedding_op), &[]);
+
+    for ((bw, ck), cv) in weights.blocks.iter().zip(cache_k).zip(cache_v) {
+        let block_input = x;
+        let qkv = push_norm1_qkv(&mut tape, &mut gb, bw, 1, dim, cfg.norm_eps, block_input);
+
+        let q = tape.push(
+            &mut gb,
+            DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 0)),
+            &[(qkv, 0)],
+        );
+        let k = tape.push(
+            &mut gb,
+            DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, dim)),
+            &[(qkv, 0)],
+        );
+        let v = tape.push(
+            &mut gb,
+            DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 2 * dim)),
+            &[(qkv, 0)],
+        );
+
+        let rope_q = tape.push(
+            &mut gb,
+            DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim)),
+            &[(q, 0)],
+        );
+        let rope_k = tape.push(
+            &mut gb,
+            DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim)),
+            &[(k, 0)],
+        );
+        tape.push(
+            &mut gb,
+            DecodeOp::CacheWrite(CacheWriteOp::new(ck.clone(), 1, dim)),
+            &[(rope_k, 0)],
+        );
+        tape.push(
+            &mut gb,
+            DecodeOp::CacheWrite(CacheWriteOp::new(cv.clone(), 1, dim)),
+            &[(v, 0)],
+        );
+        let attn = tape.push(
+            &mut gb,
+            DecodeOp::CachedAttention(CachedAttentionOp::new(
+                ck.clone(),
+                cv.clone(),
+                cfg.num_heads,
+                dim,
+                head_dim,
+                max_context_len,
+            )),
+            &[(rope_q, 0)],
+        );
+
+        x = push_post_attn(
+            &mut tape,
+            &mut gb,
+            bw,
+            1,
+            dim,
+            hidden,
+            cfg.norm_eps,
+            block_input,
+            attn,
+        );
+    }
+
+    let norm_shape = NormMeta {
+        seq_len: 1,
+        size: dim,
+        eps: cfg.norm_eps,
+    };
+    let final_norm = tape.push(
+        &mut gb,
+        DecodeOp::RmsNorm(RmsNormOp::new(&weights.final_norm, norm_shape)),
+        &[(x, 0)],
+    );
+    let lm_shape = MatMulMeta {
+        m: 1,
+        n: cfg.vocab_size,
+        k: dim,
+    };
+    let logits_id = tape.push(
+        &mut gb,
+        DecodeOp::Linear(LinearOp::new(&weights.lm_head, lm_shape, true)),
+        &[(final_norm, 0)],
+    );
+
+    DecodeGraph {
+        graph,
+        tape,
+        tokens,
+        logits_id,
+    }
+}
+
+struct ChatState<B: Backend> {
+    cache_k: Vec<Arc<Tensor<B>>>,
+    cache_v: Vec<Arc<Tensor<B>>>,
+    max_context_len: u32,
+    decode: DecodeGraph<B>,
+}
+
 struct TrainState<B: Backend> {
     fwd_graph: ComputeGraph<B>,
     bwd_graph: ComputeGraph<B>,
@@ -166,6 +395,7 @@ struct TrainState<B: Backend> {
 pub struct Model<B: Backend> {
     weights: ModelWeights<B>,
     train: Option<TrainState<B>>,
+    chat: Option<ChatState<B>>,
 }
 
 impl<B: Backend> Model<B> {
@@ -295,6 +525,7 @@ impl<B: Backend> Model<B> {
 
         Self {
             weights,
+            chat: None,
             train: Some(TrainState {
                 fwd_graph,
                 bwd_graph,
@@ -312,13 +543,110 @@ impl<B: Backend> Model<B> {
         }
     }
 
-    /// No training state at all -- no grad buffers, no optimizer, no
-    /// tapes built. Chat pays nothing for training.
-    pub fn for_chat(_ctx: Arc<B>, weights: ModelWeights<B>, _cfg: ModelConfig) -> Self {
+    pub fn for_chat(
+        ctx: Arc<B>,
+        weights: ModelWeights<B>,
+        cfg: ModelConfig,
+        max_context_len: u32,
+    ) -> Self {
+        let cache_len = max_context_len * cfg.dim;
+        let cache_k: Vec<_> = weights
+            .blocks
+            .iter()
+            .map(|_| zeros(&ctx, cache_len))
+            .collect();
+        let cache_v: Vec<_> = weights
+            .blocks
+            .iter()
+            .map(|_| zeros(&ctx, cache_len))
+            .collect();
+        let decode =
+            build_decode_forward(&ctx, &weights, &cfg, &cache_k, &cache_v, max_context_len);
+
         Self {
             weights,
             train: None,
+            chat: Some(ChatState {
+                cache_k,
+                cache_v,
+                max_context_len,
+                decode,
+            }),
         }
+    }
+
+    /// Prefills `prompt`, then decodes up to `max_new_tokens` more, one at a
+    /// time, via the persistent Decode tape (`tape.advance(pos)` per step --
+    /// see `tape.rs`'s `Advance` trait).
+    pub fn generate(
+        &mut self,
+        prompt: &[u32],
+        max_new_tokens: usize,
+        temperature: f32,
+        top_k: usize,
+        top_p: f32,
+        repetition_penalty: f32,
+    ) -> Vec<u32> {
+        let cfg = self.weights.cfg;
+        let ctx = self.weights.embedding.ctx.clone();
+        let chat = self
+            .chat
+            .as_mut()
+            .expect("generate called on a training-only Model");
+
+        let prompt_len = prompt.len() as u32;
+        assert!(
+            prompt_len + max_new_tokens as u32 <= chat.max_context_len,
+            "prompt + max_new_tokens ({}) exceeds max_context_len ({})",
+            prompt_len + max_new_tokens as u32,
+            chat.max_context_len,
+        );
+
+        let mut prefill_graph = ComputeGraph::new(ctx.clone());
+        let mut gb = GraphBuilder::prefill(&mut prefill_graph);
+        let (prefill_tape, prefill_tokens, prefill_logits) = build_prefill_forward(
+            &mut gb,
+            &self.weights,
+            &cfg,
+            prompt_len,
+            &chat.cache_k,
+            &chat.cache_v,
+        );
+        drop(gb);
+        prefill_tokens.copy_from_cpu(prompt);
+        prefill_graph.execute();
+
+        let vocab = cfg.vocab_size as usize;
+        let all_logits: Vec<Real> = prefill_tape.output(prefill_logits).to_cpu();
+        let last = &all_logits[(prompt_len as usize - 1) * vocab..prompt_len as usize * vocab];
+
+        let mut seen: Vec<u32> = prompt.to_vec();
+        let mut generated = Vec::with_capacity(max_new_tokens);
+        let mut next =
+            sampling::sample_token(last, temperature, top_k, top_p, &seen, repetition_penalty);
+        generated.push(next);
+        seen.push(next);
+
+        let mut pos = prompt_len;
+        for _ in 1..max_new_tokens {
+            chat.decode.tape.advance(pos);
+            chat.decode.tokens.copy_from_cpu(&[next]);
+            chat.decode.graph.execute();
+            let logits: Vec<Real> = chat.decode.tape.output(chat.decode.logits_id).to_cpu();
+            next = sampling::sample_token(
+                &logits,
+                temperature,
+                top_k,
+                top_p,
+                &seen,
+                repetition_penalty,
+            );
+            generated.push(next);
+            seen.push(next);
+            pos += 1;
+        }
+
+        generated
     }
 
     pub fn train_step(&mut self, tokens: &[u32], targets: &[u32]) -> Real {

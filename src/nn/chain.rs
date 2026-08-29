@@ -2,11 +2,15 @@
 
 use super::ops;
 use super::ops::meta::{
-    AttnCachedMeta, CacheWriteMeta, HeadMoveMeta, KernelMeta, RopeOffsetMeta, SoftmaxRectMeta,
+    AttnCachedMeta, CacheWriteMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta,
+    RopeOffsetMeta, SoftmaxRectMeta,
 };
 use super::ops::{CachedPhase, Decode, GraphBuilder, Prefill};
-use super::tape::{Advance, Forward, Identity, zeros};
-use super::transformer::{AddOp, AttentionOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp};
+use super::tape::{Advance, Forward, Identity, NodeId, Tape, zeros};
+use super::transformer::{
+    AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
+};
+use super::weights::BlockWeights;
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
@@ -206,8 +210,58 @@ impl<B: Backend> Forward<B, Decode> for CachedAttentionOp<B> {
     }
 }
 
+/// Shared prefix -- norm1 -> qkv projection. Identical for Prefill and Decode.
+pub(crate) fn push_norm1_qkv<B: Backend, P: CachedPhase, Node>(
+    tape: &mut Tape<B, Node>,
+    gb: &mut GraphBuilder<'_, B, P>,
+    bw: &BlockWeights<B>,
+    rows: u32,
+    dim: u32,
+    norm_eps: f32,
+    input: NodeId,
+) -> NodeId
+where
+    Node: Forward<B, P> + From<RmsNormOp<B>> + From<LinearOp<B>>,
+{
+    let norm_shape = NormMeta { seq_len: rows, size: dim, eps: norm_eps };
+    let n1 = tape.push(gb, Node::from(RmsNormOp::new(&bw.norm_1, norm_shape)), &[(input, 0)]);
+    let qkv_shape = MatMulMeta { m: rows, n: dim * 3, k: dim };
+    tape.push(gb, Node::from(LinearOp::new(&bw.qkv_proj, qkv_shape, true)), &[(n1, 0)])
+}
+
+/// Shared suffix -- out_proj -> add -> norm2 -> ffn_up -> silu -> ffn_down -> add. Identical for Prefill and Decode.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn push_post_attn<B: Backend, P: CachedPhase, Node>(
+    tape: &mut Tape<B, Node>,
+    gb: &mut GraphBuilder<'_, B, P>,
+    bw: &BlockWeights<B>,
+    rows: u32,
+    dim: u32,
+    hidden: u32,
+    norm_eps: f32,
+    block_input: NodeId,
+    attn_out: NodeId,
+) -> NodeId
+where
+    Node: Forward<B, P> + From<LinearOp<B>> + From<RmsNormOp<B>> + From<SiluOp<B>> + From<AddOp<B>>,
+{
+    let ctx = &bw.qkv_proj.ctx;
+    let out_proj_shape = MatMulMeta { m: rows, n: dim, k: dim };
+    let proj = tape.push(gb, Node::from(LinearOp::new(&bw.out_proj, out_proj_shape, true)), &[(attn_out, 0)]);
+    let add1 = tape.push(gb, Node::from(AddOp::new(ctx, rows * dim)), &[(block_input, 0), (proj, 0)]);
+    let norm_shape = NormMeta { seq_len: rows, size: dim, eps: norm_eps };
+    let n2 = tape.push(gb, Node::from(RmsNormOp::new(&bw.norm_2, norm_shape)), &[(add1, 0)]);
+    let ffn_up_shape = MatMulMeta { m: rows, n: hidden, k: dim };
+    let up = tape.push(gb, Node::from(LinearOp::new(&bw.ffn_up, ffn_up_shape, true)), &[(n2, 0)]);
+    let silu = tape.push(gb, Node::from(SiluOp::new(ctx, rows * hidden)), &[(up, 0)]);
+    let ffn_down_shape = MatMulMeta { m: rows, n: dim, k: hidden };
+    let down = tape.push(gb, Node::from(LinearOp::new(&bw.ffn_down, ffn_down_shape, true)), &[(silu, 0)]);
+    tape.push(gb, Node::from(AddOp::new(ctx, rows * dim)), &[(add1, 0), (down, 0)])
+}
+
 /// What `Tape<B, PrefillOp<B>>` holds -- same structs as `TransformerOp` plus `CacheWrite`.
 pub(crate) enum PrefillOp<B: Backend> {
+    Embedding(EmbeddingOp<B>),
     Linear(LinearOp<B>),
     RmsNorm(RmsNormOp<B>),
     Silu(SiluOp<B>),
@@ -225,6 +279,36 @@ impl<B: Backend> From<Identity<B>> for PrefillOp<B> {
     }
 }
 
+impl<B: Backend> From<EmbeddingOp<B>> for PrefillOp<B> {
+    fn from(op: EmbeddingOp<B>) -> Self {
+        PrefillOp::Embedding(op)
+    }
+}
+
+impl<B: Backend> From<LinearOp<B>> for PrefillOp<B> {
+    fn from(op: LinearOp<B>) -> Self {
+        PrefillOp::Linear(op)
+    }
+}
+
+impl<B: Backend> From<RmsNormOp<B>> for PrefillOp<B> {
+    fn from(op: RmsNormOp<B>) -> Self {
+        PrefillOp::RmsNorm(op)
+    }
+}
+
+impl<B: Backend> From<SiluOp<B>> for PrefillOp<B> {
+    fn from(op: SiluOp<B>) -> Self {
+        PrefillOp::Silu(op)
+    }
+}
+
+impl<B: Backend> From<AddOp<B>> for PrefillOp<B> {
+    fn from(op: AddOp<B>) -> Self {
+        PrefillOp::Add(op)
+    }
+}
+
 impl<B: Backend> Forward<B, Prefill> for PrefillOp<B> {
     fn forward(
         &mut self,
@@ -232,6 +316,7 @@ impl<B: Backend> Forward<B, Prefill> for PrefillOp<B> {
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         match self {
+            PrefillOp::Embedding(op) => op.forward(gb, xs),
             PrefillOp::Linear(op) => op.forward(gb, xs),
             PrefillOp::RmsNorm(op) => op.forward(gb, xs),
             PrefillOp::Silu(op) => op.forward(gb, xs),
@@ -247,6 +332,7 @@ impl<B: Backend> Forward<B, Prefill> for PrefillOp<B> {
 
 /// What `Tape<B, DecodeOp<B>>` holds.
 pub(crate) enum DecodeOp<B: Backend> {
+    Embedding(EmbeddingOp<B>),
     Linear(LinearOp<B>),
     RmsNorm(RmsNormOp<B>),
     Silu(SiluOp<B>),
@@ -264,6 +350,36 @@ impl<B: Backend> From<Identity<B>> for DecodeOp<B> {
     }
 }
 
+impl<B: Backend> From<EmbeddingOp<B>> for DecodeOp<B> {
+    fn from(op: EmbeddingOp<B>) -> Self {
+        DecodeOp::Embedding(op)
+    }
+}
+
+impl<B: Backend> From<LinearOp<B>> for DecodeOp<B> {
+    fn from(op: LinearOp<B>) -> Self {
+        DecodeOp::Linear(op)
+    }
+}
+
+impl<B: Backend> From<RmsNormOp<B>> for DecodeOp<B> {
+    fn from(op: RmsNormOp<B>) -> Self {
+        DecodeOp::RmsNorm(op)
+    }
+}
+
+impl<B: Backend> From<SiluOp<B>> for DecodeOp<B> {
+    fn from(op: SiluOp<B>) -> Self {
+        DecodeOp::Silu(op)
+    }
+}
+
+impl<B: Backend> From<AddOp<B>> for DecodeOp<B> {
+    fn from(op: AddOp<B>) -> Self {
+        DecodeOp::Add(op)
+    }
+}
+
 impl<B: Backend> Forward<B, Decode> for DecodeOp<B> {
     fn forward(
         &mut self,
@@ -271,6 +387,7 @@ impl<B: Backend> Forward<B, Decode> for DecodeOp<B> {
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         match self {
+            DecodeOp::Embedding(op) => op.forward(gb, xs),
             DecodeOp::Linear(op) => op.forward(gb, xs),
             DecodeOp::RmsNorm(op) => op.forward(gb, xs),
             DecodeOp::Silu(op) => op.forward(gb, xs),
