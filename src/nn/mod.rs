@@ -5,6 +5,7 @@ pub mod inference_graphs;
 pub mod inference_ops;
 pub mod layers;
 pub mod loss;
+pub mod model;
 pub mod ops;
 pub mod sampling;
 pub mod tape;
