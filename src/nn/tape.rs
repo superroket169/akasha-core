@@ -61,6 +61,10 @@ pub(crate) trait Backward<B: Backend> {
     }
 }
 
+pub(crate) trait Advance {
+    fn advance(&mut self, step: u32);
+}
+
 /// Handle to a node already on the tape.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NodeId(usize);
@@ -136,12 +140,7 @@ impl<B: Backend, Node> Tape<B, Node> {
     }
 }
 
-/// Only compiles for a `Node` that actually has backward math -- calling
-/// `.backward()` on a `Tape<B, PrefillOp<B>>` is a compile error, not a
-/// runtime one, because `PrefillOp` never implements `Backward`.
 impl<B: Backend, Node: Backward<B>> Tape<B, Node> {
-    /// Seeds `output`'s gradient, walks every node in reverse, and
-    /// accumulates (`+=`) fan-in. Read a leaf's total via `grad_of` after.
     pub(crate) fn backward(
         &mut self,
         gb: &mut GraphBuilder<'_, B, super::ops::Train>,
@@ -201,11 +200,14 @@ impl<B: Backend, Node: Backward<B>> Tape<B, Node> {
     }
 }
 
-/// The shared leaf op: wraps a value that already exists (a block's own
-/// input, or another Tape's output). No inputs; forward ignores `xs` and
-/// just returns the stored value. Every `Node` enum needs a
-/// `From<Identity<B>>` impl (one match-free line) so `Tape::input` works
-/// the same way regardless of which op family the tape holds.
+impl<B: Backend, Node: Advance> Tape<B, Node> {
+    pub(crate) fn advance(&mut self, step: u32) {
+        for node in &mut self.nodes {
+            node.op.advance(step);
+        }
+    }
+}
+
 pub(crate) struct Identity<B: Backend>(pub Arc<Tensor<B>>);
 
 impl<B: Backend, P: FwdPhase> Forward<B, P> for Identity<B> {
