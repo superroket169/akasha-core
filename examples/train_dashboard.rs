@@ -254,6 +254,29 @@ fn main() {
         adam_weight_decay: 0.01,
         grad_clip_norm: 1.0,
         train_bf16_matmul: false,
+        optimizer: akasha_core::config::OptimizerConfig {
+            kind: akasha_core::config::OptimizerKind::AdamW,
+            beta1: 0.9,
+            beta2: 0.95,
+            weight_decay: 0.01,
+            lr_max: lr,
+            lr_min: FINAL_LR,
+            warmup_steps: 0,
+            max_steps: 1_000_000,
+        },
+        grad_clip: akasha_core::config::GradClipConfig {
+            kind: akasha_core::config::GradClipKind::GlobalNorm,
+            max_norm: 1.0,
+        },
+        run: akasha_core::config::RunConfig {
+            batch_size: BATCH_SIZE,
+            accumulation_steps: ACCUMULATION_STEPS,
+            save_every: usize::MAX,
+            log_every: usize::MAX,
+            eval_every: usize::MAX,
+            eval_windows: 0,
+            train_bf16_matmul: false,
+        },
     };
     let model = Trainer::new(ctx.clone(), weights, &t_input_tokens, train_cfg);
 

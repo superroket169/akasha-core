@@ -1,7 +1,10 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use akasha_core::config::{ModelConfig, TrainConfig};
+use akasha_core::config::{
+    GradClipConfig, GradClipKind, ModelConfig, OptimizerConfig, OptimizerKind, RunConfig,
+    TrainConfig,
+};
 use akasha_core::nn::{
     Cache, CrossEntropy, InferenceSession, Layer, ModelWeights, RMSNorm, Trainer,
 };
@@ -530,6 +533,26 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
         adam_weight_decay: 0.01,
         grad_clip_norm: 1.0,
         train_bf16_matmul: false,
+        optimizer: OptimizerConfig {
+            kind: OptimizerKind::AdamW,
+            beta1: 0.9,
+            beta2: 0.95,
+            weight_decay: 0.01,
+            lr_max: lr,
+            lr_min: lr,
+            warmup_steps: 0,
+            max_steps: 600,
+        },
+        grad_clip: GradClipConfig { kind: GradClipKind::GlobalNorm, max_norm: 1.0 },
+        run: RunConfig {
+            batch_size,
+            accumulation_steps: 1,
+            save_every: usize::MAX,
+            log_every: 40,
+            eval_every: usize::MAX,
+            eval_windows: 0,
+            train_bf16_matmul: false,
+        },
     };
     let model = Trainer::new(ctx.clone(), weights, &input_tokens, train_cfg);
 
