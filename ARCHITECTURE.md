@@ -438,13 +438,9 @@ arası kopya — ikisi de "Fikir kuyruğu → test mimarisi"nin konusu.
 [wilupgu/REFACTOR.md](../wilupgu/REFACTOR.md) iki projenin ortak
 numaralı/bekleyen iş listesini tutar; burası mimariye dair fikir ve
 istekler. Olgunlaşan madde orada numara alıp taşınır.
-
-- **Shader kataloğu tablosu**: shader başına tek satır — wgsl konumu (builtin ise
-  sabiti) / varsa eski wgsl karşılaştırma versiyonu / cuda konumu (builtin ise
-  sabiti) / varsa eski cuda referansı / cpu impl (yoksa boşluk kendini gösterir) /
-  meta struct'ı (ops/meta.rs) / emitter'ı (emit.rs). ~35 satır. Amaç: bir kernel'in
-  tüm parçalarını ve hangi fazlarda yaşadığını tek bakışta görmek; CPU-impl
-  boşluklarını görünür kılmak.
+[wilupgu/SHADERS.md](../wilupgu/SHADERS.md) de aynı şekilde iki projeyi
+birlikte kapsar — her shader'ın wgsl/cuda/cpu/meta/emitter satırı orada
+(2026-08-29'da yazıldı, CPU-impl boşluklarının tam listesi dahil).
 
 - **CUDA shader'larını .cu dosyalarına ayırmak**: bugün hepsi `shaders/cuda.rs`
   içinde tek string yığını; wgsl'lerdeki dosya-başına-kernel düzenine geçir
