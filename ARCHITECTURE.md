@@ -577,35 +577,40 @@ tasarlanır/yapılır.
    Attention alternatifi her mimari aynı arayüze oturur; Jamba bir config
    satırı olur ve yeni model serisi oradan başlar.
 
-### Trait yüzeyi (taslak)
+### Tape/Op sistemi (2026-08-31'de gerçekleşti)
 
-```rust
-trait Block {
-    /// BİR kez yazılır; prefill, decode ve train-fwd aynı fonksiyondan çıkar.
-    fn fwd<P: FwdPhase>(&self, gb: &mut GraphBuilder<P>, x: ..., tape: &mut P::Tape) -> Tensor;
-    /// Yalnız Train; aktivasyonları tape'ten okur.
-    fn bwd(&self, gb: &mut GraphBuilder<Train>, dx: ..., tape: &TrainTape) -> Tensor;
-    // + weight/grad kaydı (GradClass ile)
-    // + cached-phase state handle'ı (KV cache / SSM state) + dinamik meta kaydı
-}
-```
+Aşağıdaki taslağın yerini gerçek kod aldı — `src/nn/tape.rs` +
+`src/nn/transformer_ops.rs` + `src/nn/inference_ops.rs`. Henüz
+layers.rs/train.rs/inference.rs/inference_graphs.rs'e bağlanmadı
+(entegrasyon ayrı adım), ama üç dosyanın kendisi tamam ve derleniyor.
 
-- **Tape** — faza bağlı associated type (`P::Tape`). `TrainTape` bwd'nin
-  ihtiyaçlarını saklar (residual'lar, rms, pre-activation, l_cache);
-  inference fazlarının Tape'i boş ZST — sıfır maliyet. "Etiket tipin
-  kendisidir" ilkesinin bir kat üstü.
-- **State handle** — cached fazların adım-durumu blok türüne aittir:
-  attention'da KV cache, Mamba'da SSM state (sabit boyut, büyümez).
-  `update_for_step` elle yazılmış write_to listesi yerine blokların
-  kaydettiği dinamik metaları dolaşır. *(Eski kuyruk maddesi
-  "GraphBuilder\<Decode\> meta kaydı" buraya emildi.)*
-- **Weight/grad kaydı** — blok, weight'lerini (decay bayrağıyla) ve
-  grad'larını sınıfıyla (Persistent/Transient/Overwrite) kaydeder.
-  `params()` sırası "stack sırası" olur; checkpoint düzeni ve
-  zero_grads/zero_transient graph'leri registry'den TÜRETİLİR. Bonus assert:
-  "Accumulate ile bağlanan her buffer bir zero listesinde kayıtlı olmalı".
-  *(Eski kuyruk maddesi "GradClass registry" buraya emildi.)*
-- lm_head + CE + V1 aliasing stack DIŞINDA kalır — top-level ve train'e özgü.
+| Dosya | İçerik |
+|---|---|
+| `tape.rs` | `Forward<B,P>`/`Backward<B>` trait'leri, `NodeId`/`Out`, `Tape<B, Node>` |
+| `transformer_ops.rs` | Train'in somut op'ları (Linear/RMSNorm/SiLU/Add/RopeQk/QkvSplit/Attention) + `TransformerOp` |
+| `inference_ops.rs` | Decode'a özel yeni op'lar (CachedAttention/RopeOffset/HeadGather/CacheWrite) + `PrefillOp`/`DecodeOp` |
+
+`Tape<B, Node>` tek struct, üç bağlamda kullanılıyor: `Tape<B,TransformerOp<B>>`
+(train), `Tape<B,PrefillOp<B>>`, `Tape<B,DecodeOp<B>>` (inference,
+`.backward()` bu ikisi için compile-time yok — `Node: Backward<B>` şartlı
+impl bloğunda yaşıyor). `LinearOp`/`RmsNormOp`/`SiluOp`/`AddOp` üçünde de
+BİREBİR aynı kod (forward'ları zaten `P: FwdPhase` genel yazılmış); attention/
+rope/qkv-çıkarma ikiye ayrılıyor (Train+Prefill flash/fused kullanır — ikisi
+de `FullSeqPhase`; Decode cached/unfused kullanır, ayrı struct'lar).
+
+Kapsam dışı bırakılan (mevcut kararla, zorlaması daha kötü olurdu):
+Prefill artık `matmul_add` füzyonunu kullanmıyor, train'le aynı ayrı
+Linear+Add çiftini kullanıyor — tek dispatch kazancı gitti, yapısal birlik
+geldi.
+
+Sırada (henüz yapılmadı): `AnyLoss`/`AnyGradClip` (aynı enum-match deseni),
+head/blocks/tail Tape'lerinin gerçek Trainer'a bağlanması, gradient
+checkpointing hook'u (her Op zaten `saved_input` tutuyor — checkpointing
+"backward'dan hemen önce yeniden hesapla" demek, mekanizma hazır).
+
+*(Eski kuyruk maddeleri "GraphBuilder\<Decode\> meta kaydı" ve "GradClass
+registry" bu bölüme emildi — state handle/weight-grad kaydı hâlâ tasarım
+bekliyor, aşağıdaki "gelecek ihtiyaç listesi"nde duruyor.)*
 
 ### Checkpoint etkisi
 
