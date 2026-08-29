@@ -4,7 +4,7 @@ use super::ops;
 use super::ops::{CachedPhase, Decode, GraphBuilder, Prefill};
 use super::ops::meta::{AttnCachedMeta, CacheWriteMeta, HeadMoveMeta, KernelMeta, RopeOffsetMeta, SoftmaxRectMeta};
 use super::tape::{zeros, Forward, Identity};
-use super::transformer_ops::{AddOp, AttentionOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp};
+use super::transformer::{AddOp, AttentionOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp};
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 

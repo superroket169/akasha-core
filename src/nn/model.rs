@@ -3,7 +3,7 @@ use super::loss::{AnyLoss, CrossEntropyOp};
 use super::ops::meta::{MatMulMeta, NormMeta};
 use super::ops::{GraphBuilder, Train};
 use super::tape::{NodeId, Tape};
-use super::transformer_ops::{
+use super::transformer::{
     AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
     TransformerOp,
 };
@@ -16,7 +16,7 @@ use wilupgu::{Backend, ComputeGraph, Tensor};
 
 struct BuiltBlock<B: Backend> {
     tape: Tape<B, TransformerOp<B>>,
-    x0: NodeId,
+    block_input_id: NodeId,
     output: NodeId,
 }
 
@@ -25,7 +25,7 @@ fn build_transformer_block<B: Backend>(
     gb: &mut GraphBuilder<'_, B, Train>,
     bw: &BlockWeights<B>,
     cfg: &ModelConfig,
-    x0_value: Arc<Tensor<B>>,
+    block_input: Arc<Tensor<B>>,
 ) -> BuiltBlock<B> {
     let rows = cfg.batch_size * cfg.seq_len;
     let dim = cfg.dim;
@@ -34,7 +34,7 @@ fn build_transformer_block<B: Backend>(
     let ctx = &bw.qkv_proj.ctx;
 
     let mut tape = Tape::new();
-    let x0 = tape.input(gb, x0_value);
+    let block_input_id = tape.input(gb, block_input);
 
     let norm_shape = NormMeta {
         seq_len: rows,
@@ -44,7 +44,7 @@ fn build_transformer_block<B: Backend>(
     let n1 = tape.push(
         gb,
         TransformerOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
-        &[(x0, 0)],
+        &[(block_input_id, 0)],
     );
 
     let qkv_shape = MatMulMeta {
@@ -98,7 +98,7 @@ fn build_transformer_block<B: Backend>(
     let add1 = tape.push(
         gb,
         TransformerOp::Add(AddOp::new(ctx, rows * dim)),
-        &[(x0, 0), (proj, 0)],
+        &[(block_input_id, 0), (proj, 0)],
     );
 
     let n2 = tape.push(
@@ -143,7 +143,7 @@ fn build_transformer_block<B: Backend>(
 
     BuiltBlock {
         tape,
-        x0,
+        block_input_id,
         output: add2,
     }
 }
@@ -153,11 +153,11 @@ struct TrainState<B: Backend> {
     bwd_graph: ComputeGraph<B>,
     tokens: Arc<Tensor<B>>, // embedding's input handle -- see EmbeddingOp::tokens_handle
     head: Tape<B, TransformerOp<B>>,
-    head_out: NodeId,
+    embedding_id: NodeId,
     blocks: Vec<BuiltBlock<B>>,
     tail: Tape<B, TransformerOp<B>>,
-    tail_x0: NodeId,
-    logits: NodeId,
+    tail_input_id: NodeId,
+    logits_id: NodeId,
     loss: AnyLoss<B>,
     optimizer: AnyOptimizer<B>,
     grad_clip: AnyGradClip<B>,
@@ -183,9 +183,9 @@ impl<B: Backend> Model<B> {
         let embedding_op = EmbeddingOp::new(&weights.embedding, rows, cfg.vocab_size, cfg.dim);
         let tokens = embedding_op.tokens_handle();
         let mut head = Tape::new();
-        let head_out = head.push(&mut gb, TransformerOp::Embedding(embedding_op), &[]);
+        let embedding_id = head.push(&mut gb, TransformerOp::Embedding(embedding_op), &[]);
 
-        let mut x = head.output(head_out);
+        let mut x = head.output(embedding_id);
         let mut blocks = Vec::with_capacity(weights.blocks.len());
         for (bw, kind) in weights.blocks.iter().zip(cfg.layers()) {
             match kind {
@@ -198,7 +198,7 @@ impl<B: Backend> Model<B> {
         }
 
         let mut tail = Tape::new();
-        let tail_x0 = tail.input(&mut gb, x);
+        let tail_input_id = tail.input(&mut gb, x);
         let norm_shape = NormMeta {
             seq_len: rows,
             size: cfg.dim,
@@ -207,14 +207,14 @@ impl<B: Backend> Model<B> {
         let final_norm = tail.push(
             &mut gb,
             TransformerOp::RmsNorm(RmsNormOp::new(&weights.final_norm, norm_shape)),
-            &[(tail_x0, 0)],
+            &[(tail_input_id, 0)],
         );
         let lm_shape = MatMulMeta {
             m: rows,
             n: cfg.vocab_size,
             k: cfg.dim,
         };
-        let logits = tail.push(
+        let logits_id = tail.push(
             &mut gb,
             TransformerOp::Linear(LinearOp::new(&weights.lm_head, lm_shape, true)),
             &[(final_norm, 0)],
@@ -223,28 +223,28 @@ impl<B: Backend> Model<B> {
         let loss = AnyLoss::CrossEntropy(CrossEntropyOp::new(&ctx, cfg.vocab_size, rows));
         // node only -- real targets are set per step via `train_step`.
         loss.set_targets(&vec![0u32; rows as usize]);
-        loss.forward(&mut gb, &tail.output(logits));
+        loss.forward(&mut gb, &tail.output(logits_id));
         loss.set_grad_scale(1.0 / (rows * train_cfg.run.accumulation_steps as u32) as Real);
 
         // ---- backward: tail -> blocks (reverse) -> head, one shared graph ----
         let mut bwd_graph = ComputeGraph::new(ctx.clone());
         let mut gb_bwd = GraphBuilder::train(&mut bwd_graph);
 
-        let logits_buf = tail.output(logits);
+        let logits_buf = tail.output(logits_id);
         loss.backward(&mut gb_bwd, &logits_buf);
-        tail.backward(&mut gb_bwd, (logits, 0), &logits_buf);
+        tail.backward(&mut gb_bwd, (logits_id, 0), &logits_buf);
         let mut grad = tail
-            .grad_of((tail_x0, 0))
+            .grad_of((tail_input_id, 0))
             .expect("tail backward didn't reach its input");
 
         for block in blocks.iter_mut().rev() {
             block.tape.backward(&mut gb_bwd, (block.output, 0), &grad);
             grad = block
                 .tape
-                .grad_of((block.x0, 0))
+                .grad_of((block.block_input_id, 0))
                 .expect("block backward didn't reach its input");
         }
-        head.backward(&mut gb_bwd, (head_out, 0), &grad);
+        head.backward(&mut gb_bwd, (embedding_id, 0), &grad);
 
         // ---- params, in push order (checkpoint/AdamW-moment contract) ----
         let mut params: Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>, bool)> = Vec::new();
@@ -300,11 +300,11 @@ impl<B: Backend> Model<B> {
                 bwd_graph,
                 tokens,
                 head,
-                head_out,
+                embedding_id,
                 blocks,
                 tail,
-                tail_x0,
-                logits,
+                tail_input_id,
+                logits_id,
                 loss,
                 optimizer,
                 grad_clip,
@@ -312,7 +312,8 @@ impl<B: Backend> Model<B> {
         }
     }
 
-    /// No training state at all -- see the module doc.
+    /// No training state at all -- no grad buffers, no optimizer, no
+    /// tapes built. Chat pays nothing for training.
     pub fn for_chat(_ctx: Arc<B>, weights: ModelWeights<B>, _cfg: ModelConfig) -> Self {
         Self {
             weights,
