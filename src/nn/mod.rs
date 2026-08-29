@@ -1,3 +1,4 @@
+pub mod block;
 pub mod checkpoint;
 pub mod inference;
 pub mod inference_graphs;

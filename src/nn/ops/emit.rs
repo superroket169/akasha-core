@@ -114,6 +114,7 @@ pub(crate) fn matmul_add_with<B: Backend, P: FwdPhase>(
     );
 }
 
+#[cfg(test)] // reference impl: only gemv_routing_matches_cpu_reference calls it, real callers went to matmul_add_with (block_pre_attn/block_post_attn own their meta)
 pub(crate) fn matmul_add<B: Backend, P: FwdPhase>(
     gb: &mut GraphBuilder<'_, B, P>,
     a: &Arc<Tensor<B>>,

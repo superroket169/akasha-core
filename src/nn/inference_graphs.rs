@@ -1,5 +1,5 @@
 use super::ops;
-use super::ops::GraphBuilder;
+use super::ops::{CachedPhase, GraphBuilder};
 use super::ops::meta::{
     AttnCachedMeta, CacheWriteMeta, EmbeddingMeta, FlashAttnMeta, HeadMoveMeta, KernelMeta,
     MatMulMeta, NormMeta, RopeMeta, RopeOffsetMeta, SoftmaxRectMeta,
@@ -195,6 +195,77 @@ impl<B: Backend> DecodeScratch<B> {
     }
 }
 
+/// Shared prefix of a transformer block, identical for Prefill and Decode:
+/// norm1 -> fused qkv projection -> split into q/k/v. Caller does
+/// rope+attention+cache_write next (that part genuinely differs per phase),
+/// then calls `block_post_attn`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn block_pre_attn<B: Backend, P: CachedPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    bw: &BlockWeights<B>,
+    hidden: &Arc<Tensor<B>>,
+    norm_out: &Arc<Tensor<B>>,
+    qkv_out: &Arc<Tensor<B>>,
+    q_buf: &Arc<Tensor<B>>,
+    k_buf: &Arc<Tensor<B>>,
+    v_buf: &Arc<Tensor<B>>,
+    rows: u32,
+    dim: u32,
+    norm_meta: (NormMeta, &Arc<Tensor<B>>),
+    qkv_proj_meta: (MatMulMeta, &Arc<Tensor<B>>),
+    qkv_split_meta: &[Arc<Tensor<B>>],
+) {
+    let (norm_shape, norm_meta) = norm_meta;
+    ops::rmsnorm_with(gb, hidden, &bw.norm_1, norm_out, norm_shape, norm_meta);
+
+    let (qkv_shape, qkv_meta) = qkv_proj_meta;
+    ops::matmul_with(gb, norm_out, &bw.qkv_proj, qkv_out, qkv_shape, qkv_meta);
+
+    for (i, (dst, off)) in [q_buf, k_buf, v_buf].into_iter().zip([0, dim, 2 * dim]).enumerate() {
+        ops::head_gather_with(
+            gb,
+            qkv_out,
+            dst,
+            HeadMoveMeta::qkv_slice(rows, dim, off),
+            &qkv_split_meta[i],
+        );
+    }
+}
+
+/// Shared suffix of a transformer block, identical for Prefill and Decode:
+/// out_proj+residual -> norm2 -> ffn_up -> silu -> ffn_down+residual.
+/// `hidden` is read AND written in place (both matmul_add calls fuse the
+/// residual add into the projection's output write).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn block_post_attn<B: Backend, P: CachedPhase>(
+    gb: &mut GraphBuilder<'_, B, P>,
+    bw: &BlockWeights<B>,
+    hidden: &Arc<Tensor<B>>,
+    attn_out: &Arc<Tensor<B>>,
+    norm_out: &Arc<Tensor<B>>,
+    ffn_up_out: &Arc<Tensor<B>>,
+    rows: u32,
+    ffn_hidden_dim: u32,
+    out_proj_meta: (MatMulMeta, &Arc<Tensor<B>>),
+    norm_meta: (NormMeta, &Arc<Tensor<B>>),
+    ffnup_meta: (MatMulMeta, &Arc<Tensor<B>>),
+    ffndown_meta: (MatMulMeta, &Arc<Tensor<B>>),
+) {
+    let (out_proj_shape, out_proj_meta) = out_proj_meta;
+    ops::matmul_add_with(gb, attn_out, &bw.out_proj, hidden, out_proj_shape, out_proj_meta);
+
+    let (norm_shape, norm_meta) = norm_meta;
+    ops::rmsnorm_with(gb, hidden, &bw.norm_2, norm_out, norm_shape, norm_meta);
+
+    let (ffnup_shape, ffnup_meta) = ffnup_meta;
+    ops::matmul_with(gb, norm_out, &bw.ffn_up, ffn_up_out, ffnup_shape, ffnup_meta);
+
+    ops::silu(gb, ffn_up_out, rows * ffn_hidden_dim);
+
+    let (ffndown_shape, ffndown_meta) = ffndown_meta;
+    ops::matmul_add_with(gb, ffn_up_out, &bw.ffn_down, hidden, ffndown_shape, ffndown_meta);
+}
+
 pub(crate) fn build_prefill_layer<B: Backend>(
     gb: &mut GraphBuilder<'_, B, ops::Prefill>,
     ctx: &Arc<B>,
@@ -218,37 +289,41 @@ pub(crate) fn build_prefill_layer<B: Backend>(
         eps: cfg.norm_eps,
     };
 
-    // ---- norm_1 + fused q/k/v projection ----
+    // ---- shared block skeleton (identical code path to decode) ----
     let norm1_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    ops::rmsnorm(gb, hidden_in, &bw.norm_1, &norm1_out, norm_shape);
-
     let qkv_out = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
         &vec![0.0 as Real; (prompt_len * dim * 3) as usize],
     ));
-    ops::matmul(
-        gb,
-        &norm1_out,
-        &bw.qkv_proj,
-        &qkv_out,
-        MatMulMeta {
-            m: prompt_len,
-            n: dim * 3,
-            k: dim,
-        },
-    );
-
     let q_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     let k_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
     let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    for (buf, off) in [(&q_buf, 0), (&k_buf, dim), (&v_buf, 2 * dim)] {
-        ops::head_gather(
-            gb,
-            &qkv_out,
-            buf,
-            HeadMoveMeta::qkv_slice(prompt_len, dim, off),
-        );
-    }
+
+    let qkv_proj_shape = MatMulMeta {
+        m: prompt_len,
+        n: dim * 3,
+        k: dim,
+    };
+    let qkv_split_meta = [
+        HeadMoveMeta::qkv_slice(prompt_len, dim, 0).upload(ctx),
+        HeadMoveMeta::qkv_slice(prompt_len, dim, dim).upload(ctx),
+        HeadMoveMeta::qkv_slice(prompt_len, dim, 2 * dim).upload(ctx),
+    ];
+    block_pre_attn(
+        gb,
+        bw,
+        hidden_in,
+        &norm1_out,
+        &qkv_out,
+        &q_buf,
+        &k_buf,
+        &v_buf,
+        prompt_len,
+        dim,
+        (norm_shape, &norm_shape.upload(ctx)),
+        (qkv_proj_shape, &qkv_proj_shape.upload(ctx)),
+        &qkv_split_meta,
+    );
 
     // ---- RoPE + cache write ----
     let rope_shape = RopeMeta {
@@ -285,52 +360,40 @@ pub(crate) fn build_prefill_layer<B: Backend>(
         },
     );
 
-    // out_proj fused with the residual add: writes into hidden_in
-    ops::matmul_add(
-        gb,
-        &attn_out,
-        &bw.out_proj,
-        hidden_in,
-        MatMulMeta {
-            m: prompt_len,
-            n: dim,
-            k: dim,
-        },
-    );
-
-    // ---- FFN + residual ----
+    // ---- shared block skeleton, second half ----
     let norm2_out = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
-    ops::rmsnorm(gb, hidden_in, &bw.norm_2, &norm2_out, norm_shape);
-
     let ffn_up_out = Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
         &vec![0.0 as Real; (prompt_len * ffn_hidden_dim) as usize],
     ));
-    ops::matmul(
+    let out_proj_shape = MatMulMeta {
+        m: prompt_len,
+        n: dim,
+        k: dim,
+    };
+    let ffnup_shape = MatMulMeta {
+        m: prompt_len,
+        n: ffn_hidden_dim,
+        k: dim,
+    };
+    let ffndown_shape = MatMulMeta {
+        m: prompt_len,
+        n: dim,
+        k: ffn_hidden_dim,
+    };
+    block_post_attn(
         gb,
-        &norm2_out,
-        &bw.ffn_up,
-        &ffn_up_out,
-        MatMulMeta {
-            m: prompt_len,
-            n: ffn_hidden_dim,
-            k: dim,
-        },
-    );
-
-    ops::silu(gb, &ffn_up_out, prompt_len * ffn_hidden_dim);
-
-    // ffn_down fused with the residual add
-    ops::matmul_add(
-        gb,
-        &ffn_up_out,
-        &bw.ffn_down,
+        bw,
         hidden_in,
-        MatMulMeta {
-            m: prompt_len,
-            n: dim,
-            k: ffn_hidden_dim,
-        },
+        &attn_out,
+        &norm2_out,
+        &ffn_up_out,
+        prompt_len,
+        ffn_hidden_dim,
+        (out_proj_shape, &out_proj_shape.upload(ctx)),
+        (norm_shape, &norm_shape.upload(ctx)),
+        (ffnup_shape, &ffnup_shape.upload(ctx)),
+        (ffndown_shape, &ffndown_shape.upload(ctx)),
     );
 
     hidden_in.clone()
@@ -360,40 +423,27 @@ pub(crate) fn build_decode_layer<B: Backend>(
         eps: cfg.norm_eps,
     };
 
-    // ---- norm_1 + fused q/k/v projection ----
-    ops::rmsnorm_with(
+    // ---- shared block skeleton (identical code path to prefill) ----
+    let qkv_proj_shape = MatMulMeta {
+        m: 1,
+        n: dim * 3,
+        k: dim,
+    };
+    block_pre_attn(
         gb,
+        bw,
         &scratch.hidden,
-        &bw.norm_1,
         &scratch.norm_out,
-        norm_shape,
-        &scratch.norm_meta,
-    );
-
-    ops::matmul_with(
-        gb,
-        &scratch.norm_out,
-        &bw.qkv_proj,
         &scratch.qkv_out,
-        MatMulMeta {
-            m: 1,
-            n: dim * 3,
-            k: dim,
-        },
-        &scratch.qkv_proj_meta,
+        &scratch.q_buf,
+        &scratch.k_buf,
+        &scratch.v_buf,
+        1,
+        dim,
+        (norm_shape, &scratch.norm_meta),
+        (qkv_proj_shape, &scratch.qkv_proj_meta),
+        &scratch.qkv_split_meta,
     );
-    for (i, dst) in [&scratch.q_buf, &scratch.k_buf, &scratch.v_buf]
-        .into_iter()
-        .enumerate()
-    {
-        ops::head_gather_with(
-            gb,
-            &scratch.qkv_out,
-            dst,
-            HeadMoveMeta::qkv_slice(1, dim, i as u32 * dim),
-            &scratch.qkv_split_meta[i],
-        );
-    }
 
     // ---- RoPE + cache write ----
     let rope_shape = RopeOffsetMeta {
@@ -455,56 +505,35 @@ pub(crate) fn build_decode_layer<B: Backend>(
         &scratch.attn_meta,
     );
 
-    // ---- out_proj + residual ----
-    ops::matmul_add_with(
+    // ---- shared block skeleton, second half ----
+    let out_proj_shape = MatMulMeta {
+        m: 1,
+        n: dim,
+        k: dim,
+    };
+    let ffnup_shape = MatMulMeta {
+        m: 1,
+        n: ffn_hidden_dim,
+        k: dim,
+    };
+    let ffndown_shape = MatMulMeta {
+        m: 1,
+        n: dim,
+        k: ffn_hidden_dim,
+    };
+    block_post_attn(
         gb,
+        bw,
+        &scratch.hidden,
         &scratch.attn_out,
-        &bw.out_proj,
-        &scratch.hidden,
-        MatMulMeta {
-            m: 1,
-            n: dim,
-            k: dim,
-        },
-        &scratch.qkv_meta,
-    );
-
-    // ---- FFN + residual ----
-    ops::rmsnorm_with(
-        gb,
-        &scratch.hidden,
-        &bw.norm_2,
         &scratch.norm_out,
-        norm_shape,
-        &scratch.norm_meta,
-    );
-
-    ops::matmul_with(
-        gb,
-        &scratch.norm_out,
-        &bw.ffn_up,
         &scratch.ffn_up_out,
-        MatMulMeta {
-            m: 1,
-            n: ffn_hidden_dim,
-            k: dim,
-        },
-        &scratch.ffnup_meta,
-    );
-
-    ops::silu(gb, &scratch.ffn_up_out, ffn_hidden_dim);
-
-    ops::matmul_add_with(
-        gb,
-        &scratch.ffn_up_out,
-        &bw.ffn_down,
-        &scratch.hidden,
-        MatMulMeta {
-            m: 1,
-            n: dim,
-            k: ffn_hidden_dim,
-        },
-        &scratch.ffndown_meta,
+        1,
+        ffn_hidden_dim,
+        (out_proj_shape, &scratch.qkv_meta),
+        (norm_shape, &scratch.norm_meta),
+        (ffnup_shape, &scratch.ffnup_meta),
+        (ffndown_shape, &scratch.ffndown_meta),
     );
 }
 
