@@ -12,6 +12,8 @@ involved — every op (matmul, RMSNorm, flash attention, RoPE, AdamW,
 cross-entropy and all backward passes) is a hand-written WGSL / CUDA C / CPU
 kernel.
 
+will be "sequexa"
+
 ## Model: akasha-hall 1.0
 
 | | |
