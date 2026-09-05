@@ -1,6 +1,7 @@
 use super::ops::FwdPhase;
 use super::ops::GraphBuilder;
 use crate::Real;
+use std::collections::HashMap;
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
@@ -108,6 +109,35 @@ impl<B: Backend, Node> Tape<B, Node> {
     pub(crate) fn output_slot(&self, out: Out) -> Arc<Tensor<B>> {
         self.nodes[out.0.0].outputs[out.1].clone()
     }
+
+    pub(crate) fn extend<P: FwdPhase>(
+        &mut self,
+        gb: &mut GraphBuilder<'_, B, P>,
+        names: &mut HashMap<&'static str, NodeId>,
+        specs: Vec<NodeSpec<Node>>,
+    ) -> NodeId
+    where
+        Node: Forward<B, P>,
+    {
+        let mut last = None;
+        for spec in specs {
+            let inputs: Vec<Out> = spec
+                .inputs
+                .iter()
+                .map(|(name, slot)| (names[name], *slot))
+                .collect();
+            let id = self.push(gb, spec.op, &inputs);
+            names.insert(spec.name, id);
+            last = Some(id);
+        }
+        last.expect("Tape::extend called with empty specs")
+    }
+}
+
+pub(crate) struct NodeSpec<Node> {
+    pub(crate) name: &'static str,
+    pub(crate) inputs: &'static [(&'static str, usize)],
+    pub(crate) op: Node,
 }
 
 impl<B: Backend, Node: Backward<B>> Tape<B, Node> {

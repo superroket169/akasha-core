@@ -6,15 +6,15 @@ use super::loss::{AnyLoss, CrossEntropyOp};
 use super::ops::meta::{MatMulMeta, NormMeta};
 use super::ops::{GraphBuilder, Prefill, Train};
 use super::sampling;
-use super::tape::{NodeId, Tape, zeros};
+use super::tape::{NodeId, NodeSpec, Tape, zeros};
 use super::transformer::{
-    AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
-    TrainOp,
+    AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp, TrainOp,
 };
 use super::weights::{BlockWeights, ModelWeights};
 use crate::Real;
 use crate::config::{BlockKind, GradClipKind, ModelConfig, OptimizerKind, TrainConfig};
 use crate::optim::{AdamW, AdamWSchedule, AnyOptimizer};
+use std::collections::HashMap;
 use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor};
 
@@ -24,7 +24,123 @@ struct BuiltBlock<B: Backend> {
     output: NodeId,
 }
 
-#[allow(clippy::too_many_arguments)]
+fn transformer_block_specs<B: Backend>(
+    bw: &BlockWeights<B>,
+    cfg: &ModelConfig,
+    rows: u32,
+) -> Vec<NodeSpec<TrainOp<B>>> {
+    let dim = cfg.dim;
+    let head_dim = cfg.head_dim();
+    let hidden = cfg.ffn_hidden;
+    let ctx = &bw.qkv_proj.ctx;
+    let norm_shape = NormMeta {
+        seq_len: rows,
+        size: dim,
+        eps: cfg.norm_eps,
+    };
+
+    vec![
+        NodeSpec {
+            name: "n1",
+            inputs: &[("input", 0)],
+            op: TrainOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
+        },
+        NodeSpec {
+            name: "qkv",
+            inputs: &[("n1", 0)],
+            op: TrainOp::Linear(LinearOp::new(
+                &bw.qkv_proj,
+                MatMulMeta {
+                    m: rows,
+                    n: dim * 3,
+                    k: dim,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "split",
+            inputs: &[("qkv", 0)],
+            op: TrainOp::QkvSplit(QkvSplitOp::new(ctx, rows, dim)),
+        },
+        NodeSpec {
+            name: "rope",
+            inputs: &[("split", 0), ("split", 1)],
+            op: TrainOp::RopeQk(RopeQkOp::new(cfg.seq_len, dim, head_dim, cfg.batch_size)),
+        },
+        NodeSpec {
+            name: "attn",
+            inputs: &[("rope", 0), ("rope", 1), ("split", 2)],
+            op: TrainOp::Attention(AttentionOp::new(
+                ctx,
+                cfg.seq_len,
+                dim,
+                head_dim,
+                cfg.batch_size,
+            )),
+        },
+        NodeSpec {
+            name: "proj",
+            inputs: &[("attn", 0)],
+            op: TrainOp::Linear(LinearOp::new(
+                &bw.out_proj,
+                MatMulMeta {
+                    m: rows,
+                    n: dim,
+                    k: dim,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "add1",
+            inputs: &[("input", 0), ("proj", 0)],
+            op: TrainOp::Add(AddOp::new(ctx, rows * dim)),
+        },
+        NodeSpec {
+            name: "n2",
+            inputs: &[("add1", 0)],
+            op: TrainOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
+        },
+        NodeSpec {
+            name: "up",
+            inputs: &[("n2", 0)],
+            op: TrainOp::Linear(LinearOp::new(
+                &bw.ffn_up,
+                MatMulMeta {
+                    m: rows,
+                    n: hidden,
+                    k: dim,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "silu",
+            inputs: &[("up", 0)],
+            op: TrainOp::Silu(SiluOp::new(ctx, rows * hidden)),
+        },
+        NodeSpec {
+            name: "down",
+            inputs: &[("silu", 0)],
+            op: TrainOp::Linear(LinearOp::new(
+                &bw.ffn_down,
+                MatMulMeta {
+                    m: rows,
+                    n: dim,
+                    k: hidden,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "add2",
+            inputs: &[("add1", 0), ("down", 0)],
+            op: TrainOp::Add(AddOp::new(ctx, rows * dim)),
+        },
+    ]
+}
+
 fn build_transformer_block<B: Backend>(
     gb: &mut GraphBuilder<'_, B, Train>,
     bw: &BlockWeights<B>,
@@ -32,124 +148,138 @@ fn build_transformer_block<B: Backend>(
     block_input: Arc<Tensor<B>>,
 ) -> BuiltBlock<B> {
     let rows = cfg.batch_size * cfg.seq_len;
-    let dim = cfg.dim;
-    let head_dim = cfg.head_dim();
-    let hidden = cfg.ffn_hidden;
-    let ctx = &bw.qkv_proj.ctx;
-
     let mut tape = Tape::new();
     let block_input_id = tape.input(gb, block_input);
-
-    let norm_shape = NormMeta {
-        seq_len: rows,
-        size: dim,
-        eps: cfg.norm_eps,
-    };
-    let n1 = tape.push(
-        gb,
-        TrainOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
-        &[(block_input_id, 0)],
-    );
-
-    let qkv_shape = MatMulMeta {
-        m: rows,
-        n: dim * 3,
-        k: dim,
-    };
-    let qkv = tape.push(
-        gb,
-        TrainOp::Linear(LinearOp::new(&bw.qkv_proj, qkv_shape, true)),
-        &[(n1, 0)],
-    );
-
-    // 3 outputs: q=slot0, k=slot1, v=slot2
-    let split = tape.push(
-        gb,
-        TrainOp::QkvSplit(QkvSplitOp::new(ctx, rows, dim)),
-        &[(qkv, 0)],
-    );
-
-    // 2 outputs: rotated q=slot0, k=slot1
-    let rope = tape.push(
-        gb,
-        TrainOp::RopeQk(RopeQkOp::new(cfg.seq_len, dim, head_dim, cfg.batch_size)),
-        &[(split, 0), (split, 1)],
-    );
-
-    let attn = tape.push(
-        gb,
-        TrainOp::Attention(AttentionOp::new(
-            ctx,
-            cfg.seq_len,
-            dim,
-            head_dim,
-            cfg.batch_size,
-        )),
-        &[(rope, 0), (rope, 1), (split, 2)],
-    );
-
-    let out_proj_shape = MatMulMeta {
-        m: rows,
-        n: dim,
-        k: dim,
-    };
-    let proj = tape.push(
-        gb,
-        TrainOp::Linear(LinearOp::new(&bw.out_proj, out_proj_shape, true)),
-        &[(attn, 0)],
-    );
-
-    let add1 = tape.push(
-        gb,
-        TrainOp::Add(AddOp::new(ctx, rows * dim)),
-        &[(block_input_id, 0), (proj, 0)],
-    );
-
-    let n2 = tape.push(
-        gb,
-        TrainOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
-        &[(add1, 0)],
-    );
-
-    let ffn_up_shape = MatMulMeta {
-        m: rows,
-        n: hidden,
-        k: dim,
-    };
-    let up = tape.push(
-        gb,
-        TrainOp::Linear(LinearOp::new(&bw.ffn_up, ffn_up_shape, true)),
-        &[(n2, 0)],
-    );
-
-    let silu = tape.push(
-        gb,
-        TrainOp::Silu(SiluOp::new(ctx, rows * hidden)),
-        &[(up, 0)],
-    );
-
-    let ffn_down_shape = MatMulMeta {
-        m: rows,
-        n: dim,
-        k: hidden,
-    };
-    let down = tape.push(
-        gb,
-        TrainOp::Linear(LinearOp::new(&bw.ffn_down, ffn_down_shape, true)),
-        &[(silu, 0)],
-    );
-
-    let add2 = tape.push(
-        gb,
-        TrainOp::Add(AddOp::new(ctx, rows * dim)),
-        &[(add1, 0), (down, 0)],
-    );
-
+    let mut names = HashMap::from([("input", block_input_id)]);
+    let output = tape.extend(gb, &mut names, transformer_block_specs(bw, cfg, rows));
     BuiltBlock {
         tape,
         block_input_id,
-        output: add2,
+        output,
     }
+}
+
+fn prefill_block_specs<B: Backend>(
+    bw: &BlockWeights<B>,
+    ctx: &Arc<B>,
+    cache_k: &Arc<Tensor<B>>,
+    cache_v: &Arc<Tensor<B>>,
+    cfg: &ModelConfig,
+    prompt_len: u32,
+) -> Vec<NodeSpec<PrefillOp<B>>> {
+    let dim = cfg.dim;
+    let head_dim = cfg.head_dim();
+    let hidden = cfg.ffn_hidden;
+    let norm_shape = NormMeta {
+        seq_len: prompt_len,
+        size: dim,
+        eps: cfg.norm_eps,
+    };
+
+    vec![
+        NodeSpec {
+            name: "n1",
+            inputs: &[("input", 0)],
+            op: PrefillOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
+        },
+        NodeSpec {
+            name: "qkv",
+            inputs: &[("n1", 0)],
+            op: PrefillOp::Linear(LinearOp::new(
+                &bw.qkv_proj,
+                MatMulMeta {
+                    m: prompt_len,
+                    n: dim * 3,
+                    k: dim,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "split",
+            inputs: &[("qkv", 0)],
+            op: PrefillOp::QkvSplit(QkvSplitOp::new(ctx, prompt_len, dim)),
+        },
+        NodeSpec {
+            name: "rope",
+            inputs: &[("split", 0), ("split", 1)],
+            op: PrefillOp::RopeQk(RopeQkOp::new(prompt_len, dim, head_dim, 1)),
+        },
+        NodeSpec {
+            name: "k_written",
+            inputs: &[("rope", 1)],
+            op: PrefillOp::CacheWrite(CacheWriteOp::new(cache_k.clone(), prompt_len, dim)),
+        },
+        NodeSpec {
+            name: "v_written",
+            inputs: &[("split", 2)],
+            op: PrefillOp::CacheWrite(CacheWriteOp::new(cache_v.clone(), prompt_len, dim)),
+        },
+        NodeSpec {
+            name: "attn",
+            inputs: &[("rope", 0), ("k_written", 0), ("v_written", 0)],
+            op: PrefillOp::Attention(AttentionOp::new(ctx, prompt_len, dim, head_dim, 1)),
+        },
+        NodeSpec {
+            name: "proj",
+            inputs: &[("attn", 0)],
+            op: PrefillOp::Linear(LinearOp::new(
+                &bw.out_proj,
+                MatMulMeta {
+                    m: prompt_len,
+                    n: dim,
+                    k: dim,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "add1",
+            inputs: &[("input", 0), ("proj", 0)],
+            op: PrefillOp::Add(AddOp::new(ctx, prompt_len * dim)),
+        },
+        NodeSpec {
+            name: "n2",
+            inputs: &[("add1", 0)],
+            op: PrefillOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
+        },
+        NodeSpec {
+            name: "up",
+            inputs: &[("n2", 0)],
+            op: PrefillOp::Linear(LinearOp::new(
+                &bw.ffn_up,
+                MatMulMeta {
+                    m: prompt_len,
+                    n: hidden,
+                    k: dim,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "silu",
+            inputs: &[("up", 0)],
+            op: PrefillOp::Silu(SiluOp::new(ctx, prompt_len * hidden)),
+        },
+        NodeSpec {
+            name: "down",
+            inputs: &[("silu", 0)],
+            op: PrefillOp::Linear(LinearOp::new(
+                &bw.ffn_down,
+                MatMulMeta {
+                    m: prompt_len,
+                    n: dim,
+                    k: hidden,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "add2",
+            inputs: &[("add1", 0), ("down", 0)],
+            op: PrefillOp::Add(AddOp::new(ctx, prompt_len * dim)),
+        },
+    ]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -162,8 +292,6 @@ fn build_prefill_forward<B: Backend>(
     cache_v: &[Arc<Tensor<B>>],
 ) -> (Tape<B, PrefillOp<B>>, Arc<Tensor<B>>, NodeId) {
     let dim = cfg.dim;
-    let head_dim = cfg.head_dim();
-    let hidden = cfg.ffn_hidden;
     let ctx = &weights.embedding.ctx;
 
     let mut tape = Tape::new();
@@ -177,99 +305,13 @@ fn build_prefill_forward<B: Backend>(
         size: dim,
         eps: cfg.norm_eps,
     };
+    let mut names: HashMap<&'static str, NodeId> = HashMap::new();
     for ((bw, ck), cv) in weights.blocks.iter().zip(cache_k).zip(cache_v) {
-        let block_input = x;
-        let n1 = tape.push(
+        names.insert("input", x);
+        x = tape.extend(
             gb,
-            PrefillOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
-            &[(block_input, 0)],
-        );
-        let qkv_shape = MatMulMeta {
-            m: prompt_len,
-            n: dim * 3,
-            k: dim,
-        };
-        let qkv = tape.push(
-            gb,
-            PrefillOp::Linear(LinearOp::new(&bw.qkv_proj, qkv_shape, true)),
-            &[(n1, 0)],
-        );
-
-        let split = tape.push(
-            gb,
-            PrefillOp::QkvSplit(QkvSplitOp::new(ctx, prompt_len, dim)),
-            &[(qkv, 0)],
-        );
-        let rope = tape.push(
-            gb,
-            PrefillOp::RopeQk(RopeQkOp::new(prompt_len, dim, head_dim, 1)),
-            &[(split, 0), (split, 1)],
-        );
-        let k_written = tape.push(
-            gb,
-            PrefillOp::CacheWrite(CacheWriteOp::new(ck.clone(), prompt_len, dim)),
-            &[(rope, 1)],
-        );
-        let v_written = tape.push(
-            gb,
-            PrefillOp::CacheWrite(CacheWriteOp::new(cv.clone(), prompt_len, dim)),
-            &[(split, 2)],
-        );
-        let attn = tape.push(
-            gb,
-            PrefillOp::Attention(AttentionOp::new(ctx, prompt_len, dim, head_dim, 1)),
-            &[(rope, 0), (k_written, 0), (v_written, 0)],
-        );
-
-        let out_proj_shape = MatMulMeta {
-            m: prompt_len,
-            n: dim,
-            k: dim,
-        };
-        let proj = tape.push(
-            gb,
-            PrefillOp::Linear(LinearOp::new(&bw.out_proj, out_proj_shape, true)),
-            &[(attn, 0)],
-        );
-        let add1 = tape.push(
-            gb,
-            PrefillOp::Add(AddOp::new(ctx, prompt_len * dim)),
-            &[(block_input, 0), (proj, 0)],
-        );
-        let n2 = tape.push(
-            gb,
-            PrefillOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
-            &[(add1, 0)],
-        );
-        let ffn_up_shape = MatMulMeta {
-            m: prompt_len,
-            n: hidden,
-            k: dim,
-        };
-        let up = tape.push(
-            gb,
-            PrefillOp::Linear(LinearOp::new(&bw.ffn_up, ffn_up_shape, true)),
-            &[(n2, 0)],
-        );
-        let silu = tape.push(
-            gb,
-            PrefillOp::Silu(SiluOp::new(ctx, prompt_len * hidden)),
-            &[(up, 0)],
-        );
-        let ffn_down_shape = MatMulMeta {
-            m: prompt_len,
-            n: dim,
-            k: hidden,
-        };
-        let down = tape.push(
-            gb,
-            PrefillOp::Linear(LinearOp::new(&bw.ffn_down, ffn_down_shape, true)),
-            &[(silu, 0)],
-        );
-        x = tape.push(
-            gb,
-            PrefillOp::Add(AddOp::new(ctx, prompt_len * dim)),
-            &[(add1, 0), (down, 0)],
+            &mut names,
+            prefill_block_specs(bw, ctx, ck, cv, cfg, prompt_len),
         );
     }
 
@@ -299,6 +341,151 @@ struct DecodeGraph<B: Backend> {
     logits_id: NodeId,
 }
 
+fn decode_block_specs<B: Backend>(
+    bw: &BlockWeights<B>,
+    ctx: &Arc<B>,
+    cache_k: &Arc<Tensor<B>>,
+    cache_v: &Arc<Tensor<B>>,
+    cfg: &ModelConfig,
+    max_context_len: u32,
+) -> Vec<NodeSpec<DecodeOp<B>>> {
+    let dim = cfg.dim;
+    let head_dim = cfg.head_dim();
+    let hidden = cfg.ffn_hidden;
+    let norm_shape = NormMeta {
+        seq_len: 1,
+        size: dim,
+        eps: cfg.norm_eps,
+    };
+
+    vec![
+        NodeSpec {
+            name: "n1",
+            inputs: &[("input", 0)],
+            op: DecodeOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
+        },
+        NodeSpec {
+            name: "qkv",
+            inputs: &[("n1", 0)],
+            op: DecodeOp::Linear(LinearOp::new(
+                &bw.qkv_proj,
+                MatMulMeta {
+                    m: 1,
+                    n: dim * 3,
+                    k: dim,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "q",
+            inputs: &[("qkv", 0)],
+            op: DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 0)),
+        },
+        NodeSpec {
+            name: "k",
+            inputs: &[("qkv", 0)],
+            op: DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, dim)),
+        },
+        NodeSpec {
+            name: "v",
+            inputs: &[("qkv", 0)],
+            op: DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 2 * dim)),
+        },
+        NodeSpec {
+            name: "rope_q",
+            inputs: &[("q", 0)],
+            op: DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim)),
+        },
+        NodeSpec {
+            name: "rope_k",
+            inputs: &[("k", 0)],
+            op: DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim)),
+        },
+        NodeSpec {
+            name: "k_written",
+            inputs: &[("rope_k", 0)],
+            op: DecodeOp::CacheWrite(CacheWriteOp::new(cache_k.clone(), 1, dim)),
+        },
+        NodeSpec {
+            name: "v_written",
+            inputs: &[("v", 0)],
+            op: DecodeOp::CacheWrite(CacheWriteOp::new(cache_v.clone(), 1, dim)),
+        },
+        NodeSpec {
+            name: "attn",
+            inputs: &[("rope_q", 0)],
+            op: DecodeOp::CachedAttention(CachedAttentionOp::new(
+                cache_k.clone(),
+                cache_v.clone(),
+                cfg.num_heads,
+                dim,
+                head_dim,
+                max_context_len,
+            )),
+        },
+        NodeSpec {
+            name: "proj",
+            inputs: &[("attn", 0)],
+            op: DecodeOp::Linear(LinearOp::new(
+                &bw.out_proj,
+                MatMulMeta {
+                    m: 1,
+                    n: dim,
+                    k: dim,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "add1",
+            inputs: &[("input", 0), ("proj", 0)],
+            op: DecodeOp::Add(AddOp::new(ctx, dim)),
+        },
+        NodeSpec {
+            name: "n2",
+            inputs: &[("add1", 0)],
+            op: DecodeOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
+        },
+        NodeSpec {
+            name: "up",
+            inputs: &[("n2", 0)],
+            op: DecodeOp::Linear(LinearOp::new(
+                &bw.ffn_up,
+                MatMulMeta {
+                    m: 1,
+                    n: hidden,
+                    k: dim,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "silu",
+            inputs: &[("up", 0)],
+            op: DecodeOp::Silu(SiluOp::new(ctx, hidden)),
+        },
+        NodeSpec {
+            name: "down",
+            inputs: &[("silu", 0)],
+            op: DecodeOp::Linear(LinearOp::new(
+                &bw.ffn_down,
+                MatMulMeta {
+                    m: 1,
+                    n: dim,
+                    k: hidden,
+                },
+                true,
+            )),
+        },
+        NodeSpec {
+            name: "add2",
+            inputs: &[("add1", 0), ("down", 0)],
+            op: DecodeOp::Add(AddOp::new(ctx, dim)),
+        },
+    ]
+}
+
 fn build_decode_forward<B: Backend>(
     ctx: &Arc<B>,
     weights: &ModelWeights<B>,
@@ -308,8 +495,6 @@ fn build_decode_forward<B: Backend>(
     max_context_len: u32,
 ) -> DecodeGraph<B> {
     let dim = cfg.dim;
-    let head_dim = cfg.head_dim();
-    let hidden = cfg.ffn_hidden;
 
     let mut graph = ComputeGraph::new(ctx.clone());
     let mut gb = GraphBuilder::decode(&mut graph);
@@ -324,122 +509,13 @@ fn build_decode_forward<B: Backend>(
         size: dim,
         eps: cfg.norm_eps,
     };
+    let mut names: HashMap<&'static str, NodeId> = HashMap::new();
     for ((bw, ck), cv) in weights.blocks.iter().zip(cache_k).zip(cache_v) {
-        let block_input = x;
-        let n1 = tape.push(
+        names.insert("input", x);
+        x = tape.extend(
             &mut gb,
-            DecodeOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
-            &[(block_input, 0)],
-        );
-        let qkv_shape = MatMulMeta {
-            m: 1,
-            n: dim * 3,
-            k: dim,
-        };
-        let qkv = tape.push(
-            &mut gb,
-            DecodeOp::Linear(LinearOp::new(&bw.qkv_proj, qkv_shape, true)),
-            &[(n1, 0)],
-        );
-
-        let q = tape.push(
-            &mut gb,
-            DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 0)),
-            &[(qkv, 0)],
-        );
-        let k = tape.push(
-            &mut gb,
-            DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, dim)),
-            &[(qkv, 0)],
-        );
-        let v = tape.push(
-            &mut gb,
-            DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 2 * dim)),
-            &[(qkv, 0)],
-        );
-
-        let rope_q = tape.push(
-            &mut gb,
-            DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim)),
-            &[(q, 0)],
-        );
-        let rope_k = tape.push(
-            &mut gb,
-            DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim)),
-            &[(k, 0)],
-        );
-        tape.push(
-            &mut gb,
-            DecodeOp::CacheWrite(CacheWriteOp::new(ck.clone(), 1, dim)),
-            &[(rope_k, 0)],
-        );
-        tape.push(
-            &mut gb,
-            DecodeOp::CacheWrite(CacheWriteOp::new(cv.clone(), 1, dim)),
-            &[(v, 0)],
-        );
-        let attn = tape.push(
-            &mut gb,
-            DecodeOp::CachedAttention(CachedAttentionOp::new(
-                ck.clone(),
-                cv.clone(),
-                cfg.num_heads,
-                dim,
-                head_dim,
-                max_context_len,
-            )),
-            &[(rope_q, 0)],
-        );
-
-        let out_proj_shape = MatMulMeta {
-            m: 1,
-            n: dim,
-            k: dim,
-        };
-        let proj = tape.push(
-            &mut gb,
-            DecodeOp::Linear(LinearOp::new(&bw.out_proj, out_proj_shape, true)),
-            &[(attn, 0)],
-        );
-        let add1 = tape.push(
-            &mut gb,
-            DecodeOp::Add(AddOp::new(ctx, dim)),
-            &[(block_input, 0), (proj, 0)],
-        );
-        let n2 = tape.push(
-            &mut gb,
-            DecodeOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
-            &[(add1, 0)],
-        );
-        let ffn_up_shape = MatMulMeta {
-            m: 1,
-            n: hidden,
-            k: dim,
-        };
-        let up = tape.push(
-            &mut gb,
-            DecodeOp::Linear(LinearOp::new(&bw.ffn_up, ffn_up_shape, true)),
-            &[(n2, 0)],
-        );
-        let silu = tape.push(
-            &mut gb,
-            DecodeOp::Silu(SiluOp::new(ctx, hidden)),
-            &[(up, 0)],
-        );
-        let ffn_down_shape = MatMulMeta {
-            m: 1,
-            n: dim,
-            k: hidden,
-        };
-        let down = tape.push(
-            &mut gb,
-            DecodeOp::Linear(LinearOp::new(&bw.ffn_down, ffn_down_shape, true)),
-            &[(silu, 0)],
-        );
-        x = tape.push(
-            &mut gb,
-            DecodeOp::Add(AddOp::new(ctx, dim)),
-            &[(add1, 0), (down, 0)],
+            &mut names,
+            decode_block_specs(bw, ctx, ck, cv, cfg, max_context_len),
         );
     }
 
@@ -652,11 +728,13 @@ impl<B: Backend> Model<B> {
             .iter()
             .map(|_| zeros(&ctx, cache_len))
             .collect();
+
         let cache_v: Vec<_> = weights
             .blocks
             .iter()
             .map(|_| zeros(&ctx, cache_len))
             .collect();
+
         let decode =
             build_decode_forward(&ctx, &weights, &cfg, &cache_k, &cache_v, max_context_len);
 
@@ -672,9 +750,6 @@ impl<B: Backend> Model<B> {
         }
     }
 
-    /// Prefills `prompt`, then decodes up to `max_new_tokens` more, one at a
-    /// time, via the persistent Decode tape (`tape.advance(pos)` per step --
-    /// see `tape.rs`'s `Advance` trait).
     pub fn generate(
         &mut self,
         prompt: &[u32],
