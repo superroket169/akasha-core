@@ -1,5 +1,3 @@
-//! Train's concrete ops + `TransformerOp` (Tape/Op tasarımı: ARCHITECTURE.md → Big Refactor).
-
 use super::ops;
 use super::ops::FlashAttnBuffers;
 use super::ops::meta::{
@@ -67,12 +65,10 @@ impl<B: Backend> Backward<B> for EmbeddingOp<B> {
     }
 
     fn param(&self) -> Option<(&Arc<Tensor<B>>, &Arc<Tensor<B>>, bool)> {
-        // the embedding table is decay-exempt, same as norm gains.
         Some((&self.table, &self.grad_table, false))
     }
 }
 
-/// `y = x @ weight`; everything else self-allocated from `weight`.
 pub(crate) struct LinearOp<B: Backend> {
     weight: Arc<Tensor<B>>,
     grad_weight: Arc<Tensor<B>>,
@@ -141,7 +137,6 @@ impl<B: Backend> Backward<B> for LinearOp<B> {
     }
 }
 
-/// `weight` comes straight from `BlockWeights` (e.g. `&bw.norm_1`).
 pub(crate) struct RmsNormOp<B: Backend> {
     weight: Arc<Tensor<B>>,
     grad_weight: Arc<Tensor<B>>,
@@ -206,12 +201,10 @@ impl<B: Backend> Backward<B> for RmsNormOp<B> {
     }
 
     fn param(&self) -> Option<(&Arc<Tensor<B>>, &Arc<Tensor<B>>, bool)> {
-        // norm gains are decay-exempt (E1, ARCHITECTURE.md Invariantlar).
         Some((&self.weight, &self.grad_weight, false))
     }
 }
 
-/// Weightless; silu_out/silu_bwd (not the in-place `silu`) since backward needs the pre-activation.
 pub(crate) struct SiluOp<B: Backend> {
     out: Arc<Tensor<B>>,
     grad_in: Arc<Tensor<B>>,
@@ -258,7 +251,6 @@ impl<B: Backend> Backward<B> for SiluOp<B> {
     }
 }
 
-/// `y = a + b` (residual); backward hands the same gradient to both inputs unchanged.
 pub(crate) struct AddOp<B: Backend> {
     out: Arc<Tensor<B>>,
     len: u32,
@@ -294,7 +286,7 @@ impl<B: Backend> Backward<B> for AddOp<B> {
     }
 }
 
-/// Fused in-place RoPE on Q+K, `P: FullSeqPhase` (Train+Prefill); Decode uses `RopeOffsetOp`.
+// Decode uses RopeOffsetOp (chain.rs) instead -- position must be absolute there, not relative to the dispatch.
 pub(crate) struct RopeQkOp {
     shape: RopeMeta,
     batch_size: u32,
@@ -347,7 +339,7 @@ impl<B: Backend> Backward<B> for RopeQkOp {
     }
 }
 
-/// Fused qkv split/scatter, `P: FullSeqPhase`; Decode uses unfused `HeadGatherOp` instead.
+// Decode uses HeadGatherOp (chain.rs), unfused, instead.
 pub(crate) struct QkvSplitOp<B: Backend> {
     q: Arc<Tensor<B>>,
     k: Arc<Tensor<B>>,
@@ -397,7 +389,7 @@ impl<B: Backend> Backward<B> for QkvSplitOp<B> {
     }
 }
 
-/// Flash attention, `P: FullSeqPhase`, no weight. Decode uses `CachedAttentionOp` (a different kernel, not phase-generic).
+// Decode uses CachedAttentionOp (chain.rs) instead -- different kernel, not phase-generic.
 pub(crate) struct AttentionOp<B: Backend> {
     out: Arc<Tensor<B>>,
     grad_q: Arc<Tensor<B>>,
@@ -495,7 +487,6 @@ impl<B: Backend> Backward<B> for AttentionOp<B> {
     }
 }
 
-/// What `Tape<B, TransformerOp<B>>` (training) holds -- closed enum, static dispatch.
 pub(crate) enum TransformerOp<B: Backend> {
     Embedding(EmbeddingOp<B>),
     Linear(LinearOp<B>),

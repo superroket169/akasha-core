@@ -1,14 +1,9 @@
-//! Generic op-graph engine (Tape/Op tasarımı: ARCHITECTURE.md → Big Refactor).
-
 use super::ops::FwdPhase;
 use super::ops::GraphBuilder;
 use crate::Real;
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
-/// `elems` zero-initialized elements. Every concrete op's `new()` allocates
-/// its own scratch/gradient buffers through this -- one place to change if
-/// that ever needs to route through the pool differently.
 pub(crate) fn zeros<B: Backend>(ctx: &Arc<B>, elems: u32) -> Arc<Tensor<B>> {
     Arc::new(Tensor::init_from_cpu(
         ctx.clone(),
@@ -16,8 +11,6 @@ pub(crate) fn zeros<B: Backend>(ctx: &Arc<B>, elems: u32) -> Arc<Tensor<B>> {
     ))
 }
 
-/// A zeroed buffer the same size as `t` -- for a weight's gradient
-/// accumulator, which is always exactly the weight's own shape.
 pub(crate) fn zeros_like<B: Backend>(t: &Arc<Tensor<B>>) -> Arc<Tensor<B>> {
     zeros(&t.ctx, t.size as u32 / std::mem::size_of::<Real>() as u32)
 }
@@ -26,10 +19,6 @@ pub(crate) fn elem_count<B: Backend>(t: &Arc<Tensor<B>>) -> u32 {
     (t.size / std::mem::size_of::<Real>() as u64) as u32
 }
 
-/// A node's forward, for one specific phase `P`. Ops shared across phases
-/// (Linear, RMSNorm, ...) implement this generically over `P: FwdPhase`;
-/// an enum that wraps several such ops for one committed phase (e.g.
-/// `TransformerOp` for `Train`) implements it concretely for just that `P`.
 pub(crate) trait Forward<B: Backend, P: FwdPhase> {
     fn forward(
         &mut self,
@@ -38,24 +27,14 @@ pub(crate) trait Forward<B: Backend, P: FwdPhase> {
     ) -> Vec<Arc<Tensor<B>>>;
 }
 
-/// Backward always runs in `Train` -- there is no such thing as a Prefill
-/// or Decode backward, inference never computes gradients. Only op-kinds
-/// used by training implement this.
 pub(crate) trait Backward<B: Backend> {
-    /// Emits this op's backward node(s) and, if it owns a weight, also
-    /// accumulates into that weight's gradient as a side effect. Returns
-    /// the gradient w.r.t. each of this op's inputs, same order as `xs`
-    /// was in `forward`.
     fn backward(
         &mut self,
         gb: &mut GraphBuilder<'_, B, super::ops::Train>,
         grad_outputs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>>;
 
-    /// (weight, grad, weight_decay_eligible). None for weightless ops.
-    /// Tape::params() preserves push order -- that order IS the
-    /// checkpoint/AdamW-moment format contract (weights.params() today),
-    /// don't reorder ops after the fact without knowing that.
+    // push order here IS the checkpoint/AdamW-moment format contract.
     fn param(&self) -> Option<(&Arc<Tensor<B>>, &Arc<Tensor<B>>, bool)> {
         None
     }
@@ -65,11 +44,9 @@ pub(crate) trait Advance {
     fn advance(&mut self, step: u32);
 }
 
-/// Handle to a node already on the tape.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NodeId(usize);
 
-/// A specific output slot of a node -- almost always slot `0`.
 pub(crate) type Out = (NodeId, usize);
 
 struct TapeNode<B: Backend, Node> {
@@ -78,8 +55,6 @@ struct TapeNode<B: Backend, Node> {
     outputs: Vec<Arc<Tensor<B>>>,
 }
 
-/// A DAG of `Node`s. `Node` is `TransformerOp<B>` for training,
-/// `PrefillOp<B>`/`DecodeOp<B>` for inference.
 pub(crate) struct Tape<B: Backend, Node> {
     nodes: Vec<TapeNode<B, Node>>,
     grads: Vec<Vec<Option<Arc<Tensor<B>>>>>,
@@ -93,9 +68,6 @@ impl<B: Backend, Node> Tape<B, Node> {
         }
     }
 
-    /// Registers a value that already exists (a block's own input, or
-    /// another Tape's output) as a leaf node other nodes can reference.
-    /// Works for any `Node` -- `Identity` below is the shared leaf marker.
     pub(crate) fn input<P: FwdPhase>(
         &mut self,
         gb: &mut GraphBuilder<'_, B, P>,
@@ -107,7 +79,6 @@ impl<B: Backend, Node> Tape<B, Node> {
         self.push(gb, Node::from(Identity(x)), &[])
     }
 
-    /// Runs `op.forward(inputs' values)`, records it, returns its handle.
     pub(crate) fn push<P: FwdPhase>(
         &mut self,
         gb: &mut GraphBuilder<'_, B, P>,
@@ -130,7 +101,6 @@ impl<B: Backend, Node> Tape<B, Node> {
         NodeId(self.nodes.len() - 1)
     }
 
-    /// Slot 0 of `id`'s output(s) -- the common case.
     pub(crate) fn output(&self, id: NodeId) -> Arc<Tensor<B>> {
         self.nodes[id.0].outputs[0].clone()
     }
@@ -157,7 +127,7 @@ impl<B: Backend, Node: Backward<B>> Tape<B, Node> {
         for i in (0..self.nodes.len()).rev() {
             let slot_grads = std::mem::take(&mut grads[i]);
             if slot_grads.iter().all(Option::is_none) {
-                continue; // dead end: nothing routed here, this node's output(s) were never consumed
+                continue;
             }
 
             let filled: Vec<Arc<Tensor<B>>> = slot_grads
@@ -182,8 +152,6 @@ impl<B: Backend, Node: Backward<B>> Tape<B, Node> {
         self.grads = grads;
     }
 
-    /// A node's total accumulated gradient after `backward()`. `None`
-    /// before `backward()` runs, or if nothing routed a gradient to it.
     pub(crate) fn grad_of(&self, out: Out) -> Option<Arc<Tensor<B>>> {
         self.grads
             .get(out.0.0)
@@ -191,7 +159,6 @@ impl<B: Backend, Node: Backward<B>> Tape<B, Node> {
             .and_then(|g| g.clone())
     }
 
-    /// (weight, grad, decay) triples in push order -- see `Backward::param`.
     pub(crate) fn params(&self) -> Vec<(&Arc<Tensor<B>>, &Arc<Tensor<B>>, bool)> {
         self.nodes
             .iter()

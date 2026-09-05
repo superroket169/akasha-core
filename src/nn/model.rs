@@ -1,6 +1,5 @@
 use super::chain::{
     CacheWriteOp, CachedAttentionOp, DecodeOp, HeadGatherOp, PrefillOp, RopeOffsetOp,
-    push_norm1_qkv, push_post_attn,
 };
 use super::grad_clip::{AnyGradClip, GlobalNormClip};
 use super::loss::{AnyLoss, CrossEntropyOp};
@@ -173,16 +172,27 @@ fn build_prefill_forward<B: Backend>(
     let tokens = embedding_op.tokens_handle();
     let mut x = tape.push(gb, PrefillOp::Embedding(embedding_op), &[]);
 
+    let norm_shape = NormMeta {
+        seq_len: prompt_len,
+        size: dim,
+        eps: cfg.norm_eps,
+    };
     for ((bw, ck), cv) in weights.blocks.iter().zip(cache_k).zip(cache_v) {
         let block_input = x;
-        let qkv = push_norm1_qkv(
-            &mut tape,
+        let n1 = tape.push(
             gb,
-            bw,
-            prompt_len,
-            dim,
-            cfg.norm_eps,
-            block_input,
+            PrefillOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
+            &[(block_input, 0)],
+        );
+        let qkv_shape = MatMulMeta {
+            m: prompt_len,
+            n: dim * 3,
+            k: dim,
+        };
+        let qkv = tape.push(
+            gb,
+            PrefillOp::Linear(LinearOp::new(&bw.qkv_proj, qkv_shape, true)),
+            &[(n1, 0)],
         );
 
         let split = tape.push(
@@ -211,24 +221,58 @@ fn build_prefill_forward<B: Backend>(
             &[(rope, 0), (k_written, 0), (v_written, 0)],
         );
 
-        x = push_post_attn(
-            &mut tape,
+        let out_proj_shape = MatMulMeta {
+            m: prompt_len,
+            n: dim,
+            k: dim,
+        };
+        let proj = tape.push(
             gb,
-            bw,
-            prompt_len,
-            dim,
-            hidden,
-            cfg.norm_eps,
-            block_input,
-            attn,
+            PrefillOp::Linear(LinearOp::new(&bw.out_proj, out_proj_shape, true)),
+            &[(attn, 0)],
+        );
+        let add1 = tape.push(
+            gb,
+            PrefillOp::Add(AddOp::new(ctx, prompt_len * dim)),
+            &[(block_input, 0), (proj, 0)],
+        );
+        let n2 = tape.push(
+            gb,
+            PrefillOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
+            &[(add1, 0)],
+        );
+        let ffn_up_shape = MatMulMeta {
+            m: prompt_len,
+            n: hidden,
+            k: dim,
+        };
+        let up = tape.push(
+            gb,
+            PrefillOp::Linear(LinearOp::new(&bw.ffn_up, ffn_up_shape, true)),
+            &[(n2, 0)],
+        );
+        let silu = tape.push(
+            gb,
+            PrefillOp::Silu(SiluOp::new(ctx, prompt_len * hidden)),
+            &[(up, 0)],
+        );
+        let ffn_down_shape = MatMulMeta {
+            m: prompt_len,
+            n: dim,
+            k: hidden,
+        };
+        let down = tape.push(
+            gb,
+            PrefillOp::Linear(LinearOp::new(&bw.ffn_down, ffn_down_shape, true)),
+            &[(silu, 0)],
+        );
+        x = tape.push(
+            gb,
+            PrefillOp::Add(AddOp::new(ctx, prompt_len * dim)),
+            &[(add1, 0), (down, 0)],
         );
     }
 
-    let norm_shape = NormMeta {
-        seq_len: prompt_len,
-        size: dim,
-        eps: cfg.norm_eps,
-    };
     let final_norm = tape.push(
         gb,
         PrefillOp::RmsNorm(RmsNormOp::new(&weights.final_norm, norm_shape)),
@@ -275,9 +319,28 @@ fn build_decode_forward<B: Backend>(
     let tokens = embedding_op.tokens_handle();
     let mut x = tape.push(&mut gb, DecodeOp::Embedding(embedding_op), &[]);
 
+    let norm_shape = NormMeta {
+        seq_len: 1,
+        size: dim,
+        eps: cfg.norm_eps,
+    };
     for ((bw, ck), cv) in weights.blocks.iter().zip(cache_k).zip(cache_v) {
         let block_input = x;
-        let qkv = push_norm1_qkv(&mut tape, &mut gb, bw, 1, dim, cfg.norm_eps, block_input);
+        let n1 = tape.push(
+            &mut gb,
+            DecodeOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
+            &[(block_input, 0)],
+        );
+        let qkv_shape = MatMulMeta {
+            m: 1,
+            n: dim * 3,
+            k: dim,
+        };
+        let qkv = tape.push(
+            &mut gb,
+            DecodeOp::Linear(LinearOp::new(&bw.qkv_proj, qkv_shape, true)),
+            &[(n1, 0)],
+        );
 
         let q = tape.push(
             &mut gb,
@@ -328,24 +391,58 @@ fn build_decode_forward<B: Backend>(
             &[(rope_q, 0)],
         );
 
-        x = push_post_attn(
-            &mut tape,
+        let out_proj_shape = MatMulMeta {
+            m: 1,
+            n: dim,
+            k: dim,
+        };
+        let proj = tape.push(
             &mut gb,
-            bw,
-            1,
-            dim,
-            hidden,
-            cfg.norm_eps,
-            block_input,
-            attn,
+            DecodeOp::Linear(LinearOp::new(&bw.out_proj, out_proj_shape, true)),
+            &[(attn, 0)],
+        );
+        let add1 = tape.push(
+            &mut gb,
+            DecodeOp::Add(AddOp::new(ctx, dim)),
+            &[(block_input, 0), (proj, 0)],
+        );
+        let n2 = tape.push(
+            &mut gb,
+            DecodeOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
+            &[(add1, 0)],
+        );
+        let ffn_up_shape = MatMulMeta {
+            m: 1,
+            n: hidden,
+            k: dim,
+        };
+        let up = tape.push(
+            &mut gb,
+            DecodeOp::Linear(LinearOp::new(&bw.ffn_up, ffn_up_shape, true)),
+            &[(n2, 0)],
+        );
+        let silu = tape.push(
+            &mut gb,
+            DecodeOp::Silu(SiluOp::new(ctx, hidden)),
+            &[(up, 0)],
+        );
+        let ffn_down_shape = MatMulMeta {
+            m: 1,
+            n: dim,
+            k: hidden,
+        };
+        let down = tape.push(
+            &mut gb,
+            DecodeOp::Linear(LinearOp::new(&bw.ffn_down, ffn_down_shape, true)),
+            &[(silu, 0)],
+        );
+        x = tape.push(
+            &mut gb,
+            DecodeOp::Add(AddOp::new(ctx, dim)),
+            &[(add1, 0), (down, 0)],
         );
     }
 
-    let norm_shape = NormMeta {
-        seq_len: 1,
-        size: dim,
-        eps: cfg.norm_eps,
-    };
     let final_norm = tape.push(
         &mut gb,
         DecodeOp::RmsNorm(RmsNormOp::new(&weights.final_norm, norm_shape)),
