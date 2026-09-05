@@ -4,7 +4,7 @@ use super::ops::meta::{
     EmbeddingMeta, FlashAttnMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
 };
 use super::ops::{FullSeqPhase, FwdPhase, GraphBuilder, Train};
-use super::tape::{Backward, Forward, Identity, zeros, zeros_like};
+use super::tape::{Backward, Forward, Leaf, zeros, zeros_like};
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
@@ -487,7 +487,7 @@ impl<B: Backend> Backward<B> for AttentionOp<B> {
     }
 }
 
-pub(crate) enum TransformerOp<B: Backend> {
+pub(crate) enum TrainOp<B: Backend> {
     Embedding(EmbeddingOp<B>),
     Linear(LinearOp<B>),
     RmsNorm(RmsNormOp<B>),
@@ -496,65 +496,65 @@ pub(crate) enum TransformerOp<B: Backend> {
     RopeQk(RopeQkOp),
     QkvSplit(QkvSplitOp<B>),
     Attention(AttentionOp<B>),
-    Identity(Identity<B>),
+    Leaf(Leaf<B>),
 }
 
-impl<B: Backend> From<Identity<B>> for TransformerOp<B> {
-    fn from(id: Identity<B>) -> Self {
-        TransformerOp::Identity(id)
+impl<B: Backend> From<Leaf<B>> for TrainOp<B> {
+    fn from(id: Leaf<B>) -> Self {
+        TrainOp::Leaf(id)
     }
 }
 
-impl<B: Backend> Forward<B, Train> for TransformerOp<B> {
+impl<B: Backend> Forward<B, Train> for TrainOp<B> {
     fn forward(
         &mut self,
         gb: &mut GraphBuilder<'_, B, Train>,
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         match self {
-            TransformerOp::Embedding(op) => op.forward(gb, xs),
-            TransformerOp::Linear(op) => op.forward(gb, xs),
-            TransformerOp::RmsNorm(op) => op.forward(gb, xs),
-            TransformerOp::Silu(op) => op.forward(gb, xs),
-            TransformerOp::Add(op) => op.forward(gb, xs),
-            TransformerOp::RopeQk(op) => op.forward(gb, xs),
-            TransformerOp::QkvSplit(op) => op.forward(gb, xs),
-            TransformerOp::Attention(op) => op.forward(gb, xs),
-            TransformerOp::Identity(op) => op.forward(gb, xs),
+            TrainOp::Embedding(op) => op.forward(gb, xs),
+            TrainOp::Linear(op) => op.forward(gb, xs),
+            TrainOp::RmsNorm(op) => op.forward(gb, xs),
+            TrainOp::Silu(op) => op.forward(gb, xs),
+            TrainOp::Add(op) => op.forward(gb, xs),
+            TrainOp::RopeQk(op) => op.forward(gb, xs),
+            TrainOp::QkvSplit(op) => op.forward(gb, xs),
+            TrainOp::Attention(op) => op.forward(gb, xs),
+            TrainOp::Leaf(op) => op.forward(gb, xs),
         }
     }
 }
 
-impl<B: Backend> Backward<B> for TransformerOp<B> {
+impl<B: Backend> Backward<B> for TrainOp<B> {
     fn backward(
         &mut self,
         gb: &mut GraphBuilder<'_, B, Train>,
         grad_outputs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         match self {
-            TransformerOp::Embedding(op) => op.backward(gb, grad_outputs),
-            TransformerOp::Linear(op) => op.backward(gb, grad_outputs),
-            TransformerOp::RmsNorm(op) => op.backward(gb, grad_outputs),
-            TransformerOp::Silu(op) => op.backward(gb, grad_outputs),
-            TransformerOp::Add(op) => op.backward(gb, grad_outputs),
-            TransformerOp::RopeQk(op) => op.backward(gb, grad_outputs),
-            TransformerOp::QkvSplit(op) => op.backward(gb, grad_outputs),
-            TransformerOp::Attention(op) => op.backward(gb, grad_outputs),
-            TransformerOp::Identity(op) => op.backward(gb, grad_outputs),
+            TrainOp::Embedding(op) => op.backward(gb, grad_outputs),
+            TrainOp::Linear(op) => op.backward(gb, grad_outputs),
+            TrainOp::RmsNorm(op) => op.backward(gb, grad_outputs),
+            TrainOp::Silu(op) => op.backward(gb, grad_outputs),
+            TrainOp::Add(op) => op.backward(gb, grad_outputs),
+            TrainOp::RopeQk(op) => op.backward(gb, grad_outputs),
+            TrainOp::QkvSplit(op) => op.backward(gb, grad_outputs),
+            TrainOp::Attention(op) => op.backward(gb, grad_outputs),
+            TrainOp::Leaf(op) => op.backward(gb, grad_outputs),
         }
     }
 
     fn param(&self) -> Option<(&Arc<Tensor<B>>, &Arc<Tensor<B>>, bool)> {
         match self {
-            TransformerOp::Embedding(op) => op.param(),
-            TransformerOp::Linear(op) => op.param(),
-            TransformerOp::RmsNorm(op) => op.param(),
-            TransformerOp::Silu(op) => op.param(),
-            TransformerOp::Add(op) => op.param(),
-            TransformerOp::RopeQk(op) => op.param(),
-            TransformerOp::QkvSplit(op) => op.param(),
-            TransformerOp::Attention(op) => op.param(),
-            TransformerOp::Identity(op) => op.param(),
+            TrainOp::Embedding(op) => op.param(),
+            TrainOp::Linear(op) => op.param(),
+            TrainOp::RmsNorm(op) => op.param(),
+            TrainOp::Silu(op) => op.param(),
+            TrainOp::Add(op) => op.param(),
+            TrainOp::RopeQk(op) => op.param(),
+            TrainOp::QkvSplit(op) => op.param(),
+            TrainOp::Attention(op) => op.param(),
+            TrainOp::Leaf(op) => op.param(),
         }
     }
 }

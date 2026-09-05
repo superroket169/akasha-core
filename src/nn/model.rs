@@ -9,7 +9,7 @@ use super::sampling;
 use super::tape::{NodeId, Tape, zeros};
 use super::transformer::{
     AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
-    TransformerOp,
+    TrainOp,
 };
 use super::weights::{BlockWeights, ModelWeights};
 use crate::Real;
@@ -19,7 +19,7 @@ use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor};
 
 struct BuiltBlock<B: Backend> {
-    tape: Tape<B, TransformerOp<B>>,
+    tape: Tape<B, TrainOp<B>>,
     block_input_id: NodeId,
     output: NodeId,
 }
@@ -47,7 +47,7 @@ fn build_transformer_block<B: Backend>(
     };
     let n1 = tape.push(
         gb,
-        TransformerOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
+        TrainOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)),
         &[(block_input_id, 0)],
     );
 
@@ -58,27 +58,27 @@ fn build_transformer_block<B: Backend>(
     };
     let qkv = tape.push(
         gb,
-        TransformerOp::Linear(LinearOp::new(&bw.qkv_proj, qkv_shape, true)),
+        TrainOp::Linear(LinearOp::new(&bw.qkv_proj, qkv_shape, true)),
         &[(n1, 0)],
     );
 
     // 3 outputs: q=slot0, k=slot1, v=slot2
     let split = tape.push(
         gb,
-        TransformerOp::QkvSplit(QkvSplitOp::new(ctx, rows, dim)),
+        TrainOp::QkvSplit(QkvSplitOp::new(ctx, rows, dim)),
         &[(qkv, 0)],
     );
 
     // 2 outputs: rotated q=slot0, k=slot1
     let rope = tape.push(
         gb,
-        TransformerOp::RopeQk(RopeQkOp::new(cfg.seq_len, dim, head_dim, cfg.batch_size)),
+        TrainOp::RopeQk(RopeQkOp::new(cfg.seq_len, dim, head_dim, cfg.batch_size)),
         &[(split, 0), (split, 1)],
     );
 
     let attn = tape.push(
         gb,
-        TransformerOp::Attention(AttentionOp::new(
+        TrainOp::Attention(AttentionOp::new(
             ctx,
             cfg.seq_len,
             dim,
@@ -95,19 +95,19 @@ fn build_transformer_block<B: Backend>(
     };
     let proj = tape.push(
         gb,
-        TransformerOp::Linear(LinearOp::new(&bw.out_proj, out_proj_shape, true)),
+        TrainOp::Linear(LinearOp::new(&bw.out_proj, out_proj_shape, true)),
         &[(attn, 0)],
     );
 
     let add1 = tape.push(
         gb,
-        TransformerOp::Add(AddOp::new(ctx, rows * dim)),
+        TrainOp::Add(AddOp::new(ctx, rows * dim)),
         &[(block_input_id, 0), (proj, 0)],
     );
 
     let n2 = tape.push(
         gb,
-        TransformerOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
+        TrainOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape)),
         &[(add1, 0)],
     );
 
@@ -118,13 +118,13 @@ fn build_transformer_block<B: Backend>(
     };
     let up = tape.push(
         gb,
-        TransformerOp::Linear(LinearOp::new(&bw.ffn_up, ffn_up_shape, true)),
+        TrainOp::Linear(LinearOp::new(&bw.ffn_up, ffn_up_shape, true)),
         &[(n2, 0)],
     );
 
     let silu = tape.push(
         gb,
-        TransformerOp::Silu(SiluOp::new(ctx, rows * hidden)),
+        TrainOp::Silu(SiluOp::new(ctx, rows * hidden)),
         &[(up, 0)],
     );
 
@@ -135,13 +135,13 @@ fn build_transformer_block<B: Backend>(
     };
     let down = tape.push(
         gb,
-        TransformerOp::Linear(LinearOp::new(&bw.ffn_down, ffn_down_shape, true)),
+        TrainOp::Linear(LinearOp::new(&bw.ffn_down, ffn_down_shape, true)),
         &[(silu, 0)],
     );
 
     let add2 = tape.push(
         gb,
-        TransformerOp::Add(AddOp::new(ctx, rows * dim)),
+        TrainOp::Add(AddOp::new(ctx, rows * dim)),
         &[(add1, 0), (down, 0)],
     );
 
@@ -478,10 +478,10 @@ struct TrainState<B: Backend> {
     fwd_graph: ComputeGraph<B>,
     bwd_graph: ComputeGraph<B>,
     tokens: Arc<Tensor<B>>, // embedding's input handle -- see EmbeddingOp::tokens_handle
-    head: Tape<B, TransformerOp<B>>,
+    head: Tape<B, TrainOp<B>>,
     embedding_id: NodeId,
     blocks: Vec<BuiltBlock<B>>,
-    tail: Tape<B, TransformerOp<B>>,
+    tail: Tape<B, TrainOp<B>>,
     tail_input_id: NodeId,
     logits_id: NodeId,
     loss: AnyLoss<B>,
@@ -510,7 +510,7 @@ impl<B: Backend> Model<B> {
         let embedding_op = EmbeddingOp::new(&weights.embedding, rows, cfg.vocab_size, cfg.dim);
         let tokens = embedding_op.tokens_handle();
         let mut head = Tape::new();
-        let embedding_id = head.push(&mut gb, TransformerOp::Embedding(embedding_op), &[]);
+        let embedding_id = head.push(&mut gb, TrainOp::Embedding(embedding_op), &[]);
 
         let mut x = head.output(embedding_id);
         let mut blocks = Vec::with_capacity(weights.blocks.len());
@@ -533,7 +533,7 @@ impl<B: Backend> Model<B> {
         };
         let final_norm = tail.push(
             &mut gb,
-            TransformerOp::RmsNorm(RmsNormOp::new(&weights.final_norm, norm_shape)),
+            TrainOp::RmsNorm(RmsNormOp::new(&weights.final_norm, norm_shape)),
             &[(tail_input_id, 0)],
         );
         let lm_shape = MatMulMeta {
@@ -543,7 +543,7 @@ impl<B: Backend> Model<B> {
         };
         let logits_id = tail.push(
             &mut gb,
-            TransformerOp::Linear(LinearOp::new(&weights.lm_head, lm_shape, true)),
+            TrainOp::Linear(LinearOp::new(&weights.lm_head, lm_shape, true)),
             &[(final_norm, 0)],
         );
 

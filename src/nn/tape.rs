@@ -74,9 +74,9 @@ impl<B: Backend, Node> Tape<B, Node> {
         x: Arc<Tensor<B>>,
     ) -> NodeId
     where
-        Node: From<Identity<B>> + Forward<B, P>,
+        Node: From<Leaf<B>> + Forward<B, P>,
     {
-        self.push(gb, Node::from(Identity(x)), &[])
+        self.push(gb, Node::from(Leaf(x)), &[])
     }
 
     pub(crate) fn push<P: FwdPhase>(
@@ -175,9 +175,9 @@ impl<B: Backend, Node: Advance> Tape<B, Node> {
     }
 }
 
-pub(crate) struct Identity<B: Backend>(pub Arc<Tensor<B>>);
+pub(crate) struct Leaf<B: Backend>(pub Arc<Tensor<B>>);
 
-impl<B: Backend, P: FwdPhase> Forward<B, P> for Identity<B> {
+impl<B: Backend, P: FwdPhase> Forward<B, P> for Leaf<B> {
     fn forward(
         &mut self,
         _gb: &mut GraphBuilder<'_, B, P>,
@@ -187,7 +187,7 @@ impl<B: Backend, P: FwdPhase> Forward<B, P> for Identity<B> {
     }
 }
 
-impl<B: Backend> Backward<B> for Identity<B> {
+impl<B: Backend> Backward<B> for Leaf<B> {
     fn backward(
         &mut self,
         _gb: &mut GraphBuilder<'_, B, super::ops::Train>,

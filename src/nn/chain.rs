@@ -3,7 +3,7 @@ use super::ops::meta::{
     AttnCachedMeta, CacheWriteMeta, HeadMoveMeta, KernelMeta, RopeOffsetMeta, SoftmaxRectMeta,
 };
 use super::ops::{CachedPhase, Decode, GraphBuilder, Prefill};
-use super::tape::{Advance, Forward, Identity, zeros};
+use super::tape::{Advance, Forward, Leaf, zeros};
 use super::transformer::{
     AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
 };
@@ -213,12 +213,12 @@ pub(crate) enum PrefillOp<B: Backend> {
     QkvSplit(QkvSplitOp<B>),
     Attention(AttentionOp<B>),
     CacheWrite(CacheWriteOp<B>),
-    Identity(Identity<B>),
+    Leaf(Leaf<B>),
 }
 
-impl<B: Backend> From<Identity<B>> for PrefillOp<B> {
-    fn from(id: Identity<B>) -> Self {
-        PrefillOp::Identity(id)
+impl<B: Backend> From<Leaf<B>> for PrefillOp<B> {
+    fn from(id: Leaf<B>) -> Self {
+        PrefillOp::Leaf(id)
     }
 }
 
@@ -238,7 +238,7 @@ impl<B: Backend> Forward<B, Prefill> for PrefillOp<B> {
             PrefillOp::QkvSplit(op) => op.forward(gb, xs),
             PrefillOp::Attention(op) => op.forward(gb, xs),
             PrefillOp::CacheWrite(op) => op.forward(gb, xs),
-            PrefillOp::Identity(op) => op.forward(gb, xs),
+            PrefillOp::Leaf(op) => op.forward(gb, xs),
         }
     }
 }
@@ -253,12 +253,12 @@ pub(crate) enum DecodeOp<B: Backend> {
     HeadGather(HeadGatherOp<B>),
     CacheWrite(CacheWriteOp<B>),
     CachedAttention(CachedAttentionOp<B>),
-    Identity(Identity<B>),
+    Leaf(Leaf<B>),
 }
 
-impl<B: Backend> From<Identity<B>> for DecodeOp<B> {
-    fn from(id: Identity<B>) -> Self {
-        DecodeOp::Identity(id)
+impl<B: Backend> From<Leaf<B>> for DecodeOp<B> {
+    fn from(id: Leaf<B>) -> Self {
+        DecodeOp::Leaf(id)
     }
 }
 
@@ -278,7 +278,7 @@ impl<B: Backend> Forward<B, Decode> for DecodeOp<B> {
             DecodeOp::HeadGather(op) => op.forward(gb, xs),
             DecodeOp::CacheWrite(op) => op.forward(gb, xs),
             DecodeOp::CachedAttention(op) => op.forward(gb, xs),
-            DecodeOp::Identity(op) => op.forward(gb, xs),
+            DecodeOp::Leaf(op) => op.forward(gb, xs),
         }
     }
 }

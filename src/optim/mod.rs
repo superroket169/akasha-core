@@ -6,7 +6,7 @@ use crate::Real;
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
-/// Same dispatch pattern as `TransformerOp` (block.rs): a closed enum,
+/// Same dispatch pattern as `TrainOp` (transformer.rs): a closed enum,
 /// matched, no `dyn Trait`. One variant today (AdamW) -- a second
 /// optimizer means a second arm here, same as adding a new `Op` kind.
 pub enum AnyOptimizer<B: Backend> {
