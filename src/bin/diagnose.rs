@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Instant;
 
 use akasha_core::config::{
     GradClipConfig, GradClipKind, ModelConfig, OptimizerConfig, OptimizerKind, RunConfig,

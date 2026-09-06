@@ -24,95 +24,37 @@ macro_rules! node {
     };
 }
 
-fn block_prologue_specs<B: Backend, Node>(
-    bw: &BlockWeights<B>,
-    rows: u32,
-    dim: u32,
-    eps: f32,
-) -> Vec<NodeSpec<Node>>
-where
-    Node: From<RmsNormOp<B>> + From<LinearOp<B>>,
-{
-    let norm_shape = NormMeta {
-        seq_len: rows,
-        size: dim,
-        eps,
-    };
-    vec![
-        node!("n1" <- &[("input", 0)], Node::from(RmsNormOp::new(&bw.norm_1, norm_shape))),
-        node!("qkv" <- &[("n1", 0)], Node::from(LinearOp::new(
-            &bw.qkv_proj,
-            MatMulMeta { m: rows, n: dim * 3, k: dim },
-            true,
-        ))),
-    ]
-}
-
-fn block_epilogue_specs<B: Backend, Node>(
-    bw: &BlockWeights<B>,
-    ctx: &Arc<B>,
-    rows: u32,
-    dim: u32,
-    hidden: u32,
-    eps: f32,
-) -> Vec<NodeSpec<Node>>
-where
-    Node: From<LinearOp<B>> + From<AddOp<B>> + From<RmsNormOp<B>> + From<SiluOp<B>>,
-{
-    let norm_shape = NormMeta {
-        seq_len: rows,
-        size: dim,
-        eps,
-    };
-    vec![
-        node!("proj" <- &[("attn", 0)], Node::from(LinearOp::new(
-            &bw.out_proj,
-            MatMulMeta { m: rows, n: dim, k: dim },
-            true,
-        ))),
-        node!("add1" <- &[("input", 0), ("proj", 0)], Node::from(AddOp::new(ctx, rows * dim))),
-        node!("n2" <- &[("add1", 0)], Node::from(RmsNormOp::new(&bw.norm_2, norm_shape))),
-        node!("up" <- &[("n2", 0)], Node::from(LinearOp::new(
-            &bw.ffn_up,
-            MatMulMeta { m: rows, n: hidden, k: dim },
-            true,
-        ))),
-        node!("silu" <- &[("up", 0)], Node::from(SiluOp::new(ctx, rows * hidden))),
-        node!("down" <- &[("silu", 0)], Node::from(LinearOp::new(
-            &bw.ffn_down,
-            MatMulMeta { m: rows, n: dim, k: hidden },
-            true,
-        ))),
-        node!("add2" <- &[("add1", 0), ("down", 0)], Node::from(AddOp::new(ctx, rows * dim))),
-    ]
-}
-
 fn transformer_block_specs<B: Backend>(
     bw: &BlockWeights<B>,
     cfg: &ModelConfig,
     rows: u32,
 ) -> Vec<NodeSpec<TrainOp<B>>> {
     let dim = cfg.dim;
+    let hidden = cfg.ffn_hidden;
     let head_dim = cfg.head_dim();
     let ctx = &bw.qkv_proj.ctx;
+    let norm_shape = NormMeta { seq_len: rows, size: dim, eps: cfg.norm_eps };
 
-    let mut specs = block_prologue_specs(bw, rows, dim, cfg.norm_eps);
-    specs.extend([
+    vec![
+        node!("n1" <- &[("input", 0)], TrainOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape))),
+        node!("qkv" <- &[("n1", 0)], TrainOp::Linear(LinearOp::new(
+            &bw.qkv_proj, MatMulMeta { m: rows, n: dim * 3, k: dim }, true))),
         node!("split" <- &[("qkv", 0)], TrainOp::QkvSplit(QkvSplitOp::new(ctx, rows, dim))),
         node!("rope" <- &[("split", 0), ("split", 1)],
             TrainOp::RopeQk(RopeQkOp::new(cfg.seq_len, dim, head_dim, cfg.batch_size))),
         node!("attn" <- &[("rope", 0), ("rope", 1), ("split", 2)],
             TrainOp::Attention(AttentionOp::new(ctx, cfg.seq_len, dim, head_dim, cfg.batch_size))),
-    ]);
-    specs.extend(block_epilogue_specs(
-        bw,
-        ctx,
-        rows,
-        dim,
-        cfg.ffn_hidden,
-        cfg.norm_eps,
-    ));
-    specs
+        node!("proj" <- &[("attn", 0)], TrainOp::Linear(LinearOp::new(
+            &bw.out_proj, MatMulMeta { m: rows, n: dim, k: dim }, true))),
+        node!("add1" <- &[("input", 0), ("proj", 0)], TrainOp::Add(AddOp::new(ctx, rows * dim))),
+        node!("n2" <- &[("add1", 0)], TrainOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape))),
+        node!("up" <- &[("n2", 0)], TrainOp::Linear(LinearOp::new(
+            &bw.ffn_up, MatMulMeta { m: rows, n: hidden, k: dim }, true))),
+        node!("silu" <- &[("up", 0)], TrainOp::Silu(SiluOp::new(ctx, rows * hidden))),
+        node!("down" <- &[("silu", 0)], TrainOp::Linear(LinearOp::new(
+            &bw.ffn_down, MatMulMeta { m: rows, n: dim, k: hidden }, true))),
+        node!("add2" <- &[("add1", 0), ("down", 0)], TrainOp::Add(AddOp::new(ctx, rows * dim))),
+    ]
 }
 
 pub(crate) fn build_transformer_block<B: Backend>(
@@ -143,10 +85,14 @@ fn prefill_block_specs<B: Backend>(
     prompt_len: u32,
 ) -> Vec<NodeSpec<PrefillOp<B>>> {
     let dim = cfg.dim;
+    let hidden = cfg.ffn_hidden;
     let head_dim = cfg.head_dim();
+    let norm_shape = NormMeta { seq_len: prompt_len, size: dim, eps: cfg.norm_eps };
 
-    let mut specs = block_prologue_specs(bw, prompt_len, dim, cfg.norm_eps);
-    specs.extend([
+    vec![
+        node!("n1" <- &[("input", 0)], PrefillOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape))),
+        node!("qkv" <- &[("n1", 0)], PrefillOp::Linear(LinearOp::new(
+            &bw.qkv_proj, MatMulMeta { m: prompt_len, n: dim * 3, k: dim }, true))),
         node!("split" <- &[("qkv", 0)], PrefillOp::QkvSplit(QkvSplitOp::new(ctx, prompt_len, dim))),
         node!("rope" <- &[("split", 0), ("split", 1)],
             PrefillOp::RopeQk(RopeQkOp::new(prompt_len, dim, head_dim, 1))),
@@ -156,16 +102,17 @@ fn prefill_block_specs<B: Backend>(
             PrefillOp::CacheWrite(CacheWriteOp::new(cache_v.clone(), prompt_len, dim))),
         node!("attn" <- &[("rope", 0), ("k_written", 0), ("v_written", 0)],
             PrefillOp::Attention(AttentionOp::new(ctx, prompt_len, dim, head_dim, 1))),
-    ]);
-    specs.extend(block_epilogue_specs(
-        bw,
-        ctx,
-        prompt_len,
-        dim,
-        cfg.ffn_hidden,
-        cfg.norm_eps,
-    ));
-    specs
+        node!("proj" <- &[("attn", 0)], PrefillOp::Linear(LinearOp::new(
+            &bw.out_proj, MatMulMeta { m: prompt_len, n: dim, k: dim }, true))),
+        node!("add1" <- &[("input", 0), ("proj", 0)], PrefillOp::Add(AddOp::new(ctx, prompt_len * dim))),
+        node!("n2" <- &[("add1", 0)], PrefillOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape))),
+        node!("up" <- &[("n2", 0)], PrefillOp::Linear(LinearOp::new(
+            &bw.ffn_up, MatMulMeta { m: prompt_len, n: hidden, k: dim }, true))),
+        node!("silu" <- &[("up", 0)], PrefillOp::Silu(SiluOp::new(ctx, prompt_len * hidden))),
+        node!("down" <- &[("silu", 0)], PrefillOp::Linear(LinearOp::new(
+            &bw.ffn_down, MatMulMeta { m: prompt_len, n: dim, k: hidden }, true))),
+        node!("add2" <- &[("add1", 0), ("down", 0)], PrefillOp::Add(AddOp::new(ctx, prompt_len * dim))),
+    ]
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -229,10 +176,14 @@ fn decode_block_specs<B: Backend>(
     max_context_len: u32,
 ) -> Vec<NodeSpec<DecodeOp<B>>> {
     let dim = cfg.dim;
+    let hidden = cfg.ffn_hidden;
     let head_dim = cfg.head_dim();
+    let norm_shape = NormMeta { seq_len: 1, size: dim, eps: cfg.norm_eps };
 
-    let mut specs = block_prologue_specs(bw, 1, dim, cfg.norm_eps);
-    specs.extend([
+    vec![
+        node!("n1" <- &[("input", 0)], DecodeOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape))),
+        node!("qkv" <- &[("n1", 0)], DecodeOp::Linear(LinearOp::new(
+            &bw.qkv_proj, MatMulMeta { m: 1, n: dim * 3, k: dim }, true))),
         node!("q" <- &[("qkv", 0)], DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 0))),
         node!("k" <- &[("qkv", 0)], DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, dim))),
         node!("v" <- &[("qkv", 0)], DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 2 * dim))),
@@ -250,16 +201,17 @@ fn decode_block_specs<B: Backend>(
             head_dim,
             max_context_len,
         ))),
-    ]);
-    specs.extend(block_epilogue_specs(
-        bw,
-        ctx,
-        1,
-        dim,
-        cfg.ffn_hidden,
-        cfg.norm_eps,
-    ));
-    specs
+        node!("proj" <- &[("attn", 0)], DecodeOp::Linear(LinearOp::new(
+            &bw.out_proj, MatMulMeta { m: 1, n: dim, k: dim }, true))),
+        node!("add1" <- &[("input", 0), ("proj", 0)], DecodeOp::Add(AddOp::new(ctx, dim))),
+        node!("n2" <- &[("add1", 0)], DecodeOp::RmsNorm(RmsNormOp::new(&bw.norm_2, norm_shape))),
+        node!("up" <- &[("n2", 0)], DecodeOp::Linear(LinearOp::new(
+            &bw.ffn_up, MatMulMeta { m: 1, n: hidden, k: dim }, true))),
+        node!("silu" <- &[("up", 0)], DecodeOp::Silu(SiluOp::new(ctx, hidden))),
+        node!("down" <- &[("silu", 0)], DecodeOp::Linear(LinearOp::new(
+            &bw.ffn_down, MatMulMeta { m: 1, n: dim, k: hidden }, true))),
+        node!("add2" <- &[("add1", 0), ("down", 0)], DecodeOp::Add(AddOp::new(ctx, dim))),
+    ]
 }
 
 pub(crate) fn build_decode_forward<B: Backend>(
