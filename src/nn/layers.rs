@@ -2,9 +2,9 @@
 //! fused-into-`Trainer` forward/backward graphs. Inference never touches
 //! these -- it reads `ModelWeights` directly.
 
-use super::ops;
-use super::ops::GraphBuilder;
-use super::ops::meta::{
+use super::kernels;
+use super::kernels::GraphBuilder;
+use super::kernels::meta::{
     CrossEntropyMeta, EmbeddingMeta, FlashAttnMeta, HeadMoveMeta, MatMulMeta, NormMeta, RopeMeta,
 };
 use super::weights::BlockWeights;
@@ -55,7 +55,7 @@ impl<B: Backend> Linear<B> {
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        ops::matmul(
+        kernels::matmul(
             &mut gb,
             input_buffer,
             &weight,
@@ -69,7 +69,7 @@ impl<B: Backend> Linear<B> {
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut backward_graph);
-        ops::matmul_weight_bwd(
+        kernels::matmul_weight_bwd(
             &mut gb,
             input_buffer,
             grad_output,
@@ -80,7 +80,7 @@ impl<B: Backend> Linear<B> {
                 k: in_features,
             },
         );
-        ops::matmul_trp(
+        kernels::matmul_trp(
             &mut gb,
             grad_output,
             &weight,
@@ -161,11 +161,11 @@ impl<B: Backend> RMSNorm<B> {
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        ops::rmsnorm(&mut gb, input_buffer, &weight, &out_buffer, shape);
+        kernels::rmsnorm(&mut gb, input_buffer, &weight, &out_buffer, shape);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut backward_graph);
-        ops::rmsnorm_bwd(
+        kernels::rmsnorm_bwd(
             &mut gb,
             grad_output,
             input_buffer,
@@ -237,11 +237,11 @@ impl<B: Backend> Embedding<B> {
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        ops::embedding(&mut gb, tokens_buffer, &table, &out_buffer, shape);
+        kernels::embedding(&mut gb, tokens_buffer, &table, &out_buffer, shape);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut backward_graph);
-        ops::embedding_bwd(&mut gb, tokens_buffer, grad_output, &grad_table, shape);
+        kernels::embedding_bwd(&mut gb, tokens_buffer, grad_output, &grad_table, shape);
 
         Self {
             table,
@@ -290,12 +290,12 @@ impl<B: Backend> Add<B> {
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        ops::add_out(&mut gb, buf_a, buf_b, &out_buffer, length);
+        kernels::add_out(&mut gb, buf_a, buf_b, &out_buffer, length);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut backward_graph);
-        ops::residual_add(&mut gb, &grad_a, grad_output, length);
-        ops::residual_add(&mut gb, &grad_b, grad_output, length);
+        kernels::residual_add(&mut gb, &grad_a, grad_output, length);
+        kernels::residual_add(&mut gb, &grad_b, grad_output, length);
 
         Self {
             out_buffer,
@@ -341,11 +341,11 @@ impl<B: Backend> SiLU<B> {
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        ops::silu_out(&mut gb, input_buffer, &out_buffer, total_elements);
+        kernels::silu_out(&mut gb, input_buffer, &out_buffer, total_elements);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut backward_graph);
-        ops::silu_bwd(
+        kernels::silu_bwd(
             &mut gb,
             input_buffer,
             grad_output,
@@ -416,7 +416,7 @@ impl<B: Backend> SelfAttention<B> {
                     scale,
                     row_offset: b * seq_len,
                 };
-                ops::flash_attention(&mut gb, q_buf, k_buf, v_buf, &out_buffer, shape)
+                kernels::flash_attention(&mut gb, q_buf, k_buf, v_buf, &out_buffer, shape)
             })
             .collect();
 
@@ -429,7 +429,7 @@ impl<B: Backend> SelfAttention<B> {
                 scale,
                 row_offset: b as u32 * seq_len,
             };
-            ops::flash_attention_bwd(
+            kernels::flash_attention_bwd(
                 &mut gb,
                 q_buf,
                 k_buf,
@@ -491,11 +491,11 @@ impl<B: Backend> CrossEntropy<B> {
 
         let mut forward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut forward_graph);
-        ops::cross_entropy(&mut gb, logits, &target_tokens, &losses, shape);
+        kernels::cross_entropy(&mut gb, logits, &target_tokens, &losses, shape);
 
         let mut backward_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut backward_graph);
-        ops::cross_entropy_bwd(&mut gb, logits, &target_tokens, &d_losses, shape);
+        kernels::cross_entropy_bwd(&mut gb, logits, &target_tokens, &d_losses, shape);
 
         Self {
             seq_len,
@@ -620,7 +620,7 @@ impl<B: Backend> TransformerBlock<B> {
         let v_buf = Arc::new(Tensor::init_from_cpu(ctx.clone(), &zeros_dim));
         let mut qkv_split_forward = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut qkv_split_forward);
-        ops::qkv_split(
+        kernels::qkv_split(
             &mut gb,
             &qkv_proj.out_buffer,
             &q_buf,
@@ -640,7 +640,7 @@ impl<B: Backend> TransformerBlock<B> {
                 head_dim,
                 row_offset: b * seq_len,
             };
-            ops::rope_qk(&mut gb, &q_buf, &k_buf, rope_shape);
+            kernels::rope_qk(&mut gb, &q_buf, &k_buf, rope_shape);
         }
 
         let attention = SelfAttention::new(
@@ -738,11 +738,11 @@ impl<B: Backend> TransformerBlock<B> {
 
         let mut barrier_1 = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut barrier_1);
-        ops::add_inplace_bwd(&mut gb, &add_2.grad_a, &norm_2.grad_input, elems);
+        kernels::add_inplace_bwd(&mut gb, &add_2.grad_a, &norm_2.grad_input, elems);
 
         let mut barrier_3 = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut barrier_3);
-        ops::add_inplace_bwd(&mut gb, &grad_input, &norm_1.grad_input, elems);
+        kernels::add_inplace_bwd(&mut gb, &grad_input, &norm_1.grad_input, elems);
 
         let mut rope_backward = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut rope_backward);
@@ -753,13 +753,13 @@ impl<B: Backend> TransformerBlock<B> {
                 head_dim,
                 row_offset: b * seq_len,
             };
-            ops::rope_bwd_qk(&mut gb, &g_attn_q, &g_attn_k, rope_shape);
+            kernels::rope_bwd_qk(&mut gb, &g_attn_q, &g_attn_k, rope_shape);
         }
 
         // dL/dQ + dL/dK + dL/dV -> one fused grad_output for qkv_proj's backward
         let mut qkv_gather_backward = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::train(&mut qkv_gather_backward);
-        ops::qkv_scatter(
+        kernels::qkv_scatter(
             &mut gb,
             &g_attn_q,
             &g_attn_k,

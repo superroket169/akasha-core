@@ -1,12 +1,31 @@
-use super::cached_ops::{
+// Not implemented, just noted (2026-09-06): every function pair in this file
+// (`*_block_specs` + `build_*`) is the same shape per phase, and Mamba/GDN
+// will each need their own such pair. A `BlockArchitecture` trait could
+// formalize this -- config-driven dispatch instead of a match on BlockKind:
+//
+//   trait BlockArchitecture {
+//       type TrainOp: Forward<Train> + Backward;
+//       type PrefillOp: Forward<Prefill>;
+//       type DecodeOp: Forward<Decode> + Advance;
+//       fn train_specs(bw: &BlockWeights<B>, cfg: &ModelConfig, rows: u32) -> Vec<NodeSpec<Self::TrainOp>>;
+//       fn prefill_specs(...) -> Vec<NodeSpec<Self::PrefillOp>>;
+//       fn decode_specs(...) -> Vec<NodeSpec<Self::DecodeOp>>;
+//   }
+//
+// This is the concrete Rust shape of ARCHITECTURE.md's long-parked "Big
+// Refactor: Block trait" idea -- worth revisiting from here when Mamba/GDN
+// actually start, not before (their real spec shape, esp. chunked training,
+// isn't known yet).
+
+use super::ops::cached::{
     CacheWriteOp, CachedAttentionOp, DecodeOp, HeadGatherOp, PrefillOp, RopeOffsetOp,
 };
-use super::core_ops::{
+use super::ops::full_seq::{
     AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp, TrainOp,
 };
 use super::model::{BuiltBlock, DecodeGraph};
-use super::ops::meta::{MatMulMeta, NormMeta};
-use super::ops::{GraphBuilder, Prefill, Train};
+use super::kernels::meta::{MatMulMeta, NormMeta};
+use super::kernels::{GraphBuilder, Prefill, Train};
 use super::tape::{NodeId, NodeSpec, Tape};
 use super::weights::{BlockWeights, ModelWeights};
 use crate::config::ModelConfig;

@@ -1,12 +1,8 @@
-pub mod advance;
-pub mod backward;
 pub mod block_specs;
-pub mod cached_ops;
 pub mod checkpoint;
-pub mod core_ops;
-pub mod forward;
-pub mod from;
+pub mod dispatch;
 pub mod grad_clip;
+pub mod kernels;
 pub mod layers;
 pub mod loss;
 pub mod model;

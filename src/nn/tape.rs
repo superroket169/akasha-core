@@ -1,5 +1,5 @@
-use super::ops::FwdPhase;
-use super::ops::GraphBuilder;
+use super::kernels::FwdPhase;
+use super::kernels::GraphBuilder;
 use crate::Real;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -31,7 +31,7 @@ pub(crate) trait Forward<B: Backend, P: FwdPhase> {
 pub(crate) trait Backward<B: Backend> {
     fn backward(
         &mut self,
-        gb: &mut GraphBuilder<'_, B, super::ops::Train>,
+        gb: &mut GraphBuilder<'_, B, super::kernels::Train>,
         grad_outputs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>>;
 
@@ -143,7 +143,7 @@ pub(crate) struct NodeSpec<Node> {
 impl<B: Backend, Node: Backward<B>> Tape<B, Node> {
     pub(crate) fn backward(
         &mut self,
-        gb: &mut GraphBuilder<'_, B, super::ops::Train>,
+        gb: &mut GraphBuilder<'_, B, super::kernels::Train>,
         output: Out,
         grad_output: &Arc<Tensor<B>>,
     ) {
@@ -176,7 +176,7 @@ impl<B: Backend, Node: Backward<B>> Tape<B, Node> {
                 match grads[id.0][slot].take() {
                     None => grads[id.0][slot] = Some(ig),
                     Some(existing) => {
-                        super::ops::add_inplace_bwd(gb, &existing, &ig, elem_count(&existing));
+                        super::kernels::add_inplace_bwd(gb, &existing, &ig, elem_count(&existing));
                         grads[id.0][slot] = Some(existing);
                     }
                 }
@@ -223,7 +223,7 @@ impl<B: Backend, P: FwdPhase> Forward<B, P> for Leaf<B> {
 impl<B: Backend> Backward<B> for Leaf<B> {
     fn backward(
         &mut self,
-        _gb: &mut GraphBuilder<'_, B, super::ops::Train>,
+        _gb: &mut GraphBuilder<'_, B, super::kernels::Train>,
         _grad_outputs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         vec![]

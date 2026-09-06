@@ -1,19 +1,19 @@
-use super::core_ops::{
+use super::full_seq::{
     AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
 };
-use super::ops;
-use super::ops::meta::{
+use super::super::kernels;
+use super::super::kernels::meta::{
     AttnCachedMeta, CacheWriteMeta, HeadMoveMeta, KernelMeta, RopeOffsetMeta, SoftmaxRectMeta,
 };
-use super::ops::{CachedPhase, Decode, GraphBuilder};
-use super::tape::{Forward, Leaf, zeros};
+use super::super::kernels::{CachedPhase, Decode, GraphBuilder};
+use super::super::tape::{Forward, Leaf, zeros};
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
 pub(crate) struct CacheWriteOp<B: Backend> {
-    pub(super) cache: Arc<Tensor<B>>,
-    pub(super) meta: Arc<Tensor<B>>,
-    pub(super) shape: CacheWriteMeta,
+    pub(crate) cache: Arc<Tensor<B>>,
+    pub(crate) meta: Arc<Tensor<B>>,
+    pub(crate) shape: CacheWriteMeta,
 }
 
 impl<B: Backend> CacheWriteOp<B> {
@@ -34,14 +34,14 @@ impl<B: Backend, P: CachedPhase> Forward<B, P> for CacheWriteOp<B> {
         gb: &mut GraphBuilder<'_, B, P>,
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
-        ops::cache_write_with(gb, &xs[0], &self.cache, self.shape, &self.meta);
+        kernels::cache_write_with(gb, &xs[0], &self.cache, self.shape, &self.meta);
         vec![xs[0].clone()]
     }
 }
 
 pub(crate) struct RopeOffsetOp<B: Backend> {
-    pub(super) meta: Arc<Tensor<B>>,
-    pub(super) shape: RopeOffsetMeta,
+    pub(crate) meta: Arc<Tensor<B>>,
+    pub(crate) shape: RopeOffsetMeta,
 }
 
 impl<B: Backend> RopeOffsetOp<B> {
@@ -65,7 +65,7 @@ impl<B: Backend> Forward<B, Decode> for RopeOffsetOp<B> {
         gb: &mut GraphBuilder<'_, B, Decode>,
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
-        ops::rope_offset_with(gb, &xs[0], self.shape, &self.meta);
+        kernels::rope_offset_with(gb, &xs[0], self.shape, &self.meta);
         vec![xs[0].clone()]
     }
 }
@@ -93,7 +93,7 @@ impl<B: Backend> Forward<B, Decode> for HeadGatherOp<B> {
         gb: &mut GraphBuilder<'_, B, Decode>,
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
-        ops::head_gather_with(gb, &xs[0], &self.dst, self.shape, &self.meta);
+        kernels::head_gather_with(gb, &xs[0], &self.dst, self.shape, &self.meta);
         vec![self.dst.clone()]
     }
 }
@@ -103,13 +103,13 @@ pub(crate) struct CachedAttentionOp<B: Backend> {
     cache_v: Arc<Tensor<B>>,
     scores: Arc<Tensor<B>>,
     out: Arc<Tensor<B>>,
-    pub(super) attn_meta: Arc<Tensor<B>>,
-    pub(super) softmax_meta: Arc<Tensor<B>>,
+    pub(crate) attn_meta: Arc<Tensor<B>>,
+    pub(crate) softmax_meta: Arc<Tensor<B>>,
     num_heads: u32,
     dim: u32,
     max_attn_len: u32,
-    pub(super) attn_shape: AttnCachedMeta,
-    pub(super) softmax_shape: SoftmaxRectMeta,
+    pub(crate) attn_shape: AttnCachedMeta,
+    pub(crate) softmax_shape: SoftmaxRectMeta,
 }
 
 impl<B: Backend> CachedAttentionOp<B> {
@@ -156,7 +156,7 @@ impl<B: Backend> Forward<B, Decode> for CachedAttentionOp<B> {
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         let q = &xs[0];
-        ops::attn_qk_cached_with(
+        kernels::attn_qk_cached_with(
             gb,
             q,
             &self.cache_k,
@@ -165,8 +165,8 @@ impl<B: Backend> Forward<B, Decode> for CachedAttentionOp<B> {
             self.max_attn_len,
             &self.attn_meta,
         );
-        ops::softmax_rect_with(gb, &self.scores, self.softmax_shape, &self.softmax_meta);
-        ops::attn_av_cached_with(
+        kernels::softmax_rect_with(gb, &self.scores, self.softmax_shape, &self.softmax_meta);
+        kernels::attn_av_cached_with(
             gb,
             &self.scores,
             &self.cache_v,

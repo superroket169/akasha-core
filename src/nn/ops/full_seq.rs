@@ -1,10 +1,10 @@
-use super::ops;
-use super::ops::FlashAttnBuffers;
-use super::ops::meta::{
+use super::super::kernels;
+use super::super::kernels::FlashAttnBuffers;
+use super::super::kernels::meta::{
     EmbeddingMeta, FlashAttnMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
 };
-use super::ops::{FullSeqPhase, FwdPhase, GraphBuilder, Train};
-use super::tape::{Backward, Forward, Leaf, zeros, zeros_like};
+use super::super::kernels::{FullSeqPhase, FwdPhase, GraphBuilder, Train};
+use super::super::tape::{Backward, Forward, Leaf, zeros, zeros_like};
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
@@ -43,7 +43,7 @@ impl<B: Backend, P: FwdPhase> Forward<B, P> for EmbeddingOp<B> {
         gb: &mut GraphBuilder<'_, B, P>,
         _xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
-        ops::embedding(gb, &self.tokens, &self.table, &self.out, self.shape);
+        kernels::embedding(gb, &self.tokens, &self.table, &self.out, self.shape);
         vec![self.out.clone()]
     }
 }
@@ -54,7 +54,7 @@ impl<B: Backend> Backward<B> for EmbeddingOp<B> {
         gb: &mut GraphBuilder<'_, B, Train>,
         grad_outputs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
-        ops::embedding_bwd(
+        kernels::embedding_bwd(
             gb,
             &self.tokens,
             &grad_outputs[0],
@@ -103,7 +103,7 @@ impl<B: Backend, P: FwdPhase> Forward<B, P> for LinearOp<B> {
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         let x = &xs[0];
-        ops::matmul_with(gb, x, &self.weight, &self.out, self.shape, &self.meta);
+        kernels::matmul_with(gb, x, &self.weight, &self.out, self.shape, &self.meta);
         self.saved_input = Some(x.clone());
         vec![self.out.clone()]
     }
@@ -120,7 +120,7 @@ impl<B: Backend> Backward<B> for LinearOp<B> {
             .saved_input
             .take()
             .expect("LinearOp::backward called before forward");
-        ops::matmul_weight_bwd(gb, &x, grad_output, &self.grad_weight, self.shape);
+        kernels::matmul_weight_bwd(gb, &x, grad_output, &self.grad_weight, self.shape);
 
         // n/k swapped vs the forward shape -- matches layers.rs::Linear's backward.
         let trp_shape = MatMulMeta {
@@ -128,7 +128,7 @@ impl<B: Backend> Backward<B> for LinearOp<B> {
             n: self.shape.k,
             k: self.shape.n,
         };
-        ops::matmul_trp(gb, grad_output, &self.weight, &self.grad_in, trp_shape);
+        kernels::matmul_trp(gb, grad_output, &self.weight, &self.grad_in, trp_shape);
         vec![self.grad_in.clone()]
     }
 
@@ -171,7 +171,7 @@ impl<B: Backend, P: FwdPhase> Forward<B, P> for RmsNormOp<B> {
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         let x = &xs[0];
-        ops::rmsnorm_with(gb, x, &self.weight, &self.out, self.shape, &self.meta);
+        kernels::rmsnorm_with(gb, x, &self.weight, &self.out, self.shape, &self.meta);
         self.saved_input = Some(x.clone());
         vec![self.out.clone()]
     }
@@ -187,7 +187,7 @@ impl<B: Backend> Backward<B> for RmsNormOp<B> {
             .saved_input
             .take()
             .expect("RmsNormOp::backward called before forward");
-        ops::rmsnorm_bwd(
+        kernels::rmsnorm_bwd(
             gb,
             &grad_outputs[0],
             &x,
@@ -230,7 +230,7 @@ impl<B: Backend, P: FwdPhase> Forward<B, P> for SiluOp<B> {
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         let x = &xs[0];
-        ops::silu_out(gb, x, &self.out, self.len);
+        kernels::silu_out(gb, x, &self.out, self.len);
         self.saved_input = Some(x.clone());
         vec![self.out.clone()]
     }
@@ -246,7 +246,7 @@ impl<B: Backend> Backward<B> for SiluOp<B> {
             .saved_input
             .take()
             .expect("SiluOp::backward called before forward");
-        ops::silu_bwd(gb, &x, &grad_outputs[0], &self.grad_in, self.len);
+        kernels::silu_bwd(gb, &x, &grad_outputs[0], &self.grad_in, self.len);
         vec![self.grad_in.clone()]
     }
 }
@@ -271,7 +271,7 @@ impl<B: Backend, P: FwdPhase> Forward<B, P> for AddOp<B> {
         gb: &mut GraphBuilder<'_, B, P>,
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
-        ops::add_out(gb, &xs[0], &xs[1], &self.out, self.len);
+        kernels::add_out(gb, &xs[0], &xs[1], &self.out, self.len);
         vec![self.out.clone()]
     }
 }
@@ -320,7 +320,7 @@ impl<B: Backend, P: FullSeqPhase> Forward<B, P> for RopeQkOp {
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         for b in 0..self.batch_size {
-            ops::rope_qk(gb, &xs[0], &xs[1], self.shape_for(b));
+            kernels::rope_qk(gb, &xs[0], &xs[1], self.shape_for(b));
         }
         vec![xs[0].clone(), xs[1].clone()]
     }
@@ -333,7 +333,7 @@ impl<B: Backend> Backward<B> for RopeQkOp {
         grad_outputs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
         for b in 0..self.batch_size {
-            ops::rope_bwd_qk(gb, &grad_outputs[0], &grad_outputs[1], self.shape_for(b));
+            kernels::rope_bwd_qk(gb, &grad_outputs[0], &grad_outputs[1], self.shape_for(b));
         }
         vec![grad_outputs[0].clone(), grad_outputs[1].clone()]
     }
@@ -366,7 +366,7 @@ impl<B: Backend, P: FullSeqPhase> Forward<B, P> for QkvSplitOp<B> {
         gb: &mut GraphBuilder<'_, B, P>,
         xs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
-        ops::qkv_split(gb, &xs[0], &self.q, &self.k, &self.v, self.shape);
+        kernels::qkv_split(gb, &xs[0], &self.q, &self.k, &self.v, self.shape);
         vec![self.q.clone(), self.k.clone(), self.v.clone()]
     }
 }
@@ -377,7 +377,7 @@ impl<B: Backend> Backward<B> for QkvSplitOp<B> {
         gb: &mut GraphBuilder<'_, B, Train>,
         grad_outputs: &[Arc<Tensor<B>>],
     ) -> Vec<Arc<Tensor<B>>> {
-        ops::qkv_scatter(
+        kernels::qkv_scatter(
             gb,
             &grad_outputs[0],
             &grad_outputs[1],
@@ -448,7 +448,7 @@ impl<B: Backend, P: FullSeqPhase> Forward<B, P> for AttentionOp<B> {
     ) -> Vec<Arc<Tensor<B>>> {
         let (q, k, v) = (xs[0].clone(), xs[1].clone(), xs[2].clone());
         let bufs = (0..self.batch_size)
-            .map(|b| ops::flash_attention(gb, &q, &k, &v, &self.out, self.shape_for(b)))
+            .map(|b| kernels::flash_attention(gb, &q, &k, &v, &self.out, self.shape_for(b)))
             .collect();
         self.saved = Some((q, k, v, bufs));
         vec![self.out.clone()]
@@ -466,7 +466,7 @@ impl<B: Backend> Backward<B> for AttentionOp<B> {
             .take()
             .expect("AttentionOp::backward called before forward");
         for (b, saved_bufs) in bufs.into_iter().enumerate() {
-            ops::flash_attention_bwd(
+            kernels::flash_attention_bwd(
                 gb,
                 &q,
                 &k,

@@ -1,6 +1,6 @@
-use super::core_ops::TrainOp;
-use super::ops::{GraphBuilder, Train};
-use super::tape::Backward;
+use super::super::ops::full_seq::TrainOp;
+use super::super::kernels::{GraphBuilder, Train};
+use super::super::tape::Backward;
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 

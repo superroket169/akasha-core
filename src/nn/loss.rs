@@ -2,10 +2,10 @@
 //! Stays outside the Tape/Op system on purpose -- V1 aliasing
 //! (logits -> probs -> grad_logits, same buffer) isn't a plain N-in/M-out op.
 
-use super::ops;
-use super::ops::GraphBuilder;
-use super::ops::Train;
-use super::ops::meta::CrossEntropyMeta;
+use super::kernels;
+use super::kernels::GraphBuilder;
+use super::kernels::Train;
+use super::kernels::meta::CrossEntropyMeta;
 use crate::Real;
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
@@ -52,12 +52,12 @@ impl<B: Backend> CrossEntropyOp<B> {
 
     /// `logits` becomes probs in place.
     pub(crate) fn forward(&self, gb: &mut GraphBuilder<'_, B, Train>, logits: &Arc<Tensor<B>>) {
-        ops::cross_entropy(gb, logits, &self.target_tokens, &self.losses, self.shape);
+        kernels::cross_entropy(gb, logits, &self.target_tokens, &self.losses, self.shape);
     }
 
     /// `logits` (currently holding probs) becomes grad_logits in place.
     pub(crate) fn backward(&self, gb: &mut GraphBuilder<'_, B, Train>, logits: &Arc<Tensor<B>>) {
-        ops::cross_entropy_bwd(gb, logits, &self.target_tokens, &self.d_losses, self.shape);
+        kernels::cross_entropy_bwd(gb, logits, &self.target_tokens, &self.d_losses, self.shape);
     }
 }
 

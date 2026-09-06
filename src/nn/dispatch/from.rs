@@ -1,6 +1,6 @@
-use super::cached_ops::{DecodeOp, PrefillOp};
-use super::core_ops::TrainOp;
-use super::tape::Leaf;
+use super::super::ops::cached::{DecodeOp, PrefillOp};
+use super::super::ops::full_seq::TrainOp;
+use super::super::tape::Leaf;
 use wilupgu::Backend;
 
 macro_rules! impl_from_op {

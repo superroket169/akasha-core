@@ -1,6 +1,6 @@
-use super::cached_ops::{CacheWriteOp, CachedAttentionOp, DecodeOp, RopeOffsetOp};
-use super::ops::meta::KernelMeta;
-use super::tape::Advance;
+use super::super::ops::cached::{CacheWriteOp, CachedAttentionOp, DecodeOp, RopeOffsetOp};
+use super::super::kernels::meta::KernelMeta;
+use super::super::tape::Advance;
 use wilupgu::Backend;
 
 impl<B: Backend> Advance for CacheWriteOp<B> {

@@ -2,7 +2,7 @@
 //! Refactor). Enum even at one variant -- global-norm clipping has real
 //! alternatives (AGC, per-parameter clipping), unlike e.g. `AddOp`.
 
-use super::ops;
+use super::kernels;
 use super::tape::elem_count;
 use crate::Real;
 use std::sync::Arc;
@@ -16,7 +16,7 @@ impl<B: Backend> GlobalNormClip<B> {
     pub(crate) fn new(ctx: Arc<B>, grads: &[Arc<Tensor<B>>], max_norm: Real) -> Self {
         let total_partials: u32 = grads
             .iter()
-            .map(|g| ops::grad_sumsq_wgs(elem_count(g)))
+            .map(|g| kernels::grad_sumsq_wgs(elem_count(g)))
             .sum();
         let norm_partials = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
@@ -25,31 +25,31 @@ impl<B: Backend> GlobalNormClip<B> {
         let clip_scale = Arc::new(Tensor::init_from_cpu(ctx.clone(), &[1.0 as Real]));
 
         let mut graph = ComputeGraph::new(ctx.clone());
-        let mut gb = super::ops::GraphBuilder::train(&mut graph);
+        let mut gb = super::kernels::GraphBuilder::train(&mut graph);
         let mut out_offset = 0;
 
         for g in grads {
             let len = elem_count(g);
-            ops::grad_sumsq(
+            kernels::grad_sumsq(
                 &mut gb,
                 g,
                 &norm_partials,
-                ops::meta::GradSumSqMeta { len, out_offset },
+                kernels::meta::GradSumSqMeta { len, out_offset },
             );
-            out_offset += ops::grad_sumsq_wgs(len);
+            out_offset += kernels::grad_sumsq_wgs(len);
         }
 
-        ops::grad_norm_scale(
+        kernels::grad_norm_scale(
             &mut gb,
             &norm_partials,
             &clip_scale,
-            ops::meta::GradNormMeta {
+            kernels::meta::GradNormMeta {
                 num_partials: total_partials,
                 max_norm,
             },
         );
         for g in grads {
-            ops::grad_scale(&mut gb, g, &clip_scale, elem_count(g));
+            kernels::grad_scale(&mut gb, g, &clip_scale, elem_count(g));
         }
 
         Self { graph }
