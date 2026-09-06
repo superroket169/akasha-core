@@ -4,7 +4,7 @@ use super::ops::meta::{
 };
 use super::ops::{CachedPhase, Decode, GraphBuilder, Prefill};
 use super::tape::{Advance, Forward, Leaf, zeros};
-use super::transformer::{
+use super::core_ops::{
     AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
 };
 use std::sync::Arc;
@@ -216,11 +216,7 @@ pub(crate) enum PrefillOp<B: Backend> {
     Leaf(Leaf<B>),
 }
 
-impl<B: Backend> From<Leaf<B>> for PrefillOp<B> {
-    fn from(id: Leaf<B>) -> Self {
-        PrefillOp::Leaf(id)
-    }
-}
+// From<X> impls (Leaf/RmsNorm/Linear/Add/Silu -> PrefillOp) live in from.rs.
 
 impl<B: Backend> Forward<B, Prefill> for PrefillOp<B> {
     fn forward(
@@ -256,11 +252,7 @@ pub(crate) enum DecodeOp<B: Backend> {
     Leaf(Leaf<B>),
 }
 
-impl<B: Backend> From<Leaf<B>> for DecodeOp<B> {
-    fn from(id: Leaf<B>) -> Self {
-        DecodeOp::Leaf(id)
-    }
-}
+// From<X> impls (Leaf/RmsNorm/Linear/Add/Silu -> DecodeOp) live in from.rs.
 
 impl<B: Backend> Forward<B, Decode> for DecodeOp<B> {
     fn forward(

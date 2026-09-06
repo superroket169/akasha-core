@@ -1,8 +1,11 @@
+pub mod block_specs;
+pub mod cached_ops;
 pub mod checkpoint;
+pub mod core_ops;
+pub mod from;
 pub mod grad_clip;
 pub mod inference;
 pub mod inference_graphs;
-pub mod chain;
 pub mod layers;
 pub mod loss;
 pub mod model;
@@ -10,7 +13,6 @@ pub mod ops;
 pub mod sampling;
 pub mod tape;
 pub mod train;
-pub mod transformer;
 pub mod weights;
 
 pub use inference::InferenceSession;
