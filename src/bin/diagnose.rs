@@ -5,9 +5,7 @@ use akasha_core::config::{
     GradClipConfig, GradClipKind, ModelConfig, OptimizerConfig, OptimizerKind, RunConfig,
     TrainConfig,
 };
-use akasha_core::nn::{
-    Cache, CrossEntropy, InferenceSession, Layer, ModelWeights, RMSNorm, Trainer,
-};
+use akasha_core::nn::{CrossEntropy, Layer, ModelWeights, RMSNorm, Trainer};
 use akasha_core::shaders;
 use rand::Rng;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode, WgpuBackend};
@@ -695,154 +693,11 @@ fn check8_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
     pass
 }
 
-fn check9_kv_cache_equivalence<B: Backend>(ctx: Arc<B>) -> bool {
-    let dim = 64u32;
-    let num_heads = 4u32;
-    let num_layers = 2usize;
-    let vocab_size = 64u32;
-    let seq_len = 16u32;
-    let prompt_len = 4usize;
-    let total_len = 14usize;
-
-    let full_sequence = rand_u32_vec(total_len, vocab_size);
-    let prompt = &full_sequence[..prompt_len];
-
-    let input_tokens = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0u32; seq_len as usize],
-    ));
-    let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
-    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let model = Trainer::new(
-        ctx.clone(),
-        weights,
-        &input_tokens,
-        TrainConfig::hall1_pretrain(),
-    );
-
-    let mut logits_a: Vec<Vec<f32>> = Vec::new();
-    let seq_len_us = seq_len as usize;
-    let vocab_us = vocab_size as usize;
-    for cur_len in prompt_len..full_sequence.len() {
-        let (start, pred_pos) = if cur_len >= seq_len_us {
-            (cur_len - seq_len_us, seq_len_us - 1)
-        } else {
-            (0, cur_len - 1)
-        };
-        let mut window = vec![0u32; seq_len_us];
-        let slice = &full_sequence[start..cur_len];
-
-        window[..slice.len()].copy_from_slice(slice);
-        model.input_tokens.copy_from_cpu(&window);
-        model.forward();
-
-        let logits = model.lm_head.out_buffer.to_cpu();
-        logits_a.push(logits[pred_pos * vocab_us..(pred_pos + 1) * vocab_us].to_vec());
-    }
-
-    // ---- KV-cache prefill + decode ----
-    let mut session = InferenceSession::new(ctx.clone(), model.weights.clone(), seq_len);
-    session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
-
-    let mut logits_b: Vec<Vec<f32>> = vec![session.prefill(prompt).expect("prefill failed")];
-    for &t in &full_sequence[prompt_len..full_sequence.len() - 1] {
-        logits_b.push(session.decode_step(t).expect("decode_step failed"));
-    }
-
-    assert_eq!(logits_a.len(), logits_b.len(), "step count mismatch");
-    let max_diff = logits_a
-        .iter()
-        .zip(logits_b.iter())
-        .flat_map(|(a, b)| a.iter().zip(b.iter()).map(|(x, y)| (x - y).abs()))
-        .fold(0.0f32, f32::max);
-
-    let pass = max_diff < 1e-3;
-    println!(
-        "CHECK 9: KV-cache decode vs naive sliding-window forward, {} teacher-forced steps, max logit diff = {max_diff:.6} -> {}",
-        logits_a.len(),
-        if pass { "PASS" } else { "FAIL" }
-    );
-    pass
-}
-
-fn check10_kv_cache_speed<B: Backend>(ctx: Arc<B>) {
-    let dim = 64u32;
-    let num_heads = 4u32;
-    let num_layers = 2usize;
-    let vocab_size = 64u32;
-    let seq_len = 64u32;
-    let prompt_len = 4usize;
-    let n_new_tokens = 50usize;
-
-    let prompt = rand_u32_vec(prompt_len, vocab_size);
-
-    // ---- naive sliding-window path ----
-    let input_tokens_a = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0u32; seq_len as usize],
-    ));
-    let cfg = ModelConfig::new(vocab_size, dim, num_heads, num_layers, seq_len);
-    let weights_a = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let model_a = Trainer::new(
-        ctx.clone(),
-        weights_a,
-        &input_tokens_a,
-        TrainConfig::hall1_pretrain(),
-    );
-    let mut tokens = prompt.clone();
-    let seq_len_us = seq_len as usize;
-    let vocab_us = vocab_size as usize;
-    let start = Instant::now();
-    for _ in 0..n_new_tokens {
-        let cur_len = tokens.len();
-        let (start_idx, pred_pos) = if cur_len >= seq_len_us {
-            (cur_len - seq_len_us, seq_len_us - 1)
-        } else {
-            (0, cur_len - 1)
-        };
-        let mut window = vec![0u32; seq_len_us];
-        let slice = &tokens[start_idx..];
-
-        window[..slice.len()].copy_from_slice(slice);
-        model_a.input_tokens.copy_from_cpu(&window);
-        model_a.forward();
-
-        let logits = model_a.lm_head.out_buffer.to_cpu();
-        let row = &logits[pred_pos * vocab_us..(pred_pos + 1) * vocab_us];
-        tokens.push(argmax(row));
-    }
-    let naive_elapsed = start.elapsed();
-
-    // ---- KV-cache path ----
-    let weights_b = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let mut session = InferenceSession::new(ctx.clone(), weights_b, seq_len);
-    session.replace_cache(Cache::new(ctx.clone(), num_layers, dim, seq_len));
-
-    let start = Instant::now();
-    let mut logits = session.prefill(&prompt).expect("prefill failed");
-    for _ in 0..n_new_tokens - 1 {
-        logits = session
-            .decode_step(argmax(&logits))
-            .expect("decode_step failed");
-    }
-    let _ = logits;
-    let cached_elapsed = start.elapsed();
-
-    println!(
-        "CHECK 10: KV-cache decode speed (tiny config: dim={dim}, layers={num_layers}, heads={num_heads}, vocab={vocab_size}, seq_len={seq_len}, {n_new_tokens} generated tokens)"
-    );
-    println!(
-        "  naive sliding-window: {naive_elapsed:?} ({:.1} tok/s)",
-        n_new_tokens as f64 / naive_elapsed.as_secs_f64()
-    );
-    println!(
-        "  KV-cache decode:      {cached_elapsed:?} ({:.1} tok/s)",
-        n_new_tokens as f64 / cached_elapsed.as_secs_f64()
-    );
-    println!(
-        "  NOTE: at this tiny scale GPU dispatch overhead dominates -- the production-scale (dim=768, seq_len=512) speedup is expected to be far larger."
-    );
-}
+// CHECK 9 (KV-cache equivalence) and CHECK 10 (KV-cache speed) were removed
+// here -- both compared the old Trainer's naive sliding-window forward
+// against the old InferenceSession's KV-cache path, which no longer exists
+// (see nn::Model's prefill/decode instead). Pending: a replacement parity
+// check against the new Model, tracked as part of the diagnose.rs split.
 
 fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
     if std::env::var("DIAGNOSE_ONLY_CHECK8").is_ok() {
@@ -850,17 +705,6 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
         println!(
             "CHECK 8 (memorization): {}",
             if c8_pass { "PASS" } else { "FAIL" }
-        );
-        return;
-    }
-
-    if std::env::var("DIAGNOSE_ONLY_CHECK9").is_ok() {
-        let c9_pass = check9_kv_cache_equivalence(ctx.clone());
-        println!();
-        check10_kv_cache_speed(ctx.clone());
-        println!(
-            "\nCHECK 9 (KV-cache equivalence): {}",
-            if c9_pass { "PASS" } else { "FAIL" }
         );
         return;
     }
@@ -914,10 +758,6 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
     let c7_pass = check7_cross_entropy(ctx.clone());
     println!();
     let c8_pass = check8_memorization(ctx.clone());
-    println!();
-    let c9_pass = check9_kv_cache_equivalence(ctx.clone());
-    println!();
-    check10_kv_cache_speed(ctx.clone());
 
     println!("\n================= SUMMARY =================");
     println!(
@@ -953,11 +793,6 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
         "CHECK 8 (memorization):          {}",
         if c8_pass { "PASS" } else { "FAIL" }
     );
-    println!(
-        "CHECK 9 (KV-cache equivalence):  {}",
-        if c9_pass { "PASS" } else { "FAIL" }
-    );
-    println!("CHECK 10 (KV-cache speed):       informational, see above");
 }
 
 fn main() {
