@@ -3,7 +3,7 @@ use std::sync::Arc;
 use akasha_core::config::*;
 use akasha_core::data::Dataset;
 use akasha_core::nn::checkpoint;
-use akasha_core::nn::{InferenceSession, Model, ModelWeights, Trainer};
+use akasha_core::nn::{Model, ModelWeights, Trainer};
 use akasha_core::tokenizer::AkashaTokenizer;
 use wilupgu::{Backend, Tensor, WgpuBackend};
 
@@ -131,64 +131,10 @@ fn log_train_step(step: usize, loss: f32, lr: f32) {
 fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str, cfg: ModelConfig) {
     let tokenizer = AkashaTokenizer::from_pretrained();
 
-    let weights = Arc::new(ModelWeights::zeros(ctx.clone(), &cfg));
-    checkpoint::load(&weights, weights_path)
-        .unwrap_or_else(|e| panic!("Failed to load {weights_path}: {e}"));
-    println!("Weights: {weights_path}");
-
-    let seq_len = cfg.seq_len;
-    let mut session = InferenceSession::new(ctx, weights, seq_len);
-
-    println!("Model loaded. Type a prompt (Ctrl+C to exit):\n");
-    println!("Tip: type \\n for a literal newline, e.g. User: hi\\nAssistant:\n");
-    loop {
-        print!("> ");
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
-        let mut input = String::new();
-        if std::io::stdin().read_line(&mut input).unwrap() == 0 {
-            break;
-        }
-        let input = input.trim();
-        if input.is_empty() {
-            continue;
-        }
-        let input = input.replace("\\n", "\n");
-        let tokens = tokenizer.encode(&input);
-
-        let max_prompt_tokens = (seq_len as usize).saturating_sub(200);
-        let tokens = if tokens.len() > max_prompt_tokens {
-            eprintln!(
-                "WARNING: prompt is {} tokens (context window {}), truncating to the last {}",
-                tokens.len(),
-                seq_len,
-                max_prompt_tokens
-            );
-            tokens[tokens.len() - max_prompt_tokens..].to_vec()
-        } else {
-            tokens
-        };
-
-        session.take_cache();
-
-        // temperature 0.8, top-k 40, top-p 0.95 - llama.cpp-style defaults - for now
-        // repetition_penalty 1.15 - small models loop without it
-        match session.generate(&tokenizer, &tokens, 200, 0.8, 40, 0.95, 1.15) {
-            Ok(output) => println!("{}\n", output),
-            Err(e) => eprintln!("generation failed: {e}\n"),
-        }
-
-        println!("<<<AKASHA_END>>>");
-        std::io::Write::flush(&mut std::io::stdout()).unwrap();
-    }
-}
-
-fn run_chat_model<B: Backend>(ctx: Arc<B>, weights_path: &str, cfg: ModelConfig) {
-    let tokenizer = AkashaTokenizer::from_pretrained();
-
     let weights = ModelWeights::zeros(ctx.clone(), &cfg);
     checkpoint::load(&weights, weights_path)
         .unwrap_or_else(|e| panic!("Failed to load {weights_path}: {e}"));
-    println!("Weights: {weights_path} (new Model engine)");
+    println!("Weights: {weights_path}");
 
     let seq_len = cfg.seq_len;
     let mut model = Model::for_chat(ctx, weights, cfg, seq_len);
@@ -222,8 +168,12 @@ fn run_chat_model<B: Backend>(ctx: Arc<B>, weights_path: &str, cfg: ModelConfig)
             tokens
         };
 
-        let generated = model.generate(&tokens, 200, 0.8, 40, 0.95, 1.15);
-        println!("{}\n", tokenizer.decode(&generated));
+        // temperature 0.8, top-k 40, top-p 0.95 - llama.cpp-style defaults - for now
+        // repetition_penalty 1.15 - small models loop without it
+        match model.generate(&tokens, 200, 0.8, 40, 0.95, 1.15) {
+            Ok(generated) => println!("{}\n", tokenizer.decode(&generated)),
+            Err(e) => eprintln!("generation failed: {e}\n"),
+        }
 
         println!("<<<AKASHA_END>>>");
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
@@ -374,7 +324,6 @@ fn run_training<B: Backend>(ctx: Arc<B>, model_cfg: ModelConfig, train_cfg: Trai
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let is_chat = args.iter().any(|a| a == "--chat");
-    let is_chat_new = args.iter().any(|a| a == "--chat-new");
     let weights_path = args
         .iter()
         .position(|a| a == "--weights")
@@ -397,7 +346,7 @@ fn main() {
              (known: hall1_pretrain, dolly_finetune, pidgeon_pretrain)"
         )
     });
-    if !is_chat && !is_chat_new {
+    if !is_chat {
         println!("[akasha-core] train-config profile: {}", train_cfg.name);
     }
 
@@ -414,9 +363,7 @@ fn main() {
         use wilupgu::CpuBackend;
         println!("[wilupgu] CPU backend selected");
         let ctx = Arc::new(CpuBackend::new());
-        if is_chat_new {
-            run_chat_model(ctx, &weights_path, model_cfg);
-        } else if is_chat {
+        if is_chat {
             run_chat(ctx, &weights_path, model_cfg);
         } else {
             run_training(ctx, model_cfg, train_cfg);
@@ -434,9 +381,7 @@ fn main() {
                 println!("[wilupgu] bf16 tensor-core matmul compute enabled");
             }
             let ctx = Arc::new(ctx);
-            if is_chat_new {
-                run_chat_model(ctx, &weights_path, model_cfg);
-            } else if is_chat {
+            if is_chat {
                 run_chat(ctx, &weights_path, model_cfg);
             } else {
                 run_training(ctx, model_cfg, train_cfg);
@@ -446,9 +391,7 @@ fn main() {
     }
     println!("[wilupgu] Vulkan backend selected");
     let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
-    if is_chat_new {
-        run_chat_model(ctx, &weights_path, model_cfg);
-    } else if is_chat {
+    if is_chat {
         run_chat(ctx, &weights_path, model_cfg);
     } else {
         run_training(ctx, model_cfg, train_cfg);
