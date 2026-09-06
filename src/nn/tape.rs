@@ -166,6 +166,9 @@ impl<B: Backend, Node: Backward<B>> Tape<B, Node> {
                 .map(|(slot, g)| g.unwrap_or_else(|| zeros_like(&self.nodes[i].outputs[slot])))
                 .collect();
 
+            // grads[i] was just taken (now empty)
+            grads[i] = filled.iter().cloned().map(Some).collect();
+
             let inputs = self.nodes[i].inputs.clone();
             let input_grads = self.nodes[i].op.backward(gb, &filled);
 
