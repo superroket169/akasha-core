@@ -25,7 +25,11 @@ fn block_prologue_specs<B: Backend, Node>(
 where
     Node: From<RmsNormOp<B>> + From<LinearOp<B>>,
 {
-    let norm_shape = NormMeta { seq_len: rows, size: dim, eps };
+    let norm_shape = NormMeta {
+        seq_len: rows,
+        size: dim,
+        eps,
+    };
     vec![
         NodeSpec {
             name: "n1",
@@ -37,7 +41,11 @@ where
             inputs: &[("n1", 0)],
             op: Node::from(LinearOp::new(
                 &bw.qkv_proj,
-                MatMulMeta { m: rows, n: dim * 3, k: dim },
+                MatMulMeta {
+                    m: rows,
+                    n: dim * 3,
+                    k: dim,
+                },
                 true,
             )),
         },
@@ -58,14 +66,22 @@ fn block_epilogue_specs<B: Backend, Node>(
 where
     Node: From<LinearOp<B>> + From<AddOp<B>> + From<RmsNormOp<B>> + From<SiluOp<B>>,
 {
-    let norm_shape = NormMeta { seq_len: rows, size: dim, eps };
+    let norm_shape = NormMeta {
+        seq_len: rows,
+        size: dim,
+        eps,
+    };
     vec![
         NodeSpec {
             name: "proj",
             inputs: &[("attn", 0)],
             op: Node::from(LinearOp::new(
                 &bw.out_proj,
-                MatMulMeta { m: rows, n: dim, k: dim },
+                MatMulMeta {
+                    m: rows,
+                    n: dim,
+                    k: dim,
+                },
                 true,
             )),
         },
@@ -84,7 +100,11 @@ where
             inputs: &[("n2", 0)],
             op: Node::from(LinearOp::new(
                 &bw.ffn_up,
-                MatMulMeta { m: rows, n: hidden, k: dim },
+                MatMulMeta {
+                    m: rows,
+                    n: hidden,
+                    k: dim,
+                },
                 true,
             )),
         },
@@ -98,7 +118,11 @@ where
             inputs: &[("silu", 0)],
             op: Node::from(LinearOp::new(
                 &bw.ffn_down,
-                MatMulMeta { m: rows, n: dim, k: hidden },
+                MatMulMeta {
+                    m: rows,
+                    n: dim,
+                    k: hidden,
+                },
                 true,
             )),
         },
@@ -143,7 +167,14 @@ fn transformer_block_specs<B: Backend>(
             )),
         },
     ]);
-    specs.extend(block_epilogue_specs(bw, ctx, rows, dim, cfg.ffn_hidden, cfg.norm_eps));
+    specs.extend(block_epilogue_specs(
+        bw,
+        ctx,
+        rows,
+        dim,
+        cfg.ffn_hidden,
+        cfg.norm_eps,
+    ));
     specs
 }
 
@@ -329,7 +360,14 @@ fn decode_block_specs<B: Backend>(
             )),
         },
     ]);
-    specs.extend(block_epilogue_specs(bw, ctx, 1, dim, cfg.ffn_hidden, cfg.norm_eps));
+    specs.extend(block_epilogue_specs(
+        bw,
+        ctx,
+        1,
+        dim,
+        cfg.ffn_hidden,
+        cfg.norm_eps,
+    ));
     specs
 }
 

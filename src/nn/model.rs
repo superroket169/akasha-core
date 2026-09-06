@@ -8,6 +8,7 @@ use super::ops::GraphBuilder;
 use super::sampling;
 use super::tape::{NodeId, Tape, zeros};
 use super::weights::ModelWeights;
+use crate::AkashaError;
 use crate::Real;
 use crate::config::{BlockKind, GradClipKind, ModelConfig, OptimizerKind, TrainConfig};
 use crate::optim::{AdamW, AdamWSchedule, AnyOptimizer};
@@ -242,7 +243,11 @@ impl<B: Backend> Model<B> {
         top_k: usize,
         top_p: f32,
         repetition_penalty: f32,
-    ) -> Vec<u32> {
+    ) -> Result<Vec<u32>, AkashaError> {
+        if prompt.is_empty() {
+            return Err(AkashaError::EmptyPrompt);
+        }
+
         let cfg = self.weights.cfg;
         let ctx = self.weights.embedding.ctx.clone();
         let chat = self
@@ -251,12 +256,12 @@ impl<B: Backend> Model<B> {
             .expect("generate called on a training-only Model");
 
         let prompt_len = prompt.len() as u32;
-        assert!(
-            prompt_len + max_new_tokens as u32 <= chat.max_context_len,
-            "prompt + max_new_tokens ({}) exceeds max_context_len ({})",
-            prompt_len + max_new_tokens as u32,
-            chat.max_context_len,
-        );
+        if prompt_len > chat.max_context_len {
+            return Err(AkashaError::PromptTooLong {
+                len: prompt_len,
+                max: chat.max_context_len,
+            });
+        }
 
         let mut prefill_graph = ComputeGraph::new(ctx.clone());
         let mut gb = GraphBuilder::prefill(&mut prefill_graph);
@@ -276,6 +281,7 @@ impl<B: Backend> Model<B> {
         let all_logits: Vec<Real> = prefill_tape.output(prefill_logits).to_cpu();
         let last = &all_logits[(prompt_len as usize - 1) * vocab..prompt_len as usize * vocab];
 
+        let eos = cfg.eos_token;
         let mut seen: Vec<u32> = prompt.to_vec();
         let mut generated = Vec::with_capacity(max_new_tokens);
         let mut next =
@@ -285,6 +291,9 @@ impl<B: Backend> Model<B> {
 
         let mut pos = prompt_len;
         for _ in 1..max_new_tokens {
+            if next == eos || pos >= chat.max_context_len {
+                break;
+            }
             chat.decode.tape.advance(pos);
             chat.decode.tokens.copy_from_cpu(&[next]);
             chat.decode.graph.execute();
@@ -302,7 +311,7 @@ impl<B: Backend> Model<B> {
             pos += 1;
         }
 
-        generated
+        Ok(generated)
     }
 
     pub fn train_step(&mut self, tokens: &[u32], targets: &[u32]) -> Real {

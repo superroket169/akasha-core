@@ -1,11 +1,12 @@
+pub mod advance;
+pub mod backward;
 pub mod block_specs;
 pub mod cached_ops;
 pub mod checkpoint;
 pub mod core_ops;
+pub mod forward;
 pub mod from;
 pub mod grad_clip;
-pub mod inference;
-pub mod inference_graphs;
 pub mod layers;
 pub mod loss;
 pub mod model;
@@ -15,8 +16,6 @@ pub mod tape;
 pub mod train;
 pub mod weights;
 
-pub use inference::InferenceSession;
-pub use inference_graphs::Cache;
 pub use layers::{Add, CrossEntropy, Layer, Linear, RMSNorm, SiLU};
 pub use model::Model;
 pub use train::Trainer;

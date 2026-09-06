@@ -1,19 +1,19 @@
+use super::core_ops::{
+    AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
+};
 use super::ops;
 use super::ops::meta::{
     AttnCachedMeta, CacheWriteMeta, HeadMoveMeta, KernelMeta, RopeOffsetMeta, SoftmaxRectMeta,
 };
-use super::ops::{CachedPhase, Decode, GraphBuilder, Prefill};
-use super::tape::{Advance, Forward, Leaf, zeros};
-use super::core_ops::{
-    AddOp, AttentionOp, EmbeddingOp, LinearOp, QkvSplitOp, RmsNormOp, RopeQkOp, SiluOp,
-};
+use super::ops::{CachedPhase, Decode, GraphBuilder};
+use super::tape::{Forward, Leaf, zeros};
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
 pub(crate) struct CacheWriteOp<B: Backend> {
-    cache: Arc<Tensor<B>>,
-    meta: Arc<Tensor<B>>,
-    shape: CacheWriteMeta,
+    pub(super) cache: Arc<Tensor<B>>,
+    pub(super) meta: Arc<Tensor<B>>,
+    pub(super) shape: CacheWriteMeta,
 }
 
 impl<B: Backend> CacheWriteOp<B> {
@@ -25,13 +25,6 @@ impl<B: Backend> CacheWriteOp<B> {
         };
         let meta = shape.upload(&cache.ctx);
         Self { cache, meta, shape }
-    }
-}
-
-impl<B: Backend> Advance for CacheWriteOp<B> {
-    fn advance(&mut self, step: u32) {
-        self.shape.dst_row_offset = step;
-        self.shape.write_to(&self.meta);
     }
 }
 
@@ -47,8 +40,8 @@ impl<B: Backend, P: CachedPhase> Forward<B, P> for CacheWriteOp<B> {
 }
 
 pub(crate) struct RopeOffsetOp<B: Backend> {
-    meta: Arc<Tensor<B>>,
-    shape: RopeOffsetMeta,
+    pub(super) meta: Arc<Tensor<B>>,
+    pub(super) shape: RopeOffsetMeta,
 }
 
 impl<B: Backend> RopeOffsetOp<B> {
@@ -63,13 +56,6 @@ impl<B: Backend> RopeOffsetOp<B> {
             meta: shape.upload(ctx),
             shape,
         }
-    }
-}
-
-impl<B: Backend> Advance for RopeOffsetOp<B> {
-    fn advance(&mut self, step: u32) {
-        self.shape.pos = step;
-        self.shape.write_to(&self.meta);
     }
 }
 
@@ -117,13 +103,13 @@ pub(crate) struct CachedAttentionOp<B: Backend> {
     cache_v: Arc<Tensor<B>>,
     scores: Arc<Tensor<B>>,
     out: Arc<Tensor<B>>,
-    attn_meta: Arc<Tensor<B>>,
-    softmax_meta: Arc<Tensor<B>>,
+    pub(super) attn_meta: Arc<Tensor<B>>,
+    pub(super) softmax_meta: Arc<Tensor<B>>,
     num_heads: u32,
     dim: u32,
     max_attn_len: u32,
-    attn_shape: AttnCachedMeta,
-    softmax_shape: SoftmaxRectMeta,
+    pub(super) attn_shape: AttnCachedMeta,
+    pub(super) softmax_shape: SoftmaxRectMeta,
 }
 
 impl<B: Backend> CachedAttentionOp<B> {
@@ -160,17 +146,6 @@ impl<B: Backend> CachedAttentionOp<B> {
             attn_shape,
             softmax_shape,
         }
-    }
-}
-
-impl<B: Backend> Advance for CachedAttentionOp<B> {
-    // step is the position just written this step -- cache is valid for [0, step].
-    fn advance(&mut self, step: u32) {
-        let attn_len = step + 1;
-        self.attn_shape.attn_len = attn_len;
-        self.attn_shape.write_to(&self.attn_meta);
-        self.softmax_shape.width = attn_len;
-        self.softmax_shape.write_to(&self.softmax_meta);
     }
 }
 
@@ -216,29 +191,6 @@ pub(crate) enum PrefillOp<B: Backend> {
     Leaf(Leaf<B>),
 }
 
-// From<X> impls (Leaf/RmsNorm/Linear/Add/Silu -> PrefillOp) live in from.rs.
-
-impl<B: Backend> Forward<B, Prefill> for PrefillOp<B> {
-    fn forward(
-        &mut self,
-        gb: &mut GraphBuilder<'_, B, Prefill>,
-        xs: &[Arc<Tensor<B>>],
-    ) -> Vec<Arc<Tensor<B>>> {
-        match self {
-            PrefillOp::Embedding(op) => op.forward(gb, xs),
-            PrefillOp::Linear(op) => op.forward(gb, xs),
-            PrefillOp::RmsNorm(op) => op.forward(gb, xs),
-            PrefillOp::Silu(op) => op.forward(gb, xs),
-            PrefillOp::Add(op) => op.forward(gb, xs),
-            PrefillOp::RopeQk(op) => op.forward(gb, xs),
-            PrefillOp::QkvSplit(op) => op.forward(gb, xs),
-            PrefillOp::Attention(op) => op.forward(gb, xs),
-            PrefillOp::CacheWrite(op) => op.forward(gb, xs),
-            PrefillOp::Leaf(op) => op.forward(gb, xs),
-        }
-    }
-}
-
 pub(crate) enum DecodeOp<B: Backend> {
     Embedding(EmbeddingOp<B>),
     Linear(LinearOp<B>),
@@ -252,36 +204,5 @@ pub(crate) enum DecodeOp<B: Backend> {
     Leaf(Leaf<B>),
 }
 
-// From<X> impls (Leaf/RmsNorm/Linear/Add/Silu -> DecodeOp) live in from.rs.
-
-impl<B: Backend> Forward<B, Decode> for DecodeOp<B> {
-    fn forward(
-        &mut self,
-        gb: &mut GraphBuilder<'_, B, Decode>,
-        xs: &[Arc<Tensor<B>>],
-    ) -> Vec<Arc<Tensor<B>>> {
-        match self {
-            DecodeOp::Embedding(op) => op.forward(gb, xs),
-            DecodeOp::Linear(op) => op.forward(gb, xs),
-            DecodeOp::RmsNorm(op) => op.forward(gb, xs),
-            DecodeOp::Silu(op) => op.forward(gb, xs),
-            DecodeOp::Add(op) => op.forward(gb, xs),
-            DecodeOp::RopeOffset(op) => op.forward(gb, xs),
-            DecodeOp::HeadGather(op) => op.forward(gb, xs),
-            DecodeOp::CacheWrite(op) => op.forward(gb, xs),
-            DecodeOp::CachedAttention(op) => op.forward(gb, xs),
-            DecodeOp::Leaf(op) => op.forward(gb, xs),
-        }
-    }
-}
-
-impl<B: Backend> Advance for DecodeOp<B> {
-    fn advance(&mut self, step: u32) {
-        match self {
-            DecodeOp::RopeOffset(op) => op.advance(step),
-            DecodeOp::CacheWrite(op) => op.advance(step),
-            DecodeOp::CachedAttention(op) => op.advance(step),
-            _ => {}
-        }
-    }
-}
+// From<X> impls -> from.rs. Forward dispatch -> forward.rs. Advance -> advance.rs.
+// (all three generated/collected by their respective files.)
