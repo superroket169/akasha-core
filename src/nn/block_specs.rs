@@ -14,8 +14,16 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor};
 
-/// `n1` -> `qkv` projection -- identical in every phase (same `bw.qkv_proj`
-/// weight, same `dim*3` shape), shared by all 3 `*_block_specs` below.
+macro_rules! node {
+    ($name:literal <- $inputs:expr, $op:expr) => {
+        NodeSpec {
+            name: $name,
+            inputs: $inputs,
+            op: $op,
+        }
+    };
+}
+
 fn block_prologue_specs<B: Backend, Node>(
     bw: &BlockWeights<B>,
     rows: u32,
@@ -31,30 +39,15 @@ where
         eps,
     };
     vec![
-        NodeSpec {
-            name: "n1",
-            inputs: &[("input", 0)],
-            op: Node::from(RmsNormOp::new(&bw.norm_1, norm_shape)),
-        },
-        NodeSpec {
-            name: "qkv",
-            inputs: &[("n1", 0)],
-            op: Node::from(LinearOp::new(
-                &bw.qkv_proj,
-                MatMulMeta {
-                    m: rows,
-                    n: dim * 3,
-                    k: dim,
-                },
-                true,
-            )),
-        },
+        node!("n1" <- &[("input", 0)], Node::from(RmsNormOp::new(&bw.norm_1, norm_shape))),
+        node!("qkv" <- &[("n1", 0)], Node::from(LinearOp::new(
+            &bw.qkv_proj,
+            MatMulMeta { m: rows, n: dim * 3, k: dim },
+            true,
+        ))),
     ]
 }
 
-/// `out_proj` -> add -> `n2` -> ffn -> add -- identical in every phase,
-/// consumes an `"attn"`-named node the caller pushed first. Pairs with
-/// `block_prologue_specs`.
 fn block_epilogue_specs<B: Backend, Node>(
     bw: &BlockWeights<B>,
     ctx: &Arc<B>,
@@ -72,65 +65,25 @@ where
         eps,
     };
     vec![
-        NodeSpec {
-            name: "proj",
-            inputs: &[("attn", 0)],
-            op: Node::from(LinearOp::new(
-                &bw.out_proj,
-                MatMulMeta {
-                    m: rows,
-                    n: dim,
-                    k: dim,
-                },
-                true,
-            )),
-        },
-        NodeSpec {
-            name: "add1",
-            inputs: &[("input", 0), ("proj", 0)],
-            op: Node::from(AddOp::new(ctx, rows * dim)),
-        },
-        NodeSpec {
-            name: "n2",
-            inputs: &[("add1", 0)],
-            op: Node::from(RmsNormOp::new(&bw.norm_2, norm_shape)),
-        },
-        NodeSpec {
-            name: "up",
-            inputs: &[("n2", 0)],
-            op: Node::from(LinearOp::new(
-                &bw.ffn_up,
-                MatMulMeta {
-                    m: rows,
-                    n: hidden,
-                    k: dim,
-                },
-                true,
-            )),
-        },
-        NodeSpec {
-            name: "silu",
-            inputs: &[("up", 0)],
-            op: Node::from(SiluOp::new(ctx, rows * hidden)),
-        },
-        NodeSpec {
-            name: "down",
-            inputs: &[("silu", 0)],
-            op: Node::from(LinearOp::new(
-                &bw.ffn_down,
-                MatMulMeta {
-                    m: rows,
-                    n: dim,
-                    k: hidden,
-                },
-                true,
-            )),
-        },
-        NodeSpec {
-            name: "add2",
-            inputs: &[("add1", 0), ("down", 0)],
-            op: Node::from(AddOp::new(ctx, rows * dim)),
-        },
+        node!("proj" <- &[("attn", 0)], Node::from(LinearOp::new(
+            &bw.out_proj,
+            MatMulMeta { m: rows, n: dim, k: dim },
+            true,
+        ))),
+        node!("add1" <- &[("input", 0), ("proj", 0)], Node::from(AddOp::new(ctx, rows * dim))),
+        node!("n2" <- &[("add1", 0)], Node::from(RmsNormOp::new(&bw.norm_2, norm_shape))),
+        node!("up" <- &[("n2", 0)], Node::from(LinearOp::new(
+            &bw.ffn_up,
+            MatMulMeta { m: rows, n: hidden, k: dim },
+            true,
+        ))),
+        node!("silu" <- &[("up", 0)], Node::from(SiluOp::new(ctx, rows * hidden))),
+        node!("down" <- &[("silu", 0)], Node::from(LinearOp::new(
+            &bw.ffn_down,
+            MatMulMeta { m: rows, n: dim, k: hidden },
+            true,
+        ))),
+        node!("add2" <- &[("add1", 0), ("down", 0)], Node::from(AddOp::new(ctx, rows * dim))),
     ]
 }
 
@@ -145,27 +98,11 @@ fn transformer_block_specs<B: Backend>(
 
     let mut specs = block_prologue_specs(bw, rows, dim, cfg.norm_eps);
     specs.extend([
-        NodeSpec {
-            name: "split",
-            inputs: &[("qkv", 0)],
-            op: TrainOp::QkvSplit(QkvSplitOp::new(ctx, rows, dim)),
-        },
-        NodeSpec {
-            name: "rope",
-            inputs: &[("split", 0), ("split", 1)],
-            op: TrainOp::RopeQk(RopeQkOp::new(cfg.seq_len, dim, head_dim, cfg.batch_size)),
-        },
-        NodeSpec {
-            name: "attn",
-            inputs: &[("rope", 0), ("rope", 1), ("split", 2)],
-            op: TrainOp::Attention(AttentionOp::new(
-                ctx,
-                cfg.seq_len,
-                dim,
-                head_dim,
-                cfg.batch_size,
-            )),
-        },
+        node!("split" <- &[("qkv", 0)], TrainOp::QkvSplit(QkvSplitOp::new(ctx, rows, dim))),
+        node!("rope" <- &[("split", 0), ("split", 1)],
+            TrainOp::RopeQk(RopeQkOp::new(cfg.seq_len, dim, head_dim, cfg.batch_size))),
+        node!("attn" <- &[("rope", 0), ("rope", 1), ("split", 2)],
+            TrainOp::Attention(AttentionOp::new(ctx, cfg.seq_len, dim, head_dim, cfg.batch_size))),
     ]);
     specs.extend(block_epilogue_specs(
         bw,
@@ -210,31 +147,15 @@ fn prefill_block_specs<B: Backend>(
 
     let mut specs = block_prologue_specs(bw, prompt_len, dim, cfg.norm_eps);
     specs.extend([
-        NodeSpec {
-            name: "split",
-            inputs: &[("qkv", 0)],
-            op: PrefillOp::QkvSplit(QkvSplitOp::new(ctx, prompt_len, dim)),
-        },
-        NodeSpec {
-            name: "rope",
-            inputs: &[("split", 0), ("split", 1)],
-            op: PrefillOp::RopeQk(RopeQkOp::new(prompt_len, dim, head_dim, 1)),
-        },
-        NodeSpec {
-            name: "k_written",
-            inputs: &[("rope", 1)],
-            op: PrefillOp::CacheWrite(CacheWriteOp::new(cache_k.clone(), prompt_len, dim)),
-        },
-        NodeSpec {
-            name: "v_written",
-            inputs: &[("split", 2)],
-            op: PrefillOp::CacheWrite(CacheWriteOp::new(cache_v.clone(), prompt_len, dim)),
-        },
-        NodeSpec {
-            name: "attn",
-            inputs: &[("rope", 0), ("k_written", 0), ("v_written", 0)],
-            op: PrefillOp::Attention(AttentionOp::new(ctx, prompt_len, dim, head_dim, 1)),
-        },
+        node!("split" <- &[("qkv", 0)], PrefillOp::QkvSplit(QkvSplitOp::new(ctx, prompt_len, dim))),
+        node!("rope" <- &[("split", 0), ("split", 1)],
+            PrefillOp::RopeQk(RopeQkOp::new(prompt_len, dim, head_dim, 1))),
+        node!("k_written" <- &[("rope", 1)],
+            PrefillOp::CacheWrite(CacheWriteOp::new(cache_k.clone(), prompt_len, dim))),
+        node!("v_written" <- &[("split", 2)],
+            PrefillOp::CacheWrite(CacheWriteOp::new(cache_v.clone(), prompt_len, dim))),
+        node!("attn" <- &[("rope", 0), ("k_written", 0), ("v_written", 0)],
+            PrefillOp::Attention(AttentionOp::new(ctx, prompt_len, dim, head_dim, 1))),
     ]);
     specs.extend(block_epilogue_specs(
         bw,
@@ -312,53 +233,23 @@ fn decode_block_specs<B: Backend>(
 
     let mut specs = block_prologue_specs(bw, 1, dim, cfg.norm_eps);
     specs.extend([
-        NodeSpec {
-            name: "q",
-            inputs: &[("qkv", 0)],
-            op: DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 0)),
-        },
-        NodeSpec {
-            name: "k",
-            inputs: &[("qkv", 0)],
-            op: DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, dim)),
-        },
-        NodeSpec {
-            name: "v",
-            inputs: &[("qkv", 0)],
-            op: DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 2 * dim)),
-        },
-        NodeSpec {
-            name: "rope_q",
-            inputs: &[("q", 0)],
-            op: DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim)),
-        },
-        NodeSpec {
-            name: "rope_k",
-            inputs: &[("k", 0)],
-            op: DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim)),
-        },
-        NodeSpec {
-            name: "k_written",
-            inputs: &[("rope_k", 0)],
-            op: DecodeOp::CacheWrite(CacheWriteOp::new(cache_k.clone(), 1, dim)),
-        },
-        NodeSpec {
-            name: "v_written",
-            inputs: &[("v", 0)],
-            op: DecodeOp::CacheWrite(CacheWriteOp::new(cache_v.clone(), 1, dim)),
-        },
-        NodeSpec {
-            name: "attn",
-            inputs: &[("rope_q", 0)],
-            op: DecodeOp::CachedAttention(CachedAttentionOp::new(
-                cache_k.clone(),
-                cache_v.clone(),
-                cfg.num_heads,
-                dim,
-                head_dim,
-                max_context_len,
-            )),
-        },
+        node!("q" <- &[("qkv", 0)], DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 0))),
+        node!("k" <- &[("qkv", 0)], DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, dim))),
+        node!("v" <- &[("qkv", 0)], DecodeOp::HeadGather(HeadGatherOp::new(ctx, dim, 2 * dim))),
+        node!("rope_q" <- &[("q", 0)], DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim))),
+        node!("rope_k" <- &[("k", 0)], DecodeOp::RopeOffset(RopeOffsetOp::new(ctx, dim, head_dim))),
+        node!("k_written" <- &[("rope_k", 0)],
+            DecodeOp::CacheWrite(CacheWriteOp::new(cache_k.clone(), 1, dim))),
+        node!("v_written" <- &[("v", 0)],
+            DecodeOp::CacheWrite(CacheWriteOp::new(cache_v.clone(), 1, dim))),
+        node!("attn" <- &[("rope_q", 0)], DecodeOp::CachedAttention(CachedAttentionOp::new(
+            cache_k.clone(),
+            cache_v.clone(),
+            cfg.num_heads,
+            dim,
+            head_dim,
+            max_context_len,
+        ))),
     ]);
     specs.extend(block_epilogue_specs(
         bw,
