@@ -18,5 +18,6 @@ pub mod weights;
 pub use inference::InferenceSession;
 pub use inference_graphs::Cache;
 pub use layers::{Add, CrossEntropy, Layer, Linear, RMSNorm, SiLU};
+pub use model::Model;
 pub use train::Trainer;
 pub use weights::{BlockWeights, ModelWeights};
