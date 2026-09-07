@@ -80,7 +80,7 @@ fn eval_windows(
     })
 }
 
-fn eval_loss<B: Backend>(model: &Model<B>, set: &EvalSet) -> f32 {
+fn eval_loss<B: Backend>(model: &mut Model<B>, set: &EvalSet) -> f32 {
     let rows = (model.weights().cfg.batch_size * model.weights().cfg.seq_len) as usize;
     let passes = set.inputs.len() / rows;
     let mut total = 0.0;
@@ -93,7 +93,7 @@ fn eval_loss<B: Backend>(model: &Model<B>, set: &EvalSet) -> f32 {
     total / passes as f32
 }
 
-fn run_eval<B: Backend>(model: &Model<B>, set: &EvalSet, step: usize) {
+fn run_eval<B: Backend>(model: &mut Model<B>, set: &EvalSet, step: usize) {
     let loss = eval_loss(model, set);
     let ppl = loss.exp();
     println!(
@@ -229,7 +229,7 @@ fn run_training<B: Backend>(ctx: Arc<B>, model_cfg: ModelConfig, train_cfg: Trai
     match &eval_set {
         // Baseline BEFORE any continued-pretraining step: the whole point is
         // seeing the curve move from this number.
-        Some(set) => run_eval(&model, set, start_step),
+        Some(set) => run_eval(&mut model, set, start_step),
         None => println!("(no data/eval.txt - held-out eval disabled)"),
     }
 
@@ -278,7 +278,7 @@ fn run_training<B: Backend>(ctx: Arc<B>, model_cfg: ModelConfig, train_cfg: Trai
 
         if step % train_cfg.eval_every == 0 && step > start_step {
             if let Some(set) = &eval_set {
-                run_eval(&model, set, step);
+                run_eval(&mut model, set, step);
             }
         }
     }
@@ -335,12 +335,18 @@ fn main() {
         .and_then(|i| args.get(i + 1))
         .map(String::as_str)
         .unwrap_or("hall1_pretrain");
-    let (model_cfg, train_cfg) = resolve_profile(train_config_name).unwrap_or_else(|| {
+    let (model_cfg, mut train_cfg) = resolve_profile(train_config_name).unwrap_or_else(|| {
         panic!(
             "Unknown --train-config '{train_config_name}' \
              (known: hall1_pretrain, dolly_finetune, pidgeon_pretrain)"
         )
     });
+
+    train_cfg.run.streaming = args.iter().any(|a| a == "--streaming");
+    train_cfg.run.grad_checkpoint = args.iter().any(|a| a == "--grad-checkpoint");
+    if train_cfg.run.grad_checkpoint && !train_cfg.run.streaming {
+        panic!("--grad-checkpoint requires --streaming");
+    }
     if !is_chat {
         println!("[sequexa-core] train-config profile: {}", train_cfg.name);
     }

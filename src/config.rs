@@ -108,6 +108,9 @@ pub struct RunConfig {
     pub eval_every: usize,
     pub eval_windows: usize,
     pub train_bf16_matmul: bool,
+
+    pub streaming: bool,
+    pub grad_checkpoint: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -170,6 +173,8 @@ impl TrainConfig {
                 eval_every: 1000,
                 eval_windows: 32,
                 train_bf16_matmul: true,
+                streaming: false,
+                grad_checkpoint: false,
             },
         }
     }
@@ -212,6 +217,8 @@ impl TrainConfig {
                 eval_every: 25,
                 eval_windows: 32,
                 train_bf16_matmul: true,
+                streaming: false,
+                grad_checkpoint: false,
             },
         }
     }
@@ -254,6 +261,8 @@ impl TrainConfig {
                 eval_every: 1000,
                 eval_windows: 32,
                 train_bf16_matmul: true,
+                streaming: false,
+                grad_checkpoint: false,
             },
         }
     }
