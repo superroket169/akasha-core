@@ -37,8 +37,16 @@ struct ChatState<B: Backend> {
 }
 
 struct TrainState<B: Backend> {
-    fwd_graph: ComputeGraph<B>,
-    bwd_graph: ComputeGraph<B>,
+    ctx: Arc<B>,
+    // streaming: rebuild + redispatch a fresh graph every train_step instead
+    // of capturing one forever. Required for grad_checkpoint -- a captured
+    // graph's nodes each keep their own buffer clone (see wilupgu's
+    // WgpuNode::buffers/CudaNode::bindings), so freed activations never
+    // actually return to the pool as long as the capture is alive.
+    streaming: bool,
+    grad_checkpoint: bool,
+    fwd_graph: Option<ComputeGraph<B>>, // None when streaming
+    bwd_graph: Option<ComputeGraph<B>>,
     tokens: Arc<Tensor<B>>, // embedding's input handle -- see EmbeddingOp::tokens_handle
     head: Tape<B, TrainOp<B>>,
     embedding_id: NodeId,
@@ -64,6 +72,13 @@ impl<B: Backend> Model<B> {
         cfg: ModelConfig,
         train_cfg: TrainConfig,
     ) -> Self {
+        let streaming = train_cfg.run.streaming;
+        let grad_checkpoint = train_cfg.run.grad_checkpoint;
+        assert!(
+            !grad_checkpoint || streaming,
+            "grad_checkpoint requires streaming"
+        );
+
         let rows = cfg.batch_size * cfg.seq_len;
 
         let mut fwd_graph = ComputeGraph::new(ctx.clone());
@@ -182,8 +197,10 @@ impl<B: Backend> Model<B> {
             weights,
             chat: None,
             train: Some(TrainState {
-                fwd_graph,
-                bwd_graph,
+                streaming,
+                grad_checkpoint,
+                fwd_graph: if streaming { None } else { Some(fwd_graph) },
+                bwd_graph: if streaming { None } else { Some(bwd_graph) },
                 tokens,
                 head,
                 embedding_id,
@@ -194,6 +211,7 @@ impl<B: Backend> Model<B> {
                 loss,
                 optimizer,
                 grad_clip,
+                ctx,
             }),
         }
     }
@@ -341,6 +359,25 @@ impl<B: Backend> Model<B> {
         Ok(generated)
     }
 
+    fn streaming_forward(t: &mut TrainState<B>) -> ComputeGraph<B> {
+        let mut fwd_graph = ComputeGraph::new(t.ctx.clone());
+        let mut gb = GraphBuilder::train(&mut fwd_graph);
+        t.head.redispatch(&mut gb);
+
+        for block in &mut t.blocks {
+            block.tape.redispatch(&mut gb);
+            if t.grad_checkpoint {
+                block.tape.free_activations();
+            }
+        }
+
+        t.tail.redispatch(&mut gb);
+        let logits = t.tail.output(t.logits_id);
+        t.loss.forward(&mut gb, &logits);
+        drop(gb);
+        fwd_graph
+    }
+
     pub fn train_step(&mut self, tokens: &[u32], targets: &[u32]) -> Real {
         let t = self
             .train
@@ -348,20 +385,76 @@ impl<B: Backend> Model<B> {
             .expect("train_step called on a chat-only Model");
         t.tokens.copy_from_cpu(tokens);
         t.loss.set_targets(targets);
-        t.fwd_graph.execute_captured();
+
+        if !t.streaming {
+            t.fwd_graph
+                .as_ref()
+                .expect("captured mode always keeps fwd_graph")
+                .execute_captured();
+            let loss = t.loss.loss();
+            t.bwd_graph
+                .as_ref()
+                .expect("captured mode always keeps bwd_graph")
+                .execute_captured();
+            return loss;
+        }
+
+        let fwd_graph = Self::streaming_forward(t);
+        fwd_graph.execute();
         let loss = t.loss.loss();
-        t.bwd_graph.execute_captured();
+
+        let mut bwd_graph = ComputeGraph::new(t.ctx.clone());
+        {
+            let mut gb_bwd = GraphBuilder::train(&mut bwd_graph);
+            let logits_buf = t.tail.output(t.logits_id);
+            t.loss.backward(&mut gb_bwd, &logits_buf);
+            t.tail.backward(&mut gb_bwd, (t.logits_id, 0), &logits_buf);
+
+            let mut grad = t
+                .tail
+                .grad_of((t.tail_input_id, 0))
+                .expect("tail backward didn't reach its input");
+
+            for block in t.blocks.iter_mut().rev() {
+                if t.grad_checkpoint {
+                    block.tape.redispatch(&mut gb_bwd); // recompute saved_input/saved
+                }
+
+                block.tape.backward(&mut gb_bwd, (block.output, 0), &grad);
+                grad = block
+                    .tape
+                    .grad_of((block.block_input_id, 0))
+                    .expect("block backward didn't reach its input");
+
+                if t.grad_checkpoint {
+                    block.tape.free_activations();
+                }
+            }
+            t.head.backward(&mut gb_bwd, (t.embedding_id, 0), &grad);
+        }
+        bwd_graph.execute();
+
         loss
     }
 
-    pub fn eval_loss(&self, tokens: &[u32], targets: &[u32]) -> Real {
+    pub fn eval_loss(&mut self, tokens: &[u32], targets: &[u32]) -> Real {
         let t = self
             .train
-            .as_ref()
+            .as_mut()
             .expect("eval_loss called on a chat-only Model");
         t.tokens.copy_from_cpu(tokens);
         t.loss.set_targets(targets);
-        t.fwd_graph.execute_captured();
+
+        if !t.streaming {
+            t.fwd_graph
+                .as_ref()
+                .expect("captured mode always keeps fwd_graph")
+                .execute_captured();
+            return t.loss.loss();
+        }
+
+        let fwd_graph = Self::streaming_forward(t);
+        fwd_graph.execute();
         t.loss.loss()
     }
 
