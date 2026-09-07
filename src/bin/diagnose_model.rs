@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use akasha_core::config::{ModelConfig, TrainConfig};
-use akasha_core::diagnostic::{DiagnosticCheck, DiagnosticSuite};
-use akasha_core::nn::{Model, ModelWeights};
+use sequexa_core::config::{ModelConfig, TrainConfig};
+use sequexa_core::diagnostic::{DiagnosticCheck, DiagnosticSuite};
+use sequexa_core::nn::{Model, ModelWeights};
 use rand::Rng;
 use wilupgu::{Backend, Tensor, WgpuBackend};
 
@@ -44,7 +44,7 @@ impl<B: Backend> DiagnosticCheck for ParamCountCheck<B> {
     }
 
     fn run(&self) -> bool {
-        let arch = ModelConfig::akasha_hall_1();
+        let arch = ModelConfig::hall_1();
         let cfg = ModelConfig::new(
             self.vocab_size,
             arch.dim,
@@ -79,7 +79,7 @@ impl<B: Backend> DiagnosticCheck for GradFlowCheck<B> {
     fn run(&self) -> bool {
         let ctx = self.ctx.clone();
         let vocab_size = self.vocab_size;
-        let arch = ModelConfig::akasha_hall_1();
+        let arch = ModelConfig::hall_1();
         let seq_len = 16u32;
 
         let cfg = ModelConfig::new(
@@ -156,7 +156,7 @@ impl<B: Backend> DiagnosticCheck for AccumulationCheck<B> {
     fn run(&self) -> bool {
         let ctx = self.ctx.clone();
         let vocab_size = self.vocab_size;
-        let arch = ModelConfig::akasha_hall_1();
+        let arch = ModelConfig::hall_1();
         let seq_len = 16u32;
 
         let cfg = ModelConfig::new(
@@ -429,9 +429,9 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
         return;
     }
 
-    println!("\n================= AKASHA TRAINING DIAGNOSTICS =================\n");
+    println!("\n================= SEQUEXA TRAINING DIAGNOSTICS =================\n");
 
-    let arch = ModelConfig::akasha_hall_1();
+    let arch = ModelConfig::hall_1();
 
     let vocab_size: u32 = std::env::var("DIAGNOSE_VOCAB_SIZE")
         .ok()

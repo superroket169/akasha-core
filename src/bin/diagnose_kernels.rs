@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use akasha_core::diagnostic::{DiagnosticCheck, DiagnosticSuite};
-use akasha_core::nn::{Layer, RMSNorm};
-use akasha_core::shaders;
+use sequexa_core::diagnostic::{DiagnosticCheck, DiagnosticSuite};
+use sequexa_core::nn::{Layer, RMSNorm};
+use sequexa_core::shaders;
 use rand::Rng;
 use wilupgu::{Backend, Binding, ComputeGraph, Tensor, TensorMode, WgpuBackend};
 
@@ -271,7 +271,7 @@ impl<B: Backend> DiagnosticCheck for CrossEntropyCheck<B> {
     }
 
     fn run(&self) -> bool {
-        use akasha_core::nn::CrossEntropy;
+        use sequexa_core::nn::CrossEntropy;
 
         let ctx = self.ctx.clone();
         let vocab_size = 50257u32;
@@ -300,7 +300,7 @@ impl<B: Backend> DiagnosticCheck for CrossEntropyCheck<B> {
 }
 
 fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
-    println!("\n================= AKASHA KERNEL DIAGNOSTICS =================\n");
+    println!("\n================= SEQUEXA KERNEL DIAGNOSTICS =================\n");
     DiagnosticSuite::new()
         .add(Box::new(HeadGatherScatterCheck { ctx: ctx.clone() }))
         .add(Box::new(RmsNormBackwardCheck { ctx: ctx.clone() }))

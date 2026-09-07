@@ -4,7 +4,7 @@ set PATH=%PATH%;%USERPROFILE%\.cargo\bin;C:\Program Files\NVIDIA GPU Computing T
 
 :loop
 echo [%date% %time%] Starting/resuming training... >> training.log
-cargo run --release --features cuda --bin akasha-core >> training.log 2>&1
+cargo run --release --features cuda --bin sequexa-core >> training.log 2>&1
 echo [%date% %time%] Process exited -- restarting in 10 seconds... >> training.log
 timeout /t 10
 goto loop

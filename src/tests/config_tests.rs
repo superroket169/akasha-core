@@ -37,7 +37,7 @@
 
     #[test]
     fn named_model_profiles_pass_head_dim_guard() {
-        assert_eq!(ModelConfig::akasha_hall_1().head_dim(), 64);
+        assert_eq!(ModelConfig::hall_1().head_dim(), 64);
         assert_eq!(ModelConfig::pidgeon().head_dim(), 64);
     }
 
@@ -66,7 +66,7 @@
 
     #[test]
     fn model_config_layers_are_all_transformer() {
-        let cfg = ModelConfig::akasha_hall_1();
+        let cfg = ModelConfig::hall_1();
         assert_eq!(cfg.layers().len(), cfg.num_layers);
         assert!(cfg.layers().iter().all(|k| *k == BlockKind::Transformer));
     }

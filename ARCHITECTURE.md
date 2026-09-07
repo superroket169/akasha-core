@@ -1,4 +1,4 @@
-# akasha-core — Mimari
+# sequexa-core — Mimari
 
 ## Ne bu?
 
@@ -455,7 +455,7 @@ invariantı buraya bir satır olarak eklenir.
   decode graph'ının hiç `execute_captured` KULLANMAMASININ sebebi budur.
 - **`cfg.eos_token = vocab_size - 1`** (`ModelConfig::new`) — artık hardcode
   değil, GPT-2 BPE `<|endoftext|>` kuralına göre config'ten türetilir.
-- **Tokenizer offline-first**: yerel `tokenizer.json` / `AKASHA_TOKENIZER`
+- **Tokenizer offline-first**: yerel `tokenizer.json` / `SEQUEXA_TOKENIZER`
   varsa ağa çıkılmaz; ilk indirme yerel kopya bırakır.
 - **`checkpoints/model_final.bin` (v1) dokunulmazdır** — tek eğitilmiş model;
   migrasyonlar kopya üzerinde yapılır.

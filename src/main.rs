@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use akasha_core::config::*;
-use akasha_core::data::Dataset;
-use akasha_core::nn::checkpoint;
-use akasha_core::nn::{Model, ModelWeights};
-use akasha_core::tokenizer::AkashaTokenizer;
+use sequexa_core::config::*;
+use sequexa_core::data::Dataset;
+use sequexa_core::nn::checkpoint;
+use sequexa_core::nn::{Model, ModelWeights};
+use sequexa_core::tokenizer::Tokenizer;
 use wilupgu::{Backend, WgpuBackend};
 
 fn find_latest_checkpoint(dir: &str) -> Option<(String, usize)> {
@@ -30,7 +30,7 @@ struct EvalSet {
 }
 
 fn load_eval_set(
-    tokenizer: &AkashaTokenizer,
+    tokenizer: &Tokenizer,
     seq_len: usize,
     batch_size: usize,
     eval_windows_max: usize,
@@ -123,7 +123,7 @@ fn log_train_step(step: usize, loss: f32, lr: f32) {
 }
 
 fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str, cfg: ModelConfig) {
-    let tokenizer = AkashaTokenizer::from_pretrained();
+    let tokenizer = Tokenizer::from_pretrained();
 
     let weights = ModelWeights::zeros(ctx.clone(), &cfg);
     checkpoint::load(&weights, weights_path)
@@ -169,13 +169,13 @@ fn run_chat<B: Backend>(ctx: Arc<B>, weights_path: &str, cfg: ModelConfig) {
             Err(e) => eprintln!("generation failed: {e}\n"),
         }
 
-        println!("<<<AKASHA_END>>>");
+        println!("<<<SEQUEXA_END>>>");
         std::io::Write::flush(&mut std::io::stdout()).unwrap();
     }
 }
 
 fn run_training<B: Backend>(ctx: Arc<B>, model_cfg: ModelConfig, train_cfg: TrainConfig) {
-    let tokenizer = AkashaTokenizer::from_pretrained();
+    let tokenizer = Tokenizer::from_pretrained();
     println!("Vocab size: {}", tokenizer.vocab_size());
 
     let mut dataset = Dataset::from_file("data/train.txt", &tokenizer, model_cfg.seq_len as usize);
@@ -313,7 +313,7 @@ fn run_training<B: Backend>(ctx: Arc<B>, model_cfg: ModelConfig, train_cfg: Trai
     println!("Training complete!");
     println!("Best loss: {:.4}", best_loss);
     println!("Model saved: checkpoints/model_final.v3.bin");
-    println!("Run with: cargo run --release --bin akasha-core -- --chat");
+    println!("Run with: cargo run --release --bin sequexa-core -- --chat");
 }
 
 fn main() {
@@ -342,7 +342,7 @@ fn main() {
         )
     });
     if !is_chat {
-        println!("[akasha-core] train-config profile: {}", train_cfg.name);
+        println!("[sequexa-core] train-config profile: {}", train_cfg.name);
     }
 
     #[cfg(not(feature = "cpu"))]

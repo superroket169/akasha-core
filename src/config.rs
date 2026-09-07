@@ -60,7 +60,7 @@ impl ModelConfig {
         self
     }
 
-    pub fn akasha_hall_1() -> Self {
+    pub fn hall_1() -> Self {
         Self::new(50257, 768, 12, 12, 512).assert_flash_attention_head_dim()
     }
 
@@ -261,8 +261,8 @@ impl TrainConfig {
 
 pub fn resolve_profile(name: &str) -> Option<(ModelConfig, TrainConfig)> {
     match name {
-        "hall1_pretrain" => Some((ModelConfig::akasha_hall_1(), TrainConfig::hall1_pretrain())),
-        "dolly_finetune" => Some((ModelConfig::akasha_hall_1(), TrainConfig::dolly_finetune())),
+        "hall1_pretrain" => Some((ModelConfig::hall_1(), TrainConfig::hall1_pretrain())),
+        "dolly_finetune" => Some((ModelConfig::hall_1(), TrainConfig::dolly_finetune())),
         "pidgeon_pretrain" => Some((ModelConfig::pidgeon(), TrainConfig::pidgeon_pretrain())),
         _ => None,
     }

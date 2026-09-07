@@ -11,9 +11,9 @@
 //!
 //! Usage: migrate_checkpoint_v3 [input] [output]
 
-use akasha_core::Real;
-use akasha_core::config::ModelConfig;
-use akasha_core::nn::checkpoint::{V3_MAGIC, V3Body};
+use sequexa_core::Real;
+use sequexa_core::config::ModelConfig;
+use sequexa_core::nn::checkpoint::{V3_MAGIC, V3Body};
 use serde::Deserialize;
 use std::fs::File;
 use std::io::{BufReader, BufWriter, Read, Seek, Write};
@@ -80,7 +80,7 @@ fn main() {
 
     // Derive the architecture from tensor shapes; num_heads is not stored in
     // v1, so it comes from the compiled-in config and is sanity-checked.
-    let cfg = ModelConfig::akasha_hall_1();
+    let cfg = ModelConfig::hall_1();
     let num_layers = (params.len() - 3) / 6;
     assert_eq!(
         params.len(),
@@ -94,7 +94,7 @@ fn main() {
     assert_eq!(
         (vocab_size as u32, dim as u32, num_layers, ffn_hidden as u32),
         (cfg.vocab_size, cfg.dim, cfg.num_layers, cfg.ffn_hidden),
-        "file architecture does not match ModelConfig::akasha_hall_1()"
+        "file architecture does not match ModelConfig::hall_1()"
     );
     println!(
         "Architecture: dim={dim}, layers={num_layers}, vocab={vocab_size}, ffn={ffn_hidden}, heads={} (from config)",

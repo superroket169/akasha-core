@@ -1,6 +1,6 @@
-# akasha-core
+# sequexa-core
 
-Akasha-core is an LLM engine built on [wilupgu](../wilupgu), a
+sequexa-core is an LLM engine built on [wilupgu](../wilupgu), a
 backend-independent tensor/dispatch library (wgpu / CUDA / CPU). It
 prioritizes code cleanliness and extensibility over research-driven
 experimentation: every kernel sits behind a single emitter, bindings and
@@ -12,9 +12,7 @@ involved — every op (matmul, RMSNorm, flash attention, RoPE, AdamW,
 cross-entropy and all backward passes) is a hand-written WGSL / CUDA C / CPU
 kernel.
 
-will be "sequexa"
-
-## Model: akasha-hall 1.0
+## Model: sequexa-hall 1.0
 
 | | |
 |---|---|
@@ -36,7 +34,7 @@ cargo run --release --features cuda           # CUDA backend (NVIDIA)
 cargo run --release --features cpu -- --chat --cpu   # CPU backend
 ```
 
-- **Tokenizer**: a local `tokenizer.json` (or the `AKASHA_TOKENIZER` env var)
+- **Tokenizer**: a local `tokenizer.json` (or the `SEQUEXA_TOKENIZER` env var)
   is used if present; otherwise the GPT-2 tokenizer is downloaded once and a
   local copy is saved.
 - **Training data**: `data/train.txt`, raw text of any size; tokenized ONCE
@@ -47,9 +45,11 @@ cargo run --release --features cpu -- --chat --cpu   # CPU backend
   auto-resumes from the newest one. `scripts/train.{bat,sh}` wrap the run in
   an auto-restart loop.
 - **Hyperparameters** all live in `src/config.rs`.
-- **Diagnostics**: `src/bin/diagnose.rs` is a 10-check correctness suite
-  (gradient flow, gradchecks, accumulation, CE closed-form, KV-cache-vs-naive
-  equivalence, ...) — run it whenever training looks wrong before blaming
+- **Diagnostics**: two manually-run correctness suites — `cargo run --release
+  --bin diagnose_kernels` (raw kernel-vs-CPU-reference checks) and `cargo run
+  --release --bin diagnose_model` (param count, grad flow, accumulation,
+  memorization smoke, prefill/decode parity, KV-cache speedup — 6 checks at
+  real hall_1 scale) — run whenever training looks wrong before blaming
   hyperparameters.
 
 ## Testing
@@ -61,10 +61,9 @@ cargo test -- --test-threads=1   # ALWAYS single-threaded: parallel tests
 
 ## Docs
 
-- [ARCHITECTURE.md](ARCHITECTURE.md) — layer map, phase type system, grad
-  topology, meta protocol, KV cache, invariants, idea queue
+- [ARCHITECTURE.md](ARCHITECTURE.md) — layer map, phase type system, Tape/Op
+  system, grad topology, meta protocol, KV cache, invariants, idea queue
 - [TODO.md](TODO.md) — roadmap (continued pretraining → chat fine-tuning)
-- [BATCHING_PLAN.md](BATCHING_PLAN.md) — real-batching design & status
 
 ## License
 

@@ -4,7 +4,7 @@
 //! resident pool instead of holding the whole corpus in RAM. Existing shard
 //! dirs are reused as-is — delete to force re-tokenization.
 
-use crate::tokenizer::AkashaTokenizer;
+use crate::tokenizer::Tokenizer;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -28,7 +28,7 @@ pub struct Dataset {
 }
 
 impl Dataset {
-    pub fn from_file(path: &str, tokenizer: &AkashaTokenizer, seq_len: usize) -> Self {
+    pub fn from_file(path: &str, tokenizer: &Tokenizer, seq_len: usize) -> Self {
         let shard_dir = shard_dir_for(path);
         if !has_shards(&shard_dir) {
             println!(

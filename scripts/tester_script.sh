@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.." || exit 1
 export PATH="$PATH:$HOME/.cargo/bin:/usr/local/cuda/bin"
 
 LOGFILE=test_results.log
-echo "[$(date)] akasha-core test run" > "$LOGFILE"
+echo "[$(date)] sequexa-core test run" > "$LOGFILE"
 
 ANY_FAILED=0
 
@@ -12,8 +12,8 @@ echo "=== [1/2] cargo test --features cuda -- --test-threads=1 ==="
 cargo test --features cuda -- --test-threads=1 >> "$LOGFILE" 2>&1
 if [ $? -ne 0 ]; then S1=FAILED; ANY_FAILED=1; echo FAILED; else S1=OK; echo OK; fi
 
-echo "=== [2/2] cargo build --release --features cuda --bin akasha-core ==="
-cargo build --release --features cuda --bin akasha-core >> "$LOGFILE" 2>&1
+echo "=== [2/2] cargo build --release --features cuda --bin sequexa-core ==="
+cargo build --release --features cuda --bin sequexa-core >> "$LOGFILE" 2>&1
 if [ $? -ne 0 ]; then S2=FAILED; ANY_FAILED=1; echo FAILED; else S2=OK; echo OK; fi
 
 echo

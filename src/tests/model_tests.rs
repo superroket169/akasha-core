@@ -141,7 +141,7 @@ mod checkpoint_roundtrip {
         a.optimizer_step();
         ctx.synchronize();
 
-        let path = std::env::temp_dir().join("akasha_model_v3_roundtrip_test.bin");
+        let path = std::env::temp_dir().join("sequexa_model_v3_roundtrip_test.bin");
         let path = path.to_str().unwrap();
         a.save_checkpoint(path, 42).unwrap();
 
