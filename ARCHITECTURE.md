@@ -3,58 +3,92 @@
 ## Ne bu?
 
 Genel tanıtım ve hızlı başlangıç [README.md](README.md)'de. Bu dosya iç
-mimariyi anlatır: katman haritası, faz tip sistemi, grad topolojisi, meta
-protokolü, KV cache, invariantlar ve fikir kuyruğu.
+mimariyi anlatır: katman haritası, faz tip sistemi, Tape/Op sistemi, grad
+topolojisi, meta protokolü, KV cache, invariantlar ve fikir kuyruğu.
+
+**2026-09-07 notu**: Bu doküman Big Refactor sonrası mimariyi anlatır. Eski
+iki-dünya tasarımı (ayrı `layers.rs`+`train.rs` / `inference.rs`+
+`inference_graphs.rs` çifti, `Trainer`, `InferenceSession`) tamamen silindi.
+Tek gerçek artık `Tape`/`Op` sistemi + `Model`.
 
 ## Katman haritası
 
 ```
-config.rs ── ModelConfig + akasha-hall-1.0 (ve gelecek modellerin) sabitleri
-   │
+config.rs ── ModelConfig + BlockKind (mimari seçimi: bugün tek variant,
+   │          Transformer — AnyOptimizer/AnyGradClip'le aynı closed-enum kalıbı)
    ▼
 weights.rs ── ModelWeights / BlockWeights          ← TEK GERÇEK:
-   │            (salt weight tensörleri, grad yok)   iki dünya da bunu paylaşır
-   │
-   ├───────────── TRAIN dünyası ────────────────────────────────────┐
-   │  layers.rs   : grad'lı sarmalayıcılar (Linear, RMSNorm,        │
-   │                Embedding, SelfAttention, Add, SiLU, CE)        │
-   │                — her biri kendi fwd/bwd graph'ını kurar        │
-   │  train.rs    : Trainer — hepsini fuse eder (fwd, bwd,          │
-   │                zero_grads, zero_transient, clip)               │
-   │  optim/      : AdamW (schedule kernel + param başına node)     │
-   │                                                                │
-   ├───────────── INFERENCE dünyası ────────────────────────────────┤
-   │  inference_graphs.rs : build_prefill_layer / build_decode_layer│
-   │                        + DecodeScratch (buffer+meta havuzu)    │
-   │                        + Cache (KV)                            │
-   │  inference.rs        : InferenceSession (prefill/decode/       │
-   │                        generate akış kontrolü)                 │
-   │  sampling.rs         : host-side token seçimi                  │
-   │                                                                │
-   ▼                                                                ▼
-nn/ops ── meta.rs: typed meta struct'lar (KernelMeta)
-          emit.rs: kernel başına TEK emitter fonksiyonu
-          GraphBuilder<Phase>: Train / Prefill / Decode tip kapıları
+   │            (salt weight tensörleri, grad yok)   train de chat da bunu paylaşır
+   │            Clone = ucuz (Arc paylaşımı, tensör kopyalamaz)
+   ▼
+arch.rs ── Architecture<B> trait: train_specs/prefill_specs/decode_specs
+blocks/transformer.rs ── impl Architecture<B> for Transformer (tek implementor)
+   │        arch.rs'teki build_block/build_prefill_forward/build_decode_forward
+   │        BlockKind'a göre match'leyip ilgili Architecture impl'ini çağırır
+   ▼
+model.rs ── Model<B>: weights + Option<TrainState> + Option<ChatState>
+   │          for_training / for_chat kurar (Tape'leri arch.rs::build_* ile inşa
+   │          eder), sonra: train_step / zero_grad / optimizer_step / eval_loss /
+   │          save_checkpoint / load_checkpoint / params() / generate() /
+   │          prefill_logits / decode_step_logits / reset_cache / max_context_len
+   ▼
+chat_session.rs ── ChatSession<B>: Model'i saran streaming ön-yüz
+   │                (feed_prompt / next / reset / is_finished) — generate()'in
+   │                blocking tek-çağrı halinden farklı olarak token-token akış,
+   │                iptal, manuel cache kontrolü ister.
+   ▼
+tape.rs ── Tape<B, Node>, NodeSpec, Forward<B,P>/Backward<B>/Advance trait'leri,
+   │        node! makrosu (compakt NodeSpec literal)
+ops/{full_seq,cached}.rs ── somut op struct'ları (LinearOp, RmsNormOp, SiluOp,
+   │        AddOp, EmbeddingOp, AttentionOp, RopeQkOp, QkvSplitOp — full_seq.rs;
+   │        CacheWriteOp, CachedAttentionOp, RopeOffsetOp, HeadGatherOp — cached.rs)
+dispatch/{forward,backward,advance,from}.rs ── TrainOp/PrefillOp/DecodeOp enum'larının
+   │        Forward/Backward/Advance/From dispatch'i (makro üretimli, hepsi <50 satır)
+   ▼
+kernels/ ── meta.rs: typed meta struct'lar (KernelMeta)
+             emit.rs: kernel başına TEK emitter fonksiyonu
+             GraphBuilder<Phase>: Train / Prefill / Decode tip kapıları
    │
    ▼
-shaders/ ── akasha'ya özgü kernel üçüzleri (wgsl + cuda + cpu)
+shaders/ ── wgsl/ + cuda/ (ikisi de aynı fwd/bwd + üç top-level dosya düzeninde)
    │
    ▼
 wilupgu ── builtin'ler (matmul ailesi, GEMV, ADAMW, ZERO_TENSOR,
            RESIDUAL_ADD...) + ComputeGraph + Backend'ler
 ```
 
-İki dünya kuralı: `layers.rs` **sadece** Trainer'a aittir (grad buffer'ları taşır),
-`inference_graphs.rs` **sadece** inference'a. İkisi de aynı `ModelWeights`'i ve aynı
-`emit` katmanını kullanır ama birbirinin dosyasına asla dokunmaz.
+Ayrıca, `Model`'e paralel duran iki şey:
 
-## nn/ops: GraphBuilder ve faz tip sistemi
+- `diagnostic.rs` — `DiagnosticCheck` trait (`name`/`run`/`log`) +
+  `DiagnosticSuite` (elle koşulan check'leri sırayla çalıştırıp özetleyen
+  ince bir runner, `AnyOptimizer` tarzı closed-enum yerine trait+struct
+  kullanır çünkü check'ler birbirinden bağımsız kaynak kurup/serbest
+  bırakıyor).
+- `bin/diagnose_kernels.rs` (CHECK 3/4/7 — ham kernel-vs-CPU-referans,
+  `layers.rs`'in standalone `RMSNorm`/`CrossEntropy` sarmalayıcılarını
+  kullanır) ve `bin/diagnose_model.rs` (CHECK 1/2/5/8/9/10 — `Model`
+  üzerinden gerçek-ölçek sağlık taraması).
 
-Bu bölüm yalnızca `nn/ops/`'u anlatır (GraphBuilder, Phase trait'leri, emitter'lar).
-Graph'lerin *kurulduğu* yerler başka dosyalardır: Train graph'leri `layers.rs` +
-`train.rs`'de, Prefill/Decode graph'leri `inference_graphs.rs`'de kurulur
-(`inference.rs` sadece akış kontrolüdür). "Prefill" adını görünce `inference.rs`'e
-değil, `inference_graphs.rs`'e bak.
+**`layers.rs`'in bugünkü rolü**: artık Trainer'a ait değil (Trainer yok) —
+sadece `diagnose_kernels.rs`'in izole kernel testleri için duran, kendi
+grad buffer'ını taşıyan standalone sarmalayıcılar (`Linear`, `RMSNorm`,
+`CrossEntropy`, ...). `Model`/`Tape` bunlara hiç dokunmaz, `ModelWeights`'i
+doğrudan okur.
+
+**Tek dünya kuralı (eskisinin yerine)**: train/prefill/decode artık ayrı
+dosya çiftleri değil — TEK Tape/Op sistemi + faz tip kapıları. Üç faz
+arasındaki gerçek fark yalnız üç kalem: (a) attention algoritması (flash
+vs 3-dispatch cached), (b) KV cache okuma/yazma (`CachedPhase`), (c)
+backward'ın var olup olmaması (yalnız Train). Bunların hepsi `TrainOp`/
+`PrefillOp`/`DecodeOp` enum'larında ve faz marker trait'lerinde zaten kodlu.
+
+## nn/kernels: GraphBuilder ve faz tip sistemi
+
+Bu bölüm yalnızca `nn/kernels/`'ı anlatır (GraphBuilder, Phase trait'leri,
+emitter'lar). Graph'lerin *kurulduğu* yer artık tek bir yer: `arch.rs`'teki
+`build_block`/`build_prefill_forward`/`build_decode_forward`, gerçek
+düğüm-şeması ise `blocks/transformer.rs`'teki `Architecture` impl'inde
+(Mamba/GDN geldiğinde kendi `blocks/*.rs` dosyalarında).
 
 ### GraphBuilder ne yapar (ve ne yapmaz)
 
@@ -132,101 +166,137 @@ Katalog notları:
 Tam pipeline değil, faz başına hangi kapılardan geçildiğinin özeti:
 
 ```
-Train  : embedding → [FwdPhase zinciri + rope_qk + flash_attention] × 12 katman
+Train  : embedding → [FwdPhase zinciri + rope_qk + flash_attention] × N blok
          → cross_entropy   |   bwd: Train-only emitter'lar ters sırada, tek fused graph
-Prefill: embedding → [FwdPhase zinciri + rope + flash_attention + cache_write] × 12 katman
+Prefill: embedding → [FwdPhase zinciri + rope + flash_attention + cache_write] × N blok
          → yalnız son satırın logits'i
 Decode : embedding_with → [_with zinciri + rope_offset + cache_write
-         + attn_qk_cached / softmax_rect / attn_av_cached] × 12 katman
+         + attn_qk_cached / softmax_rect / attn_av_cached] × N blok
          → logits → host'ta sample
 ```
 
-Yaşam döngüleri: Train graph'leri bir kez kurulur, metaları sabittir →
-`execute_captured` kullanabilirler. Prefill graph'ı her prompt'ta sıfırdan
-kurulur. Decode graph'ı ilk decode_step'te kurulur, cache değişene kadar saklanır;
-adım başına yalnız 4 dinamik meta güncellenir (rope pos, cache offset, attn_len,
-softmax width). cuBLAS metaları capture'da donduğu için decode capture edilemez.
-Mikro-batch döngüsü (zero_transient → fwd → bwd, cycle sonunda clip + AdamW)
-"Eğitim döngüsü" bölümünün konusudur.
+Yaşam döngüleri: Train graph'leri (`fwd_graph`+`bwd_graph`) `Model::for_training`
+içinde bir kez kurulur, metaları sabittir → `execute_captured` kullanabilirler.
+Prefill graph'ı her `prefill_logits` çağrısında sıfırdan kurulur. Decode graph'ı
+`Model::for_chat`'te kurulur, `ChatState` yaşadığı sürece saklanır; adım başına
+yalnız `Tape::advance(pos)` ile birkaç dinamik meta güncellenir (rope pos, cache
+offset, attn_len, softmax width — `Advance` trait'i, `dispatch/advance.rs`). cuBLAS
+metaları capture'da donduğu için decode capture edilemez.
+
+## Tape/Op sistemi
+
+`Tape<B, Node>` tek struct, üç bağlamda kullanılıyor: `Tape<B, TrainOp<B>>`
+(train, `head`/her blok/`tail` için ayrı ayrı), `Tape<B, PrefillOp<B>>`,
+`Tape<B, DecodeOp<B>>`. `Node: Backward<B>` yalnız `TrainOp` için sağlanıyor
+(`.backward()` metodu `impl<B, Node: Backward<B>> Tape<B, Node>` şartlı bloğunda
+yaşıyor — Prefill/Decode Tape'lerinde derleme zamanında yoklar).
+
+```rust
+pub(crate) struct NodeSpec<Node> {
+    pub(crate) name: &'static str,
+    pub(crate) inputs: &'static [(&'static str, usize)],
+    pub(crate) op: Node,
+}
+```
+
+Bir blok, `Vec<NodeSpec<TrainOp<B>>>` üretip `Tape::extend` ile tek seferde
+inşa edilir — girdi referansları isim üzerinden (`"input"`, `"n1"`, `"qkv"`...)
+çözülür, `HashMap<&'static str, NodeId>`'de tutulur. `node!` makrosu
+(`tape.rs`, `pub(crate) use node;` ile path-import edilebilir) literal'ı
+kısaltır:
+
+```rust
+node!("n1" <- &[("input", 0)], TrainOp::RmsNorm(RmsNormOp::new(&bw.norm_1, norm_shape)))
+```
+
+**Backward, graph-inşa-zamanında ters sırada gezip build eder, runtime'da
+tekrar çağrılmaz.** `Tape::backward()` bir kez çalışır (`Model::for_training`
+içinde), `bwd_graph`'ı doldurur; sonrasında yalnız `bwd_graph.execute_captured()`
+tekrarlanır. Bu, eski sistemdeki "her mikro-batch'te elle `zero_transient`
+çağır" ihtiyacını **ortadan kaldırdı**: fan-in noktalarında (bir node'un
+grad'ı birden çok tüketiciden geliyorsa) `Tape::backward()` inşa sırasında
+otomatik bir `add_inplace_bwd` node'u ekliyor — bu node'un iki girdisi de
+AYNI execute içinde daha önceki node'larca taze üretiliyor, önceki
+execute'tan kalan hiçbir şey yok. Yalnız **weight grad'ları** (Persistent
+sınıf, aşağıda) execute'lar arası gerçekten birikir — `zero_grad()` bunun
+için var, cycle başında bir kez çağrılır.
+
+`LinearOp`/`RmsNormOp`/`SiluOp`/`AddOp`/`EmbeddingOp` her üç fazda da BİREBİR
+aynı kod (`Forward<B, P: FwdPhase>` genel yazılmış); attention/rope/qkv-çıkarma
+faza göre ayrılır (Train+Prefill flash/fused kullanır — ikisi de
+`FullSeqPhase`; Decode cached/unfused kullanır, ayrı struct'lar —
+`CachedAttentionOp`/`RopeOffsetOp`/`HeadGatherOp`/`CacheWriteOp`,
+`ops/cached.rs`).
+
+`TrainOp`/`PrefillOp`/`DecodeOp` **kapalı enum'lar**, `AnyOptimizer`/
+`AnyGradClip` ile aynı kalıp — dispatch `match`, `dyn` yok. Fark: bu üçünün
+Forward/Backward/Advance/From impl'leri elle değil `dispatch/`'teki
+makrolarla üretiliyor (`impl_forward_dispatch!`/`impl_backward_dispatch!`/
+`impl_from_op!`) çünkü match kolları mekanik tekrar; `Advance` elle yazılı
+kalıyor çünkü gerçekten tekrar etmiyor (yalnız `CacheWriteOp`/`RopeOffsetOp`/
+`CachedAttentionOp`/`DecodeOp` ilgileniyor, `TrainOp`/`PrefillOp`'ta hiç yok).
+
+**Mimari genişleme noktası burası, `Architecture` trait'i değil**: Mamba/GDN
+geldiğinde `TrainOp`/`PrefillOp`/`DecodeOp`'a yeni variant'lar eklenir (ör.
+`TrainOp::MambaScan(...)`), `blocks/mamba.rs` bunları üreten yeni bir
+`Architecture` impl'i olur, `config::BlockKind`'a yeni variant girer, üç
+`build_*` fonksiyonundaki `match kind` birer kol alır. `Model<B>` generic
+parametre almaz — `Vec<BuiltBlock<B>>` hâlâ homojen `TrainOp<B>` taşır,
+heterojenlik yalnız HANGİ variant'ların o `Vec`'te göründüğünde yaşar.
 
 ## Grad topolojisi ve zero'lama sözleşmesi
-
-### layers.rs: iki dünyanın kavşağı
-
-`layers.rs` weight SAHİBİ değildir — her sarmalayıcı weights.rs'teki tensöre Arc
-klonuyla tutunur — ama eğitime özgü her şeyin sahibidir: grad buffer'ları, ara
-çıktı buffer'ları, fwd/bwd graph'leri. Bir `Linear` üç parçanın evliliğidir:
-weight (weights.rs'ten ödünç) + grad (burada doğar) + emit çağrıları (ops'tan).
-weights.rs kernel bilmez; layers.rs weight init bilmez.
-
-**(weight, grad) eşleşmesi bir SIRA sözleşmesi taşır**: `collect_trainable_params`
-çiftleri `ModelWeights::params()` sırasıyla üretir (embedding → blok başına
-norm1/qkv/out/norm2/ffn_up/ffn_down → final_norm → lm_head). AdamW momentleri
-bu sırayla yaratılır, checkpoint dosyası bu sırayla yazılır/okunur, V1 grad
-restore bu sıraya zip'lenir. Sırayı değiştirmek = checkpoint ve moment karışması.
 
 ### Üç grad sınıfı
 
 | Sınıf | Örnekler | Yazım | Kim sıfırlar | Neden |
 |---|---|---|---|---|
-| **Persistent** (weight grad'ları) | grad_weight, grad_table, norm grad'ları | `+=` (dB+=, dW+=, atomik embedding scatter) | `zero_grads` — accumulation cycle BAŞINDA | mikro-batch'ler arası birikmeleri tasarımın kendisi |
-| **Transient** (residual fan-in) | blok başına add_1/add_2 grad_a/grad_b (`transient_grads()`), edges[] dahil | `+=` (birden çok kaynak aynı buffer'a ekler) | `zero_transient` — HER mikro-batch'te | `+=` hedefi taze başlamazsa önceki örneğin grad'ı sızar |
-| **Overwrite** (ara grad'lar) | g_* buffer'ları: matmul_trp grad_input'ları, silu/rmsnorm/flash bwd çıktıları, CE bwd (in-place) | `=` (Output: tamamen ezilir) | kimse | her bwd geçişinde baştan yazılır; pool çöpü zararsız |
+| **Persistent** (weight grad'ları) | `LinearOp`/`RmsNormOp`/`EmbeddingOp`'un `grad_weight`/`grad_table`'ı | `+=` (dB+=, dW+=, atomik embedding scatter) | `Model::zero_grad()` — accumulation cycle BAŞINDA | mikro-batch'ler arası birikmeleri tasarımın kendisi |
+| **Fan-in** (çok-tüketicili node'lar) | residual kavşağındaki `add1`/`add2` girdi grad'ları, blok girişleri | `Tape::backward()` inşa sırasında otomatik `add_inplace_bwd` node'u | kimse (her execute'ta o node'un İKİ girdisi de aynı execute içinde taze) | fan-in birleşimi build-time'da sabitlenmiş bir graph node'u, runtime state değil |
+| **Overwrite** (ara grad'lar) | tek-tüketicili node'ların `grad_in` buffer'ları (matmul_trp çıktıları, silu/rmsnorm/flash bwd) | `=` (Output: tamamen ezilir) | kimse | her execute'ta baştan yazılır; pool çöpü zararsız |
 
-Fan-in noktaları (transient'lerin `+=` almasının sebebi): residual kavşağında
-grad iki koldan gelir — ör. `g_add2_a` hem add_2 bwd'den hem barrier üzerinden
-`norm_2.grad_input`'tan ekleme alır; blok grad_input'u (`edges[i]`) hem add_1
-bwd'den hem norm_1 kolundan.
+**`Model::params()` sırası bir SIRA sözleşmesi taşır**: `head.params() →
+her blok'un `tape.params()` → `tail.params()`, ve blok içi sıra `node!`
+push sırasıyla (norm_1, qkv, out, norm_2, up, down) — bu da
+`ModelWeights::params()`'in sırasıyla birebir aynı (embedding → blok →
+final_norm → lm_head). AdamW momentleri, checkpoint dosyası bu sırayla
+yazılır/okunur. Sırayı değiştirmek = checkpoint ve moment karışması.
 
-### edges[] zinciri
+### Dataline: weight → op → shader hattı
 
-Trainer `num_layers + 1` adet dim-boyutlu buffer yaratır:
-`edges[i]` = blok i'nin grad_input'u = kendinden önceki katmanın grad_output'u.
-Embedding bwd `edges[0]`'ı okur. `edges[num_layers]` son bloğun grad_output'udur
-ve final_norm bwd tarafından Output olarak ezilir — bu yüzden yalnız
-`edges[0..num_layers]` transient (zero'lanan) listededir, sonuncusu değil.
+Her weight tensörünün hangi op struct'tan geçip hangi kernellere bağlandığı.
+Blok deseni her katmanda tekrarlanır:
 
-Not: fwd ve bwd'de aynı matematiği yapan iki ayrı `+=` kernel'i vardır
-(RESIDUAL_ADD / BWD_ADD_INPLACE) — bilinçli ayrım; bwd'nin kendi Shader statiği
-fused backward graph içinde ayrı düğüm kimliği taşır.
-
-### Dataline: weight → layer → shader hattı
-
-Her weight tensörünün hangi sarmalayıcıdan geçip hangi kernellere bağlandığı.
-Blok deseni 12 kez tekrarlanır:
-
-| weights.rs (blok) | layers.rs | fwd kernel | bwd kernelleri | grad (sınıf) |
+| weights.rs (blok) | ops/full_seq.rs | fwd kernel | bwd kernelleri | grad (sınıf) |
 |---|---|---|---|---|
-| norm_1 | RMSNorm | RMSNORM | RMSNORM_BWD (dX) + RMSNORM_WEIGHT_BWD (dW `+=`) | grad_weight (Persistent) |
-| qkv_proj | Linear | MATMUL | MATMUL_WEIGHT_BWD (dW `+=`) + MATMUL_TRP (dX) | grad_weight (Persistent) |
-| out_proj | Linear | MATMUL | aynı çift | grad_weight (Persistent) |
-| norm_2 | RMSNorm | RMSNORM | RMSNORM_BWD + RMSNORM_WEIGHT_BWD | grad_weight (Persistent) |
-| ffn_up | Linear | MATMUL | MATMUL_WEIGHT_BWD + MATMUL_TRP | grad_weight (Persistent) |
-| ffn_down | Linear | MATMUL | MATMUL_WEIGHT_BWD + MATMUL_TRP | grad_weight (Persistent) |
+| norm_1 | RmsNormOp | RMSNORM | RMSNORM_BWD (dX) + RMSNORM_WEIGHT_BWD (dW `+=`) | grad_weight (Persistent) |
+| qkv_proj | LinearOp | MATMUL | MATMUL_WEIGHT_BWD (dW `+=`) + MATMUL_TRP (dX) | grad_weight (Persistent) |
+| out_proj | LinearOp | MATMUL | aynı çift | grad_weight (Persistent) |
+| norm_2 | RmsNormOp | RMSNORM | RMSNORM_BWD + RMSNORM_WEIGHT_BWD | grad_weight (Persistent) |
+| ffn_up | LinearOp | MATMUL | MATMUL_WEIGHT_BWD + MATMUL_TRP | grad_weight (Persistent) |
+| ffn_down | LinearOp | MATMUL | MATMUL_WEIGHT_BWD + MATMUL_TRP | grad_weight (Persistent) |
 
 Üst seviye:
 
-| weights.rs | layers.rs | fwd kernel | bwd kernelleri | grad (sınıf) |
+| weights.rs | ops/full_seq.rs | fwd kernel | bwd kernelleri | grad (sınıf) |
 |---|---|---|---|---|
-| embedding | Embedding | EMBEDDING | EMBEDDING_BWD (atomik `+=`) | grad_table (Persistent) |
-| final_norm | RMSNorm | RMSNORM | RMSNORM_BWD + RMSNORM_WEIGHT_BWD | grad_weight (Persistent) |
-| lm_head | Linear | MATMUL | MATMUL_WEIGHT_BWD + MATMUL_TRP | grad_weight (Persistent) |
+| embedding | EmbeddingOp | EMBEDDING | EMBEDDING_BWD (atomik `+=`) | grad_table (Persistent) — **decay=false** |
+| final_norm | RmsNormOp | RMSNORM | RMSNORM_BWD + RMSNORM_WEIGHT_BWD | grad_weight (Persistent) — **decay=false** |
+| lm_head | LinearOp | MATMUL | MATMUL_WEIGHT_BWD + MATMUL_TRP | grad_weight (Persistent) — decay=true |
 
-Weight'siz katmanlar (weights.rs sütunu boş — sadece akışı şekillendirirler):
+Weight'siz op'lar (weights.rs sütunu boş — sadece akışı şekillendirirler):
 
-| layers.rs | fwd kernel(ler) | bwd kernel(ler) | grad buffer'ları (sınıf) |
+| ops/full_seq.rs | fwd kernel(ler) | bwd kernel(ler) | grad buffer'ları (sınıf) |
 |---|---|---|---|
-| SelfAttention | FLASH_ATTENTION ×batch | FLASH_BWD_DQ + FLASH_BWD_DKDV ×batch | g_attn_q/k/v (Overwrite), l_cache (scratch) |
-| SiLU | SILU_OUT | SILU_BWD | g_silu_in (Overwrite) |
-| Add ×2 | ADD | RESIDUAL_ADD ×2 (`+=` fan-in) | grad_a/grad_b (Transient) |
-| qkv taşıma | QKV_SPLIT | QKV_SCATTER + ROPE_BWD_QK | g_attn_qkv (Overwrite) |
-| blok barrier'ları | — | BWD_ADD_INPLACE ×2 (`+=` fan-in) | hedefleri Transient |
-| CrossEntropy | CROSS_ENTROPY (in-place) | CROSS_ENTROPY_BWD (in-place) | logits buffer'ının kendisi (bkz. VRAM aliasing) |
+| AttentionOp | FLASH_ATTENTION ×batch | FLASH_BWD_DQ + FLASH_BWD_DKDV ×batch | Overwrite |
+| SiluOp | SILU_OUT | SILU_BWD | Overwrite |
+| AddOp ×2 | ADD | RESIDUAL_ADD ×2 (`+=` fan-in) | Fan-in |
+| QkvSplitOp | QKV_SPLIT | QKV_SCATTER + ROPE_BWD_QK | Overwrite |
+| CrossEntropyOp (loss.rs) | CROSS_ENTROPY (in-place) | CROSS_ENTROPY_BWD (in-place) | logits buffer'ının kendisi (bkz. VRAM aliasing) |
 
 ## Meta protokolü
 
 Meta = kernel parametrelerini taşıyan küçük bir tensör; `TensorMode::Meta` ile
-bağlanır. Tipli struct'lar `ops/meta.rs`'te yaşar; `KernelMeta` trait'i iki şey
+bağlanır. Tipli struct'lar `kernels/meta.rs`'te yaşar; `KernelMeta` trait'i iki şey
 verir: `upload(ctx)` (yeni sabit meta yarat) ve `write_to(tensor)` (mevcut
 metayı yerinde güncelle).
 
@@ -235,9 +305,9 @@ metayı yerinde güncelle).
 |  | Sabit meta | Dinamik meta |
 |---|---|---|
 | API | `foo(gb, ..., shape)` | `foo_with(gb, ..., shape, &meta)` |
-| Sahibi | kimse — emit içinde uploadlanır, buffer'ı node'un Arc'ı yaşatır | caller (DecodeScratch alanları) |
-| Güncelleme | asla | adım başına `write_to` (`update_for_step`) |
-| Kullanıcı | tüm train graph'leri, prefill | decode'un 4 metası: rope pos, cache offset, attn_len, softmax width |
+| Sahibi | kimse — emit içinde uploadlanır, buffer'ı node'un Arc'ı yaşatır | caller (op struct'ının kendi alanı, ör. `CachedAttentionOp::attn_meta`) |
+| Güncelleme | asla | adım başına `write_to` (`Advance::advance`) |
+| Kullanıcı | tüm train graph'leri, prefill | decode'un dinamik metaları: rope pos, cache offset, attn_len, softmax width |
 
 Kim ne zaman okur (backend asimetrisi):
 
@@ -255,34 +325,35 @@ canlı işi meta bounds eder — fazla thread'ler guard'la erken döner.
 
 ## KV cache
 
-Yapı (`inference_graphs.rs::Cache`):
+Yapı (`Model`'in `ChatState`'i, `model.rs`):
 
 - Katman başına K ve V ayrı birer tensör, düz `[max_context_len, dim]`
   (satır = mutlak pozisyon; head h, satır içinde `h*head_dim ..< (h+1)*head_dim`
   sütunları). Attention kernelleri cache'i stride'lı okur (H6) — per-head kopya yok.
-- VRAM: 2 × num_layers × max_ctx × dim × 4B (hall-1.0 @ 512 ctx ≈ 38 MB).
+- VRAM: 2 × num_layers × max_ctx × dim × 4B.
 
 Kontratlar:
 
 - Cache **RoPE'lanmış key** tutar: rope, cache_write'tan ÖNCE uygulanır
   (prefill'de `rope`, decode'da `rope_offset`). V roped değildir. Okuyan kernel
   pozisyon bilgisine ihtiyaç duymaz.
-- `cur_len`'in tek sahibi InferenceSession'dır: prefill başarılı execute
-  SONRASINDA `cur_len = prompt_len` yazar, decode_step her adımda `pos + 1`.
-  Kerneller cur_len'i hiç görmez — canlı uzunluk onlara attn_len dinamik
-  metasıyla gider.
-- `replace_cache` / `take_cache` decode graph'ını None'lar: graph node'ları
-  ESKİ cache buffer'larına Arc tutar; cache değişince graph yeniden kurulmak
-  zorundadır. Cache'i session'lar arası taşımak bu yüzden ucuzdur ama graph
-  rebuild bedeli vardır.
-- prefill boş cache ister (`CacheNotEmpty`), context dolunca decode `ContextFull`
-  döner. `Cache::reset` yalnız cur_len'i sıfırlar, buffer içeriğine dokunmaz —
-  bayat satırlar zararsızdır çünkü attn_len bound'u sayesinde asla okunmazlar.
+- **`pos`'un sahibi çağrıdır, `Model` değil.** `Model::prefill_logits`/
+  `decode_step_logits` (ve bunları saran `ChatSession`) `pos`'u parametre
+  olarak alır/tutar — eski `InferenceSession`'ın kendi içinde ilerlettiği
+  `cur_len` alanı yerine, artık `Tape::advance(pos)` ile her decode adımında
+  açıkça geçilir. Kerneller `pos`'u hiç görmez — canlı uzunluk onlara
+  `attn_len` dinamik metasıyla gider (`Advance for CachedAttentionOp`:
+  `attn_len = step + 1`, yani cache `[0, step]` aralığında geçerli, kendi
+  pozisyonu dahil).
+- `Model::for_chat` her çağrıda TAZE bir cache (`zeros()`) kurar;
+  `Model::reset_cache()` var olan cache'i sıfırlar (ChatSession'ın `reset()`'i
+  bunu çağırır). Prefill boş cache ister — `ChatSession::feed_prompt`
+  `self.pos != 0` ise `ModelError::CacheNotEmpty` döner; context dolunca
+  decode `ModelError::ContextFull` döner (`Model::decode_step_logits`).
 
 ## VRAM aliasing kararları
 
-Başrol — tek `[rows, vocab]` buffer (V1; probs + grad_logits alloc'larını,
-~2×200MB, sildi):
+Başrol — tek `[rows, vocab]` buffer (probs + grad_logits için ayrı alloc yok):
 
 ```
 lm_head matmul çıktısı (logits)
@@ -291,147 +362,145 @@ lm_head matmul çıktısı (logits)
   → lm_head bwd bunu grad_output olarak okur
 ```
 
-- `Linear::new` out_buffer'ı dışarıdan alır; lm_head'e `&logits` HEM out_buffer
-  HEM grad_output olarak verilir — alias bilinçlidir.
-- **Sonuç 1**: CE fwd'yi bwd koşmadan iki kez çalıştırmak buffer'ı bozar
-  (probs'un softmax'ı alınır). diagnose'un logit okuyan check'leri bu yüzden
-  CE'siz `forward()` kullanır. Bu bölüm okunmadan bu davranış "bug" sanılır.
-- **Sonuç 2**: fused graph'lerde sıra yük taşır — fwd graph CE fwd ile bitmek,
-  bwd graph CE bwd ile başlamak zorundadır.
+- `LinearOp::new` out_buffer'ı kendi ayırır; `loss.rs`'teki `CrossEntropyOp`
+  `tail.output(logits_id)` ile AYNI Arc'ı hem "logits'i oku" hem "yerinde
+  probs/grad_logits'e çevir" için kullanır — alias bilinçlidir.
+- **Sonuç**: CE fwd'yi bwd koşmadan iki kez çalıştırmak buffer'ı bozar
+  (probs'un softmax'ı alınır). `Model::eval_loss` bu yüzden yalnız
+  `fwd_graph.execute_captured()` çalıştırır, `bwd_graph`'a hiç dokunmaz —
+  ama AYNI `t.fwd_graph`'ı `train_step` de kullandığından, `eval_loss`
+  çağrıları arasına gerçek `train_step` serpiştirmek güvenlidir (bir
+  sonraki `train_step` kendi fwd'ini baştan çalıştırıp eval'in bıraktığı
+  probs'u ezer), ama `eval_loss`'u accumulation cycle'ın ORTASINA (zero_grad
+  ile optimizer_step arasına) sokmak YANLIŞTIR — o an fwd_graph training
+  verisiyle tekrar koşmadan bwd_graph'a girilmez.
 
 Küçük paylaşımlar:
 
-- `edges[]`: bloklar arası grad hattı — `edges[i]` hem block i'nin grad_input'u
-  hem bir önceki katmanın grad_output'udur; embedding bwd `edges[0]`'ı okur.
-- `rsqrt_cache`: rmsnorm_bwd yazar, rmsnorm_weight_bwd aynı graph içinde okur —
-  iki node arasında scratch aliası (fwd'de hesaplanmaz, bwd yeniden türetir).
+- `rsqrt_cache`: `RmsNormOp`'un kendi alanı, forward'da yazılır bwd'de
+  okunur — fwd/bwd arasında tek-node'luk scratch aliası (backward yeniden
+  türetmez, forward'ın hesapladığını kullanır).
 
 ## Eğitim döngüsü ve checkpoint
 
-Accumulation cycle anatomisi (`train_step`):
+Accumulation cycle artık `Model::train_step` İÇİNDE değil, **çağıranın**
+(main.rs'in `run_training`'i) sorumluluğu — eski `Trainer::train_step`'in
+`step`/`accumulation_steps` argümanlarıyla içeride yaptığı şeyi elle yapıyor:
 
-```
-step % accum == 0        → zero_grads (persistent weight grad'ları)
-her mikro-batch penceresi:
-    token + target htod → zero_transient → fused fwd (captured)
-    [step % READ_LOSS == 0 ise losses dtoh, ~2KB]
-    → fused bwd (captured)
-(step+1) % accum == 0    → clip (GRAD_SUMSQ → GRAD_NORM_SCALE → GRAD_SCALE)
-                         → optimizer.step()
+```rust
+if step % accumulation_steps == 0 { model.zero_grad(); }
+let loss = model.train_step(&inputs, &targets);   // fwd (captured) + bwd (captured)
+if (step + 1) % accumulation_steps == 0 { model.optimizer_step(); } // clip + AdamW
 ```
 
-- Grad ölçeği: `d_losses` her çağrıda `1/(seq·batch·accum)` yazılır — effective
-  batch normalizasyonu CE bwd'nin içinde olur, sonradan ayrıca bölme yoktur.
+- Grad ölçeği: `loss.set_grad_scale(1.0 / (rows * accumulation_steps))` —
+  `Model::for_training`'de bir kez ayarlanır, effective batch normalizasyonu
+  CE bwd'nin içinde olur.
 - **Sıra yük taşır**: AdamW graph'ında ADAMW_SCHEDULE node'u parametre
   node'larından ÖNCE gelir. step=0'da bias_correction = 1−β⁰ = 0 → sıfıra
   bölme → NaN; schedule önce koştuğu için AdamW hiçbir zaman step=0 görmez.
-- Host trafiği (steady state): pencere başına token upload + READ_LOSS'ta bir
-  losses dtoh. Grad'lar GPU'dan hiç inmez (clip zinciri device'ta).
-  READ_LOSS bugün = LOG_EVERY = 50 (lib.rs alias'ı) — okuma ve yazdırma
-  sıklığı ayrılabilir ama şu an çakışıktır.
+- `Model::train_step` HER çağrıda loss'u CPU'ya okur (eski `Trainer`'ın
+  `log_every`'de bir okuma optimizasyonu yeni sistemde yok — bilinen, henüz
+  ele alınmamış bir performans notu, "Fikir kuyruğu"na bakın).
 - **Eval harness** (main.rs): `data/eval.txt` varsa başlangıçta baseline +
-  her EVAL_EVERY step'te held-out loss/perplexity — sabit, örtüşmesiz,
-  batch'e hizalı pencereler, yalnız `forward_fused` + `loss()` (grad'lara,
-  optimizer'a, accumulation cycle'ına dokunmaz; döngünün her yerinde güvenli).
-  Sonuç konsola + `checkpoints/eval_log.txt`'ye (step, loss, ppl). Dosya
-  eğitim verisiyle örtüşmemeli — yoksa sayı ezberi ölçer.
+  her EVAL_EVERY step'te held-out loss/perplexity — `Model::eval_loss`
+  yalnız forward çalıştırır (grad'lara, optimizer'a, accumulation cycle'ına
+  dokunmaz). Sonuç konsola + `checkpoints/eval_log.txt`'ye (step, loss, ppl).
+  Dosya eğitim verisiyle örtüşmemeli — yoksa sayı ezberi ölçer.
 
 Checkpoint:
 
 - **V3 = TEK format** = `AKV3` magic + mimari başlığı (vocab/dim/heads/
   layers/ffn; yüklerken eşleşmezse hata) + `train_step` (loop sayacı) +
-  `schedule_step` (AdamW cycle sayacı — ikisi FARKLI sayaçlardır, accum > 1'de
-  ayrışırlar) + weight'ler `weights.params()` sırasında + AdamW (m, v)
-  momentleri aynı sırada (**sıra format sözleşmesidir**). `moments` boş =
-  weights-only dosya (migre v1/v2): yüklenince optimizer soğuk, schedule 0'dan.
+  `schedule_step` (AdamW cycle sayacı) + weight'ler `weights.params()`
+  sırasında + AdamW (m, v) momentleri aynı sırada (**sıra format
+  sözleşmesidir**). `moments` boş = weights-only dosya (migre v1/v2):
+  yüklenince optimizer soğuk, schedule 0'dan.
+- `checkpoint.rs`'in `save`/`load` fonksiyonları `ModelWeights<B>` + opsiyonel
+  `&[(Arc<Tensor<B>>, Arc<Tensor<B>>)]` moment listesi üzerinde çalışır —
+  sistem-agnostik (`Model` ve eski `Trainer` AYNI format sözleşmesini
+  paylaşırdı, bu yüzden checkpoint dosyaları arasında hiç format geçişi
+  gerekmedi). `Model::save_checkpoint`/`load_checkpoint` bunun ince
+  sarmalayıcıları — `t.optimizer.moments()`/`current_schedule()`/
+  `load_state()` (`AnyOptimizer`) üzerinden.
 - Legacy v1/v2 okuyucuları YALNIZ `bin/migrate_checkpoint_v3.rs`'te yaşar;
-  kütüphane v3 dışında hiçbir şeyi okumaz/yazmaz. Migre dosya momentsiz +
-  train_step 0 yazılır: eğitilmiş weight'ler üzerinde taze schedule —
-  continued pretraining'in başlangıç durumu tam olarak bu.
+  kütüphane v3 dışında hiçbir şeyi okumaz/yazmaz.
 - main.rs resume sırası: en yeni `model_step_*.bin` (step dosyanın İÇİNDEN
   okunur, dosya adı yalnız migre dosyalar için fallback) → yoksa
-  `checkpoints/model_final.v3.bin` → yoksa sıfırdan. Final kayıt
-  `model_final.v3.bin`'e gider; `model_final.bin` adı v1 anı dosyasıdır,
-  asla yazılmaz.
-- `checkpoint::save` tensör-tensör streaming yazar: byte düzeni
-  bincode'un V3Body çıktısıyla birebir aynıdır (fixint LE, elle sıralanmış) —
-  host tepesi tek tensör (~150MB); `load` bincode parse'ında kaldığı için
-  roundtrip testi format sözleşmesini bekçiler.
-- Format sözleşmesinin bekçisi: train.rs `v3_save_load_roundtrip` testi
-  (weight + moment + iki sayaç, taze trainer'a bit-exact dönüş).
+  `checkpoints/model_final.v3.bin` → yoksa sıfırdan.
 
 ## Invariantlar
 
 Assert'e (henüz) dökülememiş kurallar. Bugfix turunda her düzeltmenin
 invariantı buraya bir satır olarak eklenir.
 
-- **`weights.params()` sırası format sözleşmesidir** — checkpoint dosyası,
-  AdamW momentleri ve V1 grad restore bu sıraya zip'lenir (bkz. Grad topolojisi).
+- **`Model::params()` / `ModelWeights::params()` sırası format sözleşmesidir**
+  — checkpoint dosyası ve AdamW momentleri bu sıraya zip'lenir (bkz. Grad
+  topolojisi).
 - **Pozisyonlar batch elemanı başına 0'dan başlar** (row_offset tasarımı; RoPE
-  açısı yerel `token_idx`'ten). `batching_validation` bunu kanıtlar.
-- **`train_step`'in `batch_size` ARGÜMANI ≠ `cfg.batch_size`.** Argüman
-  host-loop tekrar sayısıdır; gerçek batching için `cfg.batch_size = B` kur ve
-  argümanı 1 ver. İkisini birden >1 vermek tanımsızdır — train_step bunu
-  assert'le reddeder; Trainer::new de input_tokens'ın rows token tuttuğunu
-  assert eder. Prefill/decode tarafında batch bilinçli olarak YOK — Big
-  Refactor'un Block yüzeyine bırakıldı.
-- **RMSNorm eps'in tek kaynağı `cfg.norm_eps`'tir** — train ve
-  inference aynı config alanını okur; yine de 1e-5'ten oynatmak eğitilmiş
-  checkpoint'in numeriğinden sapmaktır, model başına sabit tut.
-- **`l_cache` düzeni `[row, head]`, row_offset'siz** — her flash çağrısının
-  kendi küçük scratch'i; fwd ile bwd aynı buffer'ı paylaşır.
+  açısı yerel `token_idx`'ten). `batching_validation` (model_tests.rs) bunu
+  kanıtlar.
+- **RMSNorm eps'in tek kaynağı `cfg.norm_eps`'tir** — train ve chat aynı
+  config alanını okur; yine de 1e-5'ten oynatmak eğitilmiş checkpoint'in
+  numeriğinden sapmaktır, model başına sabit tut.
 - **ADAMW_SCHEDULE, AdamW node'larından önce koşar** — AdamW step=0 görürse
   bias_correction sıfırlanır → NaN.
-- **CE fwd'den sonra bwd koşmadan CE fwd tekrar koşulamaz** (V1 in-place;
-  bkz. VRAM aliasing).
-- **Cache roped K tutar; `cur_len`'i yalnız InferenceSession ilerletir;**
-  cache değişimi = decode graph rebuild (node'lar cache buffer'larına Arc'lı).
-- **Dinamik metalı + matmul'lu graph capture edilemez** (Meta protokolü).
-- **EOS = 50256 hardcode** (`generate`) — GPT-2 vocab'ına bağlıdır; tokenizer
-  değişirse burası da değişmeli.
+- **CE fwd'den sonra bwd koşmadan CE fwd tekrar koşulamaz** (in-place; bkz.
+  VRAM aliasing) — `eval_loss`'u accumulation cycle ortasına sokma.
+- **Cache roped K tutar; `pos`'u yalnız çağıran ilerletir** (`ChatSession`
+  veya elle `Model::decode_step_logits`) — cache buffer'ları `Model::for_chat`
+  ile birlikte doğar, `reset_cache()` içeriği sıfırlar ama graph'ı yeniden
+  kurmaz (aynı Arc'lara işaret etmeye devam eder).
+- **Dinamik metalı + matmul'lu graph capture edilemez** (Meta protokolü) —
+  decode graph'ının hiç `execute_captured` KULLANMAMASININ sebebi budur.
+- **`cfg.eos_token = vocab_size - 1`** (`ModelConfig::new`) — artık hardcode
+  değil, GPT-2 BPE `<|endoftext|>` kuralına göre config'ten türetilir.
 - **Tokenizer offline-first**: yerel `tokenizer.json` / `AKASHA_TOKENIZER`
   varsa ağa çıkılmaz; ilk indirme yerel kopya bırakır.
 - **`checkpoints/model_final.bin` (v1) dokunulmazdır** — tek eğitilmiş model;
-  migrasyonlar kopya üzerinde yapılır (`model_final.bin.v2.bin`).
-- **Weight decay yalnız matmul weight'lerine uygulanır** — norm gain'leri ve
-  embedding tablosu decay'siz (bayrak `collect_trainable_params`'ta,
-  AdamW node'u ona göre decay'li/decay'siz ConstCfg'ye bağlanır).
-- **embedding_bwd atomik CAS kullanır** — token tekrarı yarışının çözümü ve
-  2026-06'daki "WGSL'de atomics yok" kararının kayıtlı istisnası (eski wilupgu
-  README'sindeki aksi beyan kaldırıldı).
+  migrasyonlar kopya üzerinde yapılır.
+- **Weight decay yalnız matmul weight'lerine uygulanır** — `EmbeddingOp`/
+  `RmsNormOp::param()` sabit `decay=false` döner, `LinearOp::param()`
+  kurucusuna geçilen `decay` bool'unu iletir (tüm `LinearOp`'lar `true` ile
+  kuruluyor). `AdamW` bu bayrağı param başına gerçekten uyguluyor (bkz.
+  optim/adamw.rs) — eski Trainer'ın tek-grup tasarımının (norm/embedding'i
+  de decay'liyordu) düzeltildiği yer.
+- **embedding_bwd atomik CAS kullanır** — token tekrarı yarışının çözümü.
+- **`head_dim` her zaman 64 olmalı** — flash attention WGSL'i buna hardcode
+  (`assert_flash_head_dim`, `kernels/emit.rs`); yeni bir mimari/config
+  denerken önce bunu kontrol et (`diagnose_model`'in CHECK 8'i bunu bir kez
+  yanlış yakaladı, bkz. Test haritası).
 
 ## Test haritası
 
 | Test | Neyi koruyor |
 |---|---|
-| train.rs `full_chain_gradcheck` | GERÇEK fused fwd/bwd zincirinde analitik grad == sayısal grad (norm/ffn/qkv örneklem indeksleri) |
-| train.rs `fused_ops_integration` | loss sonlu + grad embedding'e kadar akıyor (smoke) |
-| train.rs `batching_validation` | batch=N tek geçiş == N ardışık accumulation — row_offset tasarımının kanıtı |
-| train.rs `grad_clip_validation` | GPU clip zinciri == host formülü (kırpan ve kırpmayan iki rejim) |
-| inference.rs `prefill_validation` | prefill (flash + son-satır head_gather + GEMV) == aynı prompt'un token token decode'u — son-satır çıkarımının off-by-one bekçisi |
-| main.rs `eval_harness` | eval penceresi kesimi: sabit, örtüşmesiz, batch'e hizalı; küçük dosyada None (panik değil) |
-| emit.rs `flash_attention_validation` | flash fwd+bwd == bağımsız düz-Rust CPU referansı (sınır-dışı boyutlar dahil) |
-| emit.rs `kernel_fusion_validation` | rope_qk == 2×rope; qkv_split/scatter == head_gather/scatter zinciri (fused == unfused) |
-| emit.rs `decode_kernel_validation` | 3-dispatch cached attention == CPU ref (grid max'a göre, meta canlıyı sınırlar); m=1 GEMV yönlendirmesi |
-| emit.rs `elementwise_grid_validation` | elementwise kerneller 65535-workgroup (16.7M eleman) 1D sınırının ÜZERİNDE doğru — 2D-linearize grid'in bekçisi |
-| optim/adamw.rs | device schedule == host `cosine_lr`; weight'ler doğru yöne hareket ediyor |
-| sampling.rs | greedy / top-k / top-p özellikleri |
-| wilupgu `tests/` | backend parity (wgpu↔cuda↔CPU-ref), graph zinciri grid'i (T8), CUDA meta semantiği (**cfg(cuda) — yalnız nvidia makinede derlenir/koşar**), mode-mismatch paniği |
-| `bin/diagnose.rs` (test değil, elle koşulan binary) | 10 check: param sayısı, grad akışı, gradcheck'ler, accumulation, CE kapalı-form, KV-cache == naif decode (CHECK 9, bit-exact), tok/s kıyası — "eğitim bozuk görünüyor" günlerinin ilk durağı. Durumu: ~900 satır, elden geçmesi Fikir kuyruğunda |
+| `tests/model_tests.rs::full_chain_gradcheck` | GERÇEK Model fwd/bwd zincirinde analitik grad == sayısal grad |
+| `tests/model_tests.rs::checkpoint_roundtrip` | save/load bit-exact (weight + moment + iki sayaç) |
+| `tests/model_tests.rs::flat_weights_roundtrip` | `to_flat_weights`/`set_flat_weights` optimizer state'e dokunmuyor |
+| `tests/model_tests.rs::batching_validation` | batch=N tek geçiş == N ardışık accumulation — row_offset tasarımının kanıtı |
+| `tests/model_tests.rs::grad_clip_validation` | GPU clip zinciri == host formülü |
+| `tests/train_tests.rs`, `tests/kernels_emit_tests.rs`, ... | her kaynak dosyanın kendi testi, `#[path]` ile o dosyanın gerçek modülüne asılı (bkz. `src/tests/`) |
+| `tests/kernels_emit_tests.rs::flash_attention_validation` | flash fwd+bwd == bağımsız düz-Rust CPU referansı |
+| `tests/kernels_emit_tests.rs::kernel_fusion_validation` | rope_qk == 2×rope; qkv_split/scatter == head_gather/scatter zinciri |
+| `tests/kernels_emit_tests.rs::decode_kernel_validation` | 3-dispatch cached attention == CPU ref; m=1 GEMV yönlendirmesi |
+| `tests/main_tests.rs` | eval penceresi kesimi: sabit, örtüşmesiz, batch'e hizalı |
+| `optim/adamw.rs` (tests/adamw_tests.rs) | device schedule == host `cosine_lr`; weight'ler doğru yöne hareket ediyor |
+| `nn/sampling.rs` (tests/sampling_tests.rs) | greedy / top-k / top-p özellikleri |
+| `bin/diagnose_kernels.rs` (elle koşulan) | CHECK 3 (HeadGather/Scatter), CHECK 4 (RMSNorm bwd), CHECK 7 (CE kapalı-form) — sistem-agnostik, `layers.rs`'in standalone sarmalayıcılarıyla |
+| `bin/diagnose_model.rs` (elle koşulan) | CHECK 1 (param sayısı @ hall_1 ölçek), CHECK 2 (grad akışı @ gerçek derinlik/genişlik), CHECK 5 (accumulation), CHECK 8 (memorization smoke), CHECK 9 (prefill vs decode-cache logit paritesi — sayısal, argmax DEĞİL), CHECK 10 (cache hız kazancı) |
 
 Kurallar:
 
 - Her zaman `cargo test -- --test-threads=1` — paralel testler eşzamanlı
   WgpuBackend yüzünden segfault eder.
-- Yeni op eklerken: emit.rs'teki ilgili validation modülüne CPU-referanslı
-  satır ekle; fused kernel yazıyorsan unfused'ı `#[cfg(test)]` referans olarak
-  yaşat (rope_bwd / head_scatter deseni).
-
-Bilinen boşluklar: birkaç bwd kernel'inin CPU impl'i yok → evrensel parity
-matrisi henüz koşamıyor; test yardımcıları (rand_vec, max_abs_diff) dosyalar
-arası kopya — ikisi de "Fikir kuyruğu → test mimarisi"nin konusu.
-
----
+- Yeni op eklerken: `kernels_emit_tests.rs`'teki ilgili validation modülüne
+  CPU-referanslı satır ekle.
+- Yeni bir "X vs Y aynı mı" tarzı check yazarken **sampled/argmax token değil
+  ham sayısal değeri karşılaştır** — eğitilmemiş/rastgele ağırlıklarda
+  logit'ler tepesiz olur, iki bağımsız kernel yolunun mikroskobik
+  floating-point farkı argmax'ı çevirebilir (CHECK 9'un ilk versiyonunun
+  düştüğü tuzak tam bu).
 
 ## Fikir kuyruğu (mimari)
 
@@ -439,178 +508,95 @@ arası kopya — ikisi de "Fikir kuyruğu → test mimarisi"nin konusu.
 numaralı/bekleyen iş listesini tutar; burası mimariye dair fikir ve
 istekler. Olgunlaşan madde orada numara alıp taşınır.
 [wilupgu/SHADERS.md](../wilupgu/SHADERS.md) de aynı şekilde iki projeyi
-birlikte kapsar — her shader'ın wgsl/cuda/cpu/meta/emitter satırı orada
-(2026-08-29'da yazıldı, CPU-impl boşluklarının tam listesi dahil).
+birlikte kapsar.
 
-- **CUDA shader'larını .cu dosyalarına ayırmak**: bugün hepsi `shaders/cuda.rs`
-  içinde tek string yığını; wgsl'lerdeki dosya-başına-kernel düzenine geçir
-  (`include_str!("cuda/foo.cu")` — NVRTC zaten string alır, davranış değişmez;
-  syntax highlighting + diff okunabilirliği bedavaya gelir).
+- **Gradient checkpointing** — SIRADAKİ GERÇEK İŞ. 2026-08-10'da Intel HD 620
+  (5.58GB aperture, i7-7500U) üzerinde ölçüldü — `--chat` (inference)
+  ~700MB-1GB ile sorunsuz çalışırken `train_step` "Parent device is lost"
+  ile çöküyor. Sebep kernel/dispatch bug'ı değil: persistent captured graph
+  tasarımı gereği tüm katmanların forward aktivasyonları (rsqrt cache,
+  attention scores, silu pre-activation, qkv split, ...) backward katmanlara
+  ters sırada ulaşana kadar canlı kalıyor — ölçülen ~5.4GB'ın ~1.8GB'ı bu.
+  Kalanı weight+grad+2 AdamW momenti (~2.6GB) — checkpointing'in
+  dokunamayacağı kısım. Doğal ev sahibi: her op struct'ının zaten tuttuğu
+  `saved_input: Option<Arc<Tensor<B>>>` alanı — checkpointing "backward'dan
+  hemen önce yeniden hesapla" demek, mekanizma hazır, tetikleme eksik.
+
+- **`train_step`'in her adımda loss okuması** — eski `Trainer::train_step`
+  loss'u yalnız `log_every` adımlarında CPU'ya okuyordu (senkron maliyetten
+  kaçınmak için); `Model::train_step` şimdi her adımda okuyor. Uzun
+  eğitimlerde (milyonlarca adım) fark edilir olabilir; henüz ölçülmedi.
+
+- **CUDA shader'larını .cu dosyalarına ayırmak** — YAPILDI (2026-09-07):
+  `shaders/cuda/` artık `shaders/wgsl/`'le birebir aynı `fwd/`/`bwd/` +
+  üç top-level dosya düzeninde, `include_str!` ile.
+
+- **Test mimarisi ("testleri adam etmek")** — YAPILDI (2026-09-07):
+  `src/tests/` ağacı, dosya başına bir test dosyası, `#[path]` ile gerçek
+  modüle asılı (hiç `pub(crate)` gevşetmesi yok); ortak yardımcılar
+  (`rand_vec`, `max_abs_diff`) `tests/common.rs`'ta.
+
+- **`diagnose.rs` elden geçirilmesi** — YAPILDI (2026-09-07):
+  `diagnostic.rs`'teki `DiagnosticCheck`/`DiagnosticSuite` + iki binary
+  (`diagnose_kernels`, `diagnose_model`).
 
 - **Flash attention head_dim'i WGSL `override` ile genelleştirmek** — bugün
   `flash_attention*.wgsl` üçü de `const HEAD_DIM: u32 = 64u` hardcode'lu
-  (register-spill/RADV-hang fix, 2026-08-30, guard: `assert_flash_head_dim`
-  ops/emit.rs'te). Gerçek genel çözüm WGSL'nin pipeline-overridable
-  constant'ı (`override`, kaynak metne değil pipeline oluşturmaya gömülü,
-  derleyici yine unroll edebiliyor) — ama wilupgu'nun `Shader`/pipeline-cache
-  API'sinde bu kavram hiç yok (cache tek `Shader` adresine anahtarlı, override
-  değeri anahtara girmeli). Bilinçli olarak yapılmıyor — akasha tek modelin
-  motoru, head_dim zaten hep 64. **Not:** kullanıcı flash attention'ın HD620'de
-  eğitimi (öncesine göre) sığdırmak yerine taşırdığını gözlemledi (chat ise
-  "mucizevi" sığıyor, CPU backend'e karşı hız farkı da yok) — bu, tam da
-  register-spill'in düzeltilmeden önceki VRAM-scratch spill'iyle örtüşüyor
-  olabilir; HEAD_DIM=64 fix'i sonrası HD620'de training tekrar denenmedi,
-  denenirse bu not güncellensin.
+  (register-spill/RADV-hang fix, guard: `assert_flash_head_dim`
+  `kernels/emit.rs`'te). Gerçek genel çözüm WGSL'nin pipeline-overridable
+  constant'ı — ama wilupgu'nun `Shader`/pipeline-cache API'sinde bu kavram
+  hiç yok. Bilinçli olarak yapılmıyor — tek modelin motoru, head_dim zaten
+  hep 64 (Mamba/GDN gelince bu kısıt onları etkilemez, kendi kernel ailesi
+  olacak).
 
 - **Decode'u cuBLAS'sızlaştırmak (GEMV'yi CUDA Generic'e taşımak)** — muhtemelen
   en yüksek getirili tekil iş: `gemv.wgsl` / `gemv_add.wgsl`'in CUDA C çevirisi
   yazılıp GEMV/GEMV_ADD `CudaShape::Custom`(cuBLAS)'tan `Generic`'e geçer.
   Decode'daki TÜM matmul'lar m=1 → GEMV olduğundan decode graph'ında hiç cuBLAS
-  kalmaz. Sonuçlar: (1) dispatch-başı meta dtoh'ukökünden yok olur;
+  kalmaz. Sonuçlar: (1) dispatch-başı meta dtoh'u kökünden yok olur;
   (2) capture yasağının tek sebebi cuBLAS host-side boyutlarıydı → **decode
-  graph'ı capture edilebilir olur** (token başına 100+ dispatch yerine tek
-  graph launch; dinamik metalar device-pointer'dan replay'de güncel okunur);
-  (3) `Custom` shape yalnız eğitim matmul'larının istisnasına küçülür.
-  GEMV bellek-bant sınırlı olduğu için cuBLAS'a hız kaybı yok denecek kadar az;
-  eğitim (m>1) ve prefill cuBLAS'ta kalır — orada tensor core (TF32/bf16) farkı
-  yapısal: skaler CUDA C tensor core'a hiç dokunamaz, erişim cuBLAS / CUTLASS /
-  elle mma-PTX ister. Eldeki 80-vs-31 step/dk ölçümü pooling/flash ÖNCESİ
-  dönemden — **ilk adım: güncel kodda CUDA↔Vulkan'ı yeniden ölçmek**, kararlar
-  o sayıyla verilecek. Not: f16/bf16 altyapısı (`Dtype`, `Gemm<T>`) zaten
-  cuBLAS'ın tensor-core yoluna akar — mixed-precision eğitimin zemini orası.
+  graph'ı capture edilebilir olur**; (3) `Custom` shape yalnız eğitim
+  matmul'larının istisnasına küçülür. Eldeki 80-vs-31 step/dk ölçümü
+  pooling/flash ÖNCESİ dönemden — **ilk adım: güncel kodda CUDA↔Vulkan'ı
+  yeniden ölçmek**.
 
 - **Dinamik metayı tipe bağlamak** (Binding düzeyinde `DynamicMeta` işareti):
   Shader.layout'a KONAMAZ — aynı shader train'de sabit, decode'da dinamik meta
-  alır; işaret binding'e aittir (layout `Meta` der, caller `Meta`/`DynamicMeta`
-  ile bağlar). Kazançlar: (1) CUDA build_node dinamik meta için bayat cached_meta
-  üretmez; (2) execute_captured, DynamicMeta içeren graph'ta assert'le durur —
-  "decode capture edilemez" kuralı yorumdan koda iner. **Etkileşim notu:**
-  yukarıdaki decode-cuBLAS'sızlaştırma yapılırsa bu maddenin perf gerekçesi
-  (cuBLAS cached_meta hızlı yolu) düşer; kalan değeri dokümantasyon + guard —
-  önceliği ona göre düşür.
+  alır; işaret binding'e aittir. Kazançlar: (1) CUDA build_node dinamik meta
+  için bayat cached_meta üretmez; (2) execute_captured, DynamicMeta içeren
+  graph'ta assert'le durur — "decode capture edilemez" kuralı yorumdan koda
+  iner.
 
-- **Test mimarisi ("testleri adam etmek")**: bugün testler src dosyalarının
-  dibinde `#[cfg(test)]` modülleri (train.rs'in ~yarısı test) ve `rand_vec` /
-  `max_abs_diff` gibi yardımcılar 4+ dosyada kopya-yapıştır. Plan:
-  (1) ortak test-util modülü — kopya yardımcılar tek yere;
-  (2) inline test modüllerini tests/ ağacına veya ayrı mod dosyalarına taşı;
-  (3) her kernel için mekanik CPU-referans parity harness'ı (CPU impl boşlukları
-  kapanınca tam matris koşar);
-  (4) Output kontrat canary'si: Output etiketli buffer'ları dispatch öncesi
-  NaN/çöple doldurup çıktıyı doğrulayan tek jenerik test — T1 sınıfı etiket
-  buglarını otomatik yakalar.
-  (5) diagnose.rs elden geçirilmesi: ~900 satır, env-flag'li, elle koşulan
-  check yığını — hâlâ değerli olan check'ler (gradcheck'ler, KV==naif,
-  kapalı-form CE) gerçek test modüllerine taşınır, refactor'lardan sağ çıkmış
-  ölü check'ler silinir, kalan şey küçük bir "sağlık taraması" binary'si olur.
-  İlke: test edilen yer değil, test edilmeyen yer patlar.
-
-- **GPU'nun eğitimde CPU'dan bağımsızlığının doğrulanması**: steady-state train
-  loop'un kasıtlı trafiği dışında (pencere başına token htod + READ_LOSS'ta bir
-  ~2KB losses dtoh) hiçbir gizli host senkronu/kopyası olmadığını kanıtla —
-  ör. copy_to_cpu/synchronize çağrılarını sayan bir debug sayaç veya
-  wgpu/nsight trace. Aşağıdaki loss recorder ile birlikte döngü trafiğini tam
-  sıfıra indirir.
-
-- **GPU loss recorder ("loss_counter")**: CE loss'u zaten GPU'da hesaplıyor;
-  kayıt aralığında bir kez küçük bir kernel losses'ı indirgesin (Σ/seq_len) ve
-  bir kez alloc edilmiş sabit boyutlu history buffer'ına yazsın
-  (500k step / 50 = 10k float ≈ 40KB — eğri sonda TEK dtoh ile iner).
-  Binding taslağı: losses (Input) · history (tek slota kısmi yazım — sözleşme
-  tartışılır: kısmi yazım aslında InOut'tur, Accumulate "+=" demektir; her
-  durumda caller-zeroed init şart) · interval + kapasite (sabit Meta) ·
-  adım sayacı — **Meta OLAMAZ: Meta read-only bağlanır**; kendini sayan değer
-  InOut state buffer'ı ister (ADAMW_SCHEDULE'ın ScheduleState deseni). Hatta
-  ayrı sayaca hiç gerek olmayabilir: optimizer'ın `state.step`'i zaten
-  device'ta sayıyor — Input olarak okunup `index = step / interval`
-  türetilebilir.
-
-- **Kernel fusion adayları** (eski FUSION_TODO.md buraya taşındı; unfused
-  kerneller her durumda doğrulama referansı olarak kalır):
+- **Kernel fusion adayları** (unfused kerneller her durumda doğrulama
+  referansı olarak kalır):
   (1) *AdamW foreach* — bugün weight tensörü başına bir dispatch (~75);
   tek/az dispatch'e indir — wilupgu'nun işi (`builtin::ADAMW`).
-  (2) *Linear+SiLU epilogue* — ffn_up → silu arasındaki pre-activation'ı
-  kimse okumuyor; blocker: matmul cuBLAS builtin'i, epilogue hook'u yok —
-  bu yol için elle fused kernel gerekir (flash attention tradeoff'unun aynısı).
-  (3) *Add+RMSNorm epilogue* — aynı blocker (`residual_add` builtin).
-  (4) *rmsnorm_bwd + rmsnorm_weight_bwd* — park edildi: iki kernel farklı
-  eksende paralelleşir (satır-başına vs özellik-başına reduction), fusion
-  dWeight için atomik ister; mevcut model boyutunda değer/karmaşıklık oranı
-  düşük.
+  (2) *Linear+SiLU epilogue* — blocker: matmul cuBLAS builtin'i, epilogue
+  hook'u yok.
+  (3) *Add+RMSNorm epilogue* — aynı blocker.
+  (4) *rmsnorm_bwd + rmsnorm_weight_bwd* — park edildi, değer/karmaşıklık
+  oranı düşük.
 
-- **Gradient checkpointing**: 2026-08-10'da Intel HD 620 (5.58GB aperture,
-  i7-7500U) üzerinde ölçüldü — `--chat` (inference) ~700MB-1GB ile sorunsuz
-  çalışırken `train_step` "Parent device is lost" ile çöküyor. Sebep kernel/
-  dispatch bug'ı değil: persistent captured graph tasarımı gereği 12 katmanın
-  TÜMÜNÜN forward aktivasyonları (rsqrt cache, attention scores, silu
-  pre-activation, qkv split, ...) backward katmanlara ters sırada ulaşana
-  kadar canlı kalıyor — ölçülen ~5.4GB'ın ~1.8GB'ı bu. Kalanı weight+grad+2
-  AdamW momenti (aynı tensörün 4 kopyası, ~2.6GB) — checkpointing'in
-  dokunamayacağı kısım. Gradient checkpointing (aktivasyonları saklamak
-  yerine backward'da yeniden hesaplamak) tam bu ~1.8GB'lık kısmı hedefler;
-  fazladan forward hesabı pahasına. Doğal ev sahibi: Big Refactor'daki
-  `Tape` soyutlaması (bkz. "Block'un gelecek ihtiyaç listesi" → "Tape türü
-  blok impl'ine aittir") — Tape zaten "backward için ne saklanır" sorusunu
-  taşıyacağı için checkpoint/no-checkpoint kararı orada doğal bir uzantı.
-  Not: batch_size zaten 1 (küçültülecek yer yok); model küçültmek (katman/
-  dim/vocab veya lm_head'i embedding'e geri bağlamak) ayrı bir lever ama
-  mimari değişiklik = sıfırdan eğitim gerektirir.
+- **GPU'nun eğitimde CPU'dan bağımsızlığının doğrulanması**: steady-state
+  train loop'un kasıtlı trafiği dışında hiçbir gizli host senkronu/kopyası
+  olmadığını kanıtla.
 
----
+- **GPU loss recorder ("loss_counter")**: CE loss'u zaten GPU'da
+  hesaplıyor; kayıt aralığında bir kez küçük bir kernel losses'ı indirgesin
+  ve sabit boyutlu history buffer'ına yazsın — eğri sonda TEK dtoh ile iner.
 
-## Big Refactor: Block trait ve heterojen stack
+## Mamba/GDN — heterojen stack (Big Refactor'un devamı)
 
-**Statü: TASARIM — sırada (2026-07-17).** Ön koşullar (gerçek batch + bf16 +
-eval harness) tamam; optimize sürüm eğitim için arkadaşın makinesine
-paslanıyor. Refactor o ~10 günlük continued-pretraining koşusu sırasında
-tasarlanır/yapılır.
+**Statü**: Transformer-only çıkarma refactor'u TAMAMLANDI (bu döküman
+onu anlatıyor). Aşağıdakiler HENÜZ yapılmadı.
 
 ### Motivasyon
 
-1. **layers.rs ile inference_graphs.rs aynı matematiği iki kez tarif ediyor.**
-   Gerçek fark üç kalem: (a) bwd + grad buffer'ları, (b) attention'ın iki hali
-   (full-seq flash vs cached 3-dispatch), (c) train'in bwd için aktivasyon
-   saklaması. (a) ve (b) faz tip sistemi tarafından zaten kodlanmış — eksik
-   olan tek şey üstteki blok katmanı.
-2. **Mamba/Jamba vizyonu**: config.rs'ten katman listesi yazarak
-   (`[Attn, Attn, Mamba, ...]`) heterojen model kurabilmek — hardcode'suz.
-   Attention alternatifi her mimari aynı arayüze oturur; Jamba bir config
-   satırı olur ve yeni model serisi oradan başlar.
-
-### Tape/Op sistemi (2026-08-31'de gerçekleşti)
-
-Aşağıdaki taslağın yerini gerçek kod aldı — `src/nn/tape.rs` +
-`src/nn/transformer_ops.rs` + `src/nn/inference_ops.rs`. Henüz
-layers.rs/train.rs/inference.rs/inference_graphs.rs'e bağlanmadı
-(entegrasyon ayrı adım), ama üç dosyanın kendisi tamam ve derleniyor.
-
-| Dosya | İçerik |
-|---|---|
-| `tape.rs` | `Forward<B,P>`/`Backward<B>` trait'leri, `NodeId`/`Out`, `Tape<B, Node>` |
-| `transformer_ops.rs` | Train'in somut op'ları (Linear/RMSNorm/SiLU/Add/RopeQk/QkvSplit/Attention) + `TransformerOp` |
-| `inference_ops.rs` | Decode'a özel yeni op'lar (CachedAttention/RopeOffset/HeadGather/CacheWrite) + `PrefillOp`/`DecodeOp` |
-
-`Tape<B, Node>` tek struct, üç bağlamda kullanılıyor: `Tape<B,TransformerOp<B>>`
-(train), `Tape<B,PrefillOp<B>>`, `Tape<B,DecodeOp<B>>` (inference,
-`.backward()` bu ikisi için compile-time yok — `Node: Backward<B>` şartlı
-impl bloğunda yaşıyor). `LinearOp`/`RmsNormOp`/`SiluOp`/`AddOp` üçünde de
-BİREBİR aynı kod (forward'ları zaten `P: FwdPhase` genel yazılmış); attention/
-rope/qkv-çıkarma ikiye ayrılıyor (Train+Prefill flash/fused kullanır — ikisi
-de `FullSeqPhase`; Decode cached/unfused kullanır, ayrı struct'lar).
-
-Kapsam dışı bırakılan (mevcut kararla, zorlaması daha kötü olurdu):
-Prefill artık `matmul_add` füzyonunu kullanmıyor, train'le aynı ayrı
-Linear+Add çiftini kullanıyor — tek dispatch kazancı gitti, yapısal birlik
-geldi.
-
-Sırada (henüz yapılmadı): `AnyLoss`/`AnyGradClip` (aynı enum-match deseni),
-head/blocks/tail Tape'lerinin gerçek Trainer'a bağlanması, gradient
-checkpointing hook'u (her Op zaten `saved_input` tutuyor — checkpointing
-"backward'dan hemen önce yeniden hesapla" demek, mekanizma hazır).
-
-*(Eski kuyruk maddeleri "GraphBuilder\<Decode\> meta kaydı" ve "GradClass
-registry" bu bölüme emildi — state handle/weight-grad kaydı hâlâ tasarım
-bekliyor, aşağıdaki "gelecek ihtiyaç listesi"nde duruyor.)*
+**Mamba/Jamba vizyonu**: config.rs'ten katman listesi yazarak
+(`[Attn, Attn, Mamba, ...]`) heterojen model kurabilmek — hardcode'suz.
+Attention alternatifi her mimari aynı arayüze (`Architecture<B>` trait'i +
+`TrainOp`/`PrefillOp`/`DecodeOp`'a yeni variant) oturur; Jamba bir config
+satırı olur ve yeni model serisi oradan başlar.
 
 ### Checkpoint etkisi
 
@@ -633,55 +619,55 @@ gününde tasarlanır** ki üçüncü format migrasyonu yaşanmasın.
 
 Modern çerçeve: her blok = **token-mixer** (attention'ın koltuğu) +
 **channel-mixer** (FFN'in koltuğu). Adaylar token-mixer koltuğu için;
-hepsi aynı `Block` arayüzüne oturur.
+hepsi aynı `Architecture<B>` arayüzüne oturur.
 
 | Aday | Not |
 |---|---|
 | Attention (mevcut) | GQA / sliding-window / MLA ayrı blok DEĞİL, bu bloğun config varyantları |
-| **Linear attention (GLA / Gated DeltaNet)** | Muhtemelen en kolay ikinci blok — chunk'lı matmul'lara ayrışır (Mamba-2 kernel'leriyle akraba ama conv1d'siz), decode sabit-state. Qwen3-Next hibriti Gated DeltaNet kullanır. **Mamba-2'den ÖNCE gelmesi mantıklı: soyutlamayı en ucuz attention-dışı blokla doğrula.** Dikkat: "tek kernel + emit" değil — train fwd (chunk) + bwd + decode state-update üçlüsü ister; yine de projenin yazdığı flash bwd'den zor değil |
+| **Linear attention (GLA / Gated DeltaNet)** | Muhtemelen en kolay ikinci blok — chunk'lı matmul'lara ayrışır (Mamba-2 kernel'leriyle akraba ama conv1d'siz), decode sabit-state. Qwen3-Next hibriti Gated DeltaNet kullanır. **Mamba-2'den ÖNCE gelmesi mantıklı: soyutlamayı en ucuz attention-dışı blokla doğrula.** Dikkat: "tek kernel + emit" değil — train fwd (chunk) + bwd + decode state-update üçlüsü ister |
 | Mamba-2 (SSD) | Yukarıdaki plan |
 | RWKV(v7) / Griffin | Uzak takip listesi — arayüz bunları da taşır, aceleye gerek yok |
 
-**GQA notu (Big Refactor'dan BAĞIMSIZ, ucuz):** KV head sayısını düşürmek
+**GQA notu (heterojen stack'ten BAĞIMSIZ, ucuz):** KV head sayısını düşürmek
 KV cache'i ve decode bant trafiğini `heads/kv_heads` kat küçültür — iGPU
 derdine birebir. Maliyet: config + kernellerde `head → kv_head = head/group`
 eşlemesi (flash fwd/bwd, cached attention, qkv split). **KARAR GEREKTİRİR:**
-GQA mimari değişikliğidir → sıfırdan init; hall 1.0 weight'lerinden continued
+GQA mimari değişikliğidir → sıfırdan init; eğitilmiş weight'lerden continued
 pretraining ile BAĞDAŞMAZ. Sonraki koşu sıfırdansa gir, continued ise girme.
 
-### Block'un gelecek ihtiyaç listesi (tasarım günü kontrol listesi)
+### Architecture trait'inin gelecek ihtiyaç listesi (Mamba/GDN günü kontrol listesi)
 
-Refactor günü trait yüzeyi çizilirken bunlar masada olmalı — hepsini
+`arch.rs`'teki trait yüzeyi genişletilirken bunlar masada olmalı — hepsini
 İMPLEMENTE etme, ama hiçbirini imkânsız kılma:
 
-- **Token-mixer / channel-mixer ayrımı** — `Block` iki koltuğu ayrı görmeli;
+- **Token-mixer / channel-mixer ayrımı** — trait iki koltuğu ayrı görmeli;
   MoE = FFN koltuğunun alternatifi (Mixtral deseni).
 - **MoE'nin isteyecekleri**: device'ta router top-k, expert weight'lerinin
   `params()` sırasına girişi, ve **aux loss hook'u** (load-balancing loss
-  ana loss'a eklenir) — trait'te "bloğun loss'a katkısı" kapısı baştan
-  düşünülmeli, sonradan eklemesi acı verir.
+  ana loss'a eklenir).
 - **Pozisyon bilgisinin sahipliği**: RoPE attention BLOĞUNA aittir, global
-  pipeline'a değil — Mamba/GLA pozisyonsuz. `rope pos` dinamik metası da
-  bloğun kendi state/meta kaydına iner.
+  pipeline'a değil — Mamba/GLA pozisyonsuz.
 - **Init'in stack bağlamı**: E2'nin 1/√(2L)'si L = "residual'a yazan blok
   sayısı" — heterojen stack'te blok init'i stack uzunluğunu parametre almalı.
-- **Per-blok dtype**: bf16 entegrasyonu Block'tan önce geleceği için arayüz
-  weight dtype'ını blok başına taşıyabilmeli (mixed-precision zemini).
+- **Per-blok dtype**: bf16 entegrasyonu trait'ten önce geleceği için arayüz
+  weight dtype'ını blok başına taşıyabilmeli.
 - **BlockSpec hiperparamları**: head/kv_head sayısı, ffn boyutu, SSM state
   boyutu — hepsi per-blok, config'te `Vec<BlockSpec>` içinde.
-- **Tape türü blok impl'ine aittir** — her blok türünün bwd ihtiyacı farklı
-  (attention: l_cache; GLA: chunk state'leri); trait tek somut TrainTape
-  dayatmasın.
+- **`Tape` türü blok impl'ine ait olmalı** — her blok türünün bwd ihtiyacı
+  farklı (attention: l_cache; GLA: chunk state'leri); trait tek somut
+  `TrainOp` dayatmasın (bugün dayatıyor — `Architecture<B>::train_specs`
+  `Vec<NodeSpec<TrainOp<B>>>` döndürüyor; Mamba geldiğinde bu ya `TrainOp`
+  yeni variant alır ya trait `type TrainOp` associated type'a döner —
+  o gün karar verilecek, şimdi karar VERİLMEDİ).
 - **State handle "cache" değil "adım durumu"** — büyüyen (KV) ve sabit
-  (SSM/linear-attn) state'leri aynı arayüz taşımalı; `cur_len` KV'ye özgü
-  bir detay olarak blok içine iner.
+  (SSM/linear-attn) state'leri aynı arayüz taşımalı.
 
 ### Adım sırası
 
-1. **Block çıkarma refactor'u, YALNIZ transformer'la** — davranış bit-exact
-   aynı, bekçiler hazır (KV==naif CHECK 9, full_chain_gradcheck,
-   v3_save_load_roundtrip). layers.rs/inference_graphs.rs ikiliği burada
-   ölür. Mamba hiç gelmese bile tek başına kâr.
+1. ~~Block çıkarma refactor'u, YALNIZ transformer'la~~ **TAMAMLANDI**
+   (2026-09-07) — `arch.rs` + `blocks/transformer.rs`, davranış bit-exact
+   aynı, bekçiler geçti (CHECK 9 sayısal parity, full_chain_gradcheck,
+   checkpoint_roundtrip).
 2. Config-driven stack (`Vec<BlockSpec>`) + checkpoint header uzantısı.
 3. İlk attention-dışı blok — aday sırası: **Gated DeltaNet → Mamba-2**
    (GDN soyutlamayı en ucuz doğrular; Mamba-2'de import doğrulaması
