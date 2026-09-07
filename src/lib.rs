@@ -1,9 +1,14 @@
 pub mod config;
 pub mod data;
+pub mod diagnostic;
 pub mod nn;
 pub mod optim;
 pub mod shaders;
 pub mod tokenizer;
+
+#[cfg(test)]
+#[path = "tests/common.rs"]
+pub(crate) mod test_common;
 
 pub type Real = f32;
 
