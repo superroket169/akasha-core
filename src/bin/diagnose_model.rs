@@ -4,7 +4,7 @@ use akasha_core::config::{
     GradClipConfig, GradClipKind, ModelConfig, OptimizerConfig, OptimizerKind, RunConfig,
     TrainConfig,
 };
-use akasha_core::diagnostic::{DiagnosticCheck, run_all};
+use akasha_core::diagnostic::{DiagnosticCheck, DiagnosticSuite};
 use akasha_core::nn::{Model, ModelWeights, Trainer};
 use rand::Rng;
 use wilupgu::{Backend, Tensor, WgpuBackend};
@@ -28,8 +28,14 @@ fn l2_norm<B: Backend>(t: &Tensor<B>) -> f32 {
     data.iter().map(|x| x * x).sum::<f32>().sqrt()
 }
 
+// CHECK 1 and CHECK 6 each build their own hall_1-scale Trainer from scratch
+// rather than sharing one -- costs one extra weight-init, but guarantees the
+// Trainer is dropped the moment its own check returns instead of staying
+// alive (stacked on top of every later check's own allocations) for the
+// whole diagnostic run.
 struct ParamCountCheck<B: Backend> {
-    model: Arc<Trainer<B>>,
+    ctx: Arc<B>,
+    vocab_size: u32,
 }
 
 impl<B: Backend> DiagnosticCheck for ParamCountCheck<B> {
@@ -38,23 +44,38 @@ impl<B: Backend> DiagnosticCheck for ParamCountCheck<B> {
     }
 
     fn run(&self) -> bool {
-        let total: u64 = self
-            .model
+        let arch = ModelConfig::akasha_hall_1();
+        let input_tokens = Arc::new(Tensor::init_from_cpu(
+            self.ctx.clone(),
+            &vec![0u32; arch.seq_len as usize],
+        ));
+        let cfg = ModelConfig::new(
+            self.vocab_size,
+            arch.dim,
+            arch.num_heads,
+            arch.num_layers,
+            arch.seq_len,
+        );
+        let weights = Arc::new(ModelWeights::random(self.ctx.clone(), &cfg));
+        let model = Trainer::new(
+            self.ctx.clone(),
+            weights,
+            &input_tokens,
+            TrainConfig::hall1_pretrain(),
+        );
+
+        let total: u64 = model
             .trainable_params()
             .iter()
             .map(|(w, _)| w.size / 4)
             .sum();
         let pass = total > 10_000_000;
-        println!(
-            "CHECK 1: total trainable parameters = {} ({:.1}M){}",
+        self.log(&format!(
+            "total trainable parameters = {} ({:.1}M){}",
             total,
             total as f64 / 1e6,
-            if pass {
-                ""
-            } else {
-                "  <-- RED FLAG: far below 117M"
-            }
-        );
+            if pass { "" } else { "  <-- RED FLAG: far below 117M" }
+        ));
         pass
     }
 }
@@ -107,11 +128,11 @@ impl<B: Backend> DiagnosticCheck for GradFlowCheck<B> {
         let loss = model.cross_entropy.loss();
         model.backward_fused();
 
-        println!(
-            "CHECK 2: 1-step grad flow test (seq_len={seq_len}, dim={}, layers={num_layers}, heads={})",
+        self.log(&format!(
+            "1-step grad flow test (seq_len={seq_len}, dim={}, layers={num_layers}, heads={})",
             arch.dim, arch.num_heads
-        );
-        println!("  forward loss = {loss:.4}");
+        ));
+        self.log(&format!("forward loss = {loss:.4}"));
 
         let mut any_zero = false;
         let mut any_explosion = false;
@@ -128,7 +149,7 @@ impl<B: Backend> DiagnosticCheck for GradFlowCheck<B> {
             ];
             let mut layer_sum = 0.0f32;
             for (name, norm) in entries {
-                println!("  Layer {i}: {name} grad norm = {norm:.4}");
+                self.log(&format!("Layer {i}: {name} grad norm = {norm:.4}"));
                 if norm == 0.0 {
                     any_zero = true;
                 }
@@ -143,8 +164,8 @@ impl<B: Backend> DiagnosticCheck for GradFlowCheck<B> {
         let emb_norm = l2_norm(&model.embedding.grad_table);
         let lmhead_norm = l2_norm(&model.lm_head.grad_weight);
 
-        println!("  Embedding grad norm = {emb_norm:.4}");
-        println!("  LM_head grad norm = {lmhead_norm:.4}");
+        self.log(&format!("Embedding grad norm = {emb_norm:.4}"));
+        self.log(&format!("LM_head grad norm = {lmhead_norm:.4}"));
 
         if emb_norm == 0.0 || lmhead_norm == 0.0 {
             any_zero = true;
@@ -153,13 +174,13 @@ impl<B: Backend> DiagnosticCheck for GradFlowCheck<B> {
         let vanishing = if layer_total_norms[0] > 1e-9 {
             let ratio = layer_total_norms[0] / layer_total_norms[num_layers - 1].max(1e-12);
             if ratio > 1e3 {
-                println!(
-                    "  RED FLAG: layer-0 grad sum ({:.4}) / layer-{} grad sum ({:.4}) = {:.1} -- looks like vanishing gradient",
+                self.log(&format!(
+                    "RED FLAG: layer-0 grad sum ({:.4}) / layer-{} grad sum ({:.4}) = {:.1} -- looks like vanishing gradient",
                     layer_total_norms[0],
                     num_layers - 1,
                     layer_total_norms[num_layers - 1],
                     ratio
-                );
+                ));
                 true
             } else {
                 false
@@ -169,12 +190,10 @@ impl<B: Backend> DiagnosticCheck for GradFlowCheck<B> {
         };
 
         if any_zero {
-            println!(
-                "  RED FLAG: at least one grad norm is exactly 0.0 -- gradient not flowing there"
-            );
+            self.log("RED FLAG: at least one grad norm is exactly 0.0 -- gradient not flowing there");
         }
         if any_explosion {
-            println!("  RED FLAG: at least one grad norm > 100 -- exploding gradient");
+            self.log("RED FLAG: at least one grad norm > 100 -- exploding gradient");
         }
 
         !any_zero && !any_explosion && !vanishing
@@ -240,30 +259,27 @@ impl<B: Backend> DiagnosticCheck for AccumulationCheck<B> {
             .sum::<f32>()
             .sqrt();
 
-        println!("CHECK 5: gradient accumulation");
-        println!(
-            "  after step 0 (mid-cycle): weight delta norm = {delta0:.8}, grad_weight norm = {grad_after_step0:.6}"
-        );
-        println!("  after step 1 (cycle boundary): weight delta norm = {delta1:.8}");
+        self.log(&format!(
+            "after step 0 (mid-cycle): weight delta norm = {delta0:.8}, grad_weight norm = {grad_after_step0:.6}"
+        ));
+        self.log(&format!(
+            "after step 1 (cycle boundary): weight delta norm = {delta1:.8}"
+        ));
 
         let pass = delta0 < 1e-7 && grad_after_step0 > 0.0 && delta1 > 1e-7;
         if delta0 >= 1e-7 {
-            println!(
-                "  RED FLAG: weights changed mid-cycle (before optimizer.step() should have run)"
-            );
+            self.log("RED FLAG: weights changed mid-cycle (before optimizer.step() should have run)");
         }
         if delta1 < 1e-7 {
-            println!(
-                "  RED FLAG: weights did NOT change at accumulation boundary -- optimizer broken"
-            );
+            self.log("RED FLAG: weights did NOT change at accumulation boundary -- optimizer broken");
         }
-        println!("CHECK 5: {}", if pass { "PASS" } else { "FAIL" });
         pass
     }
 }
 
 struct WeightDecayGroupsCheck<B: Backend> {
-    model: Arc<Trainer<B>>,
+    ctx: Arc<B>,
+    vocab_size: u32,
     weight_decay: f32,
 }
 
@@ -273,32 +289,49 @@ impl<B: Backend> DiagnosticCheck for WeightDecayGroupsCheck<B> {
     }
 
     fn run(&self) -> bool {
-        let params = self.model.trainable_params();
+        let arch = ModelConfig::akasha_hall_1();
+        let input_tokens = Arc::new(Tensor::init_from_cpu(
+            self.ctx.clone(),
+            &vec![0u32; arch.seq_len as usize],
+        ));
+        let cfg = ModelConfig::new(
+            self.vocab_size,
+            arch.dim,
+            arch.num_heads,
+            arch.num_layers,
+            arch.seq_len,
+        );
+        let weights = Arc::new(ModelWeights::random(self.ctx.clone(), &cfg));
+        let model = Trainer::new(
+            self.ctx.clone(),
+            weights,
+            &input_tokens,
+            TrainConfig::hall1_pretrain(),
+        );
+
+        let params = model.trainable_params();
         let emb_in_group = params
             .iter()
-            .any(|(w, _)| Arc::ptr_eq(w, &self.model.embedding.table));
+            .any(|(w, _)| Arc::ptr_eq(w, &model.embedding.table));
         let norm_in_group = params
             .iter()
-            .any(|(w, _)| Arc::ptr_eq(w, &self.model.final_norm.weight));
+            .any(|(w, _)| Arc::ptr_eq(w, &model.final_norm.weight));
 
-        println!("CHECK 6: AdamW weight-decay grouping");
-        println!(
-            "  AdamW::new() is called with a single uniform parameter list and a single shared"
-        );
-        println!("  StepConfig{{weight_decay,...}} applied identically to every tensor in it --");
-        println!("  this codebase has no separate no_decay group at all.");
-        println!("  Embedding table in the (only) weight_decay group: {emb_in_group}");
-        println!("  RMSNorm (final_norm) weight in the (only) weight_decay group: {norm_in_group}");
-        println!(
-            "  ADVISORY (not a correctness bug): embeddings and RMSNorm scale weights ARE being"
-        );
-        println!(
-            "  weight-decayed at adam_weight_decay={}, which is non-standard --",
+        self.log("AdamW::new() is called with a single uniform parameter list and a single shared");
+        self.log("StepConfig{weight_decay,...} applied identically to every tensor in it -- this");
+        self.log("codebase has no separate no_decay group at all.");
+        self.log(&format!(
+            "Embedding table in the (only) weight_decay group: {emb_in_group}"
+        ));
+        self.log(&format!(
+            "RMSNorm (final_norm) weight in the (only) weight_decay group: {norm_in_group}"
+        ));
+        self.log("ADVISORY (not a correctness bug): embeddings and RMSNorm scale weights ARE being");
+        self.log(&format!(
+            "weight-decayed at adam_weight_decay={}, which is non-standard --",
             self.weight_decay
-        );
-        println!(
-            "  most GPT-2-style training setups exempt 1D params (norms, embeddings, biases) from decay."
-        );
+        ));
+        self.log("most GPT-2-style training setups exempt 1D params (norms, embeddings, biases) from decay.");
         emb_in_group && norm_in_group
     }
 }
@@ -314,8 +347,10 @@ impl<B: Backend> DiagnosticCheck for MemorizationCheck<B> {
 
     fn run(&self) -> bool {
         for &(lr, clip) in &[(3e-3f32, false)] {
-            println!("--- trying lr={lr} grad_clip={clip}, extended to 600 steps ---");
-            if memorization_run(self.ctx.clone(), lr, clip) {
+            self.log(&format!(
+                "trying lr={lr} grad_clip={clip}, extended to 600 steps"
+            ));
+            if memorization_run(self, self.ctx.clone(), lr, clip) {
                 return true;
             }
         }
@@ -323,7 +358,12 @@ impl<B: Backend> DiagnosticCheck for MemorizationCheck<B> {
     }
 }
 
-fn memorization_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
+fn memorization_run<B: Backend>(
+    check: &MemorizationCheck<B>,
+    ctx: Arc<B>,
+    lr: f32,
+    use_clip: bool,
+) -> bool {
     let dim = 64u32;
     let num_heads = 4u32;
     let num_layers = 1usize;
@@ -386,9 +426,9 @@ fn memorization_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
         .cross_entropy
         .set_grad_scale(1.0 / (seq_len as f32 * batch_size as f32));
 
-    println!(
-        "CHECK 8: single-layer memorization test (dim={dim}, heads={num_heads}, layers={num_layers}, vocab={vocab_size}, seq_len={seq_len}, batch={batch_size}, lr={lr})"
-    );
+    check.log(&format!(
+        "single-layer memorization test (dim={dim}, heads={num_heads}, layers={num_layers}, vocab={vocab_size}, seq_len={seq_len}, batch={batch_size}, lr={lr})"
+    ));
 
     let mut final_loss = f32::MAX;
     for step in 0..600usize {
@@ -414,12 +454,12 @@ fn memorization_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
                         .sum::<f64>()
                         .sqrt()
                 };
-                println!(
-                    "  [fwd-fp] layer0.add_2(resid into final_norm)={:.8} final_norm.out={:.8} softmax_probs={:.8}",
+                check.log(&format!(
+                    "[fwd-fp] layer0.add_2(resid into final_norm)={:.8} final_norm.out={:.8} softmax_probs={:.8}",
                     norm_f32(&model.layers[0].add_2.out_buffer),
                     norm_f32(&model.final_norm.out_buffer),
                     norm_f32(&model.lm_head.out_buffer),
-                );
+                ));
             }
 
             total_loss += model.cross_entropy.loss();
@@ -433,7 +473,7 @@ fn memorization_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
         let avg_loss = total_loss / batch_size as f32;
         final_loss = avg_loss;
         if step % 40 == 0 || step == 599 {
-            println!("  step {step:3} | loss {avg_loss:.4}");
+            check.log(&format!("step {step:3} | loss {avg_loss:.4}"));
         }
 
         if step == 0 {
@@ -444,28 +484,28 @@ fn memorization_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
                     .sum::<f64>()
                     .sqrt()
             };
-            println!(
-                "  [fp-detail] lm_head.grad_input(=dY into final_norm.backward)={:.8}",
+            check.log(&format!(
+                "[fp-detail] lm_head.grad_input(=dY into final_norm.backward)={:.8}",
                 norm(&model.lm_head.grad_input)
-            );
+            ));
             for (i, layer) in model.layers.iter().enumerate() {
-                println!(
-                    "  [fp-detail] layer {i}: QKV={:.6} O={:.6} FFNup={:.6} FFNdown={:.6} Norm1={:.6} Norm2={:.6}",
+                check.log(&format!(
+                    "[fp-detail] layer {i}: QKV={:.6} O={:.6} FFNup={:.6} FFNdown={:.6} Norm1={:.6} Norm2={:.6}",
                     norm(&layer.qkv_proj.grad_weight),
                     norm(&layer.out_proj.grad_weight),
                     norm(&layer.ffn_up.grad_weight),
                     norm(&layer.ffn_down.grad_weight),
                     norm(&layer.norm_1.grad_weight),
                     norm(&layer.norm_2.grad_weight)
-                );
+                ));
             }
 
-            println!(
-                "  [fp-detail] embedding={:.6} final_norm={:.6} lm_head={:.6}",
+            check.log(&format!(
+                "[fp-detail] embedding={:.6} final_norm={:.6} lm_head={:.6}",
                 norm(&model.embedding.grad_table),
                 norm(&model.final_norm.grad_weight),
                 norm(&model.lm_head.grad_weight)
-            );
+            ));
         }
         if step < 10 {
             let grad_norm: f64 = model
@@ -499,34 +539,34 @@ fn memorization_run<B: Backend>(ctx: Arc<B>, lr: f32, use_clip: bool) -> bool {
                 })
                 .sum::<f64>()
                 .sqrt();
-            println!(
-                "  [fingerprint] step {step} | loss {avg_loss:.6} | grad_norm {grad_norm:.6} | m_norm {m_norm:.6} | v_norm {v_norm:.6}"
-            );
+            check.log(&format!(
+                "[fingerprint] step {step} | loss {avg_loss:.6} | grad_norm {grad_norm:.6} | m_norm {m_norm:.6} | v_norm {v_norm:.6}"
+            ));
         }
         if avg_loss.is_nan() {
-            println!("  RED FLAG: loss is NaN at step {step}");
+            check.log(&format!("RED FLAG: loss is NaN at step {step}"));
             return false;
         }
     }
 
     let pass = final_loss < 0.1;
 
-    println!(
-        "CHECK 8: final loss = {final_loss:.4} -> {}",
+    check.log(&format!(
+        "final loss = {final_loss:.4} -> {}",
         if pass { "PASS" } else { "FAIL" }
-    );
+    ));
     if !pass {
-        println!(
-            "  RED FLAG: tiny single-layer model could not memorize a fixed batch in 200 steps."
-        );
-        println!(
-            "  This points to a bug in the training loop itself (optimizer, backward, or loss),"
-        );
-        println!("  not just a hyperparameter/scale issue with the full 117M model.");
+        check.log("RED FLAG: tiny single-layer model could not memorize a fixed batch in 200 steps.");
+        check.log("This points to a bug in the training loop itself (optimizer, backward, or loss),");
+        check.log("not just a hyperparameter/scale issue with the full 117M model.");
     }
     pass
 }
 
+// CHECK 9/10 replace the old InferenceSession-vs-Trainer comparison (deleted
+// along with InferenceSession/Cache): they exercise nn::Model's public
+// generate() API only, comparing the cache/decode-step code path against the
+// full-prefill code path black-box.
 struct PrefillDecodeParityCheck<B: Backend> {
     ctx: Arc<B>,
 }
@@ -564,15 +604,12 @@ impl<B: Backend> DiagnosticCheck for PrefillDecodeParityCheck<B> {
 
         let pass = gen_a.len() >= 2 && !gen_b.is_empty() && gen_a[1] == gen_b[0];
 
-        println!(
-            "CHECK 9: prefill-vs-decode parity -- A(prefill+decode)={gen_a:?} B(prefill-only, one token further)={gen_b:?} -> {}",
-            if pass { "PASS" } else { "FAIL" }
-        );
+        self.log(&format!(
+            "prefill-vs-decode parity -- A(prefill+decode)={gen_a:?} B(prefill-only, one token further)={gen_b:?}"
+        ));
 
         if !pass {
-            println!(
-                "  RED FLAG: decode-step (KV-cache) path disagrees with the full-prefill path for the same context -- cache write, RoPE offset, or cached-attention kernel is likely wrong."
-            );
+            self.log("RED FLAG: decode-step (KV-cache) path disagrees with the full-prefill path for the same context -- cache write, RoPE offset, or cached-attention kernel is likely wrong.");
         }
         pass
     }
@@ -618,14 +655,12 @@ impl<B: Backend> DiagnosticCheck for DecodeCacheSpeedCheck<B> {
         let cached_elapsed = cached_start.elapsed();
 
         let speedup = naive_elapsed.as_secs_f64() / cached_elapsed.as_secs_f64().max(1e-9);
-        println!(
-            "CHECK 10: {extra_tokens} tokens -- naive re-prefill = {naive_elapsed:.2?}, cached decode = {cached_elapsed:.2?}, speedup = {speedup:.2}x"
-        );
+        self.log(&format!(
+            "{extra_tokens} tokens -- naive re-prefill = {naive_elapsed:.2?}, cached decode = {cached_elapsed:.2?}, speedup = {speedup:.2}x"
+        ));
         let pass = cached_elapsed < naive_elapsed;
         if !pass {
-            println!(
-                "  RED FLAG: cached decode was not faster than re-prefilling from scratch each step -- KV-cache isn't providing a speed benefit."
-            );
+            self.log("RED FLAG: cached decode was not faster than re-prefilling from scratch each step -- KV-cache isn't providing a speed benefit.");
         }
         pass
     }
@@ -633,19 +668,15 @@ impl<B: Backend> DiagnosticCheck for DecodeCacheSpeedCheck<B> {
 
 fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
     if std::env::var("DIAGNOSE_ONLY_CHECK8").is_ok() {
-        let check = MemorizationCheck { ctx };
-        let pass = check.run();
-        println!(
-            "CHECK 8 (memorization): {}",
-            if pass { "PASS" } else { "FAIL" }
-        );
+        DiagnosticSuite::new()
+            .add(Box::new(MemorizationCheck { ctx }))
+            .run();
         return;
     }
 
     println!("\n================= AKASHA TRAINING DIAGNOSTICS =================\n");
 
     let arch = ModelConfig::akasha_hall_1();
-    let train_cfg = TrainConfig::hall1_pretrain();
 
     let vocab_size: u32 = std::env::var("DIAGNOSE_VOCAB_SIZE")
         .ok()
@@ -658,41 +689,19 @@ fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
         );
     }
 
-    let input_tokens = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0u32; arch.seq_len as usize],
-    ));
-    let cfg = ModelConfig::new(
-        vocab_size,
-        arch.dim,
-        arch.num_heads,
-        arch.num_layers,
-        arch.seq_len,
-    );
-    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let full_model = Arc::new(Trainer::new(ctx.clone(), weights, &input_tokens, train_cfg));
-
-    let checks: Vec<Box<dyn DiagnosticCheck>> = vec![
-        Box::new(ParamCountCheck {
-            model: full_model.clone(),
-        }),
-        Box::new(GradFlowCheck {
+    DiagnosticSuite::new()
+        .add(Box::new(ParamCountCheck { ctx: ctx.clone(), vocab_size }))
+        .add(Box::new(GradFlowCheck { ctx: ctx.clone(), vocab_size }))
+        .add(Box::new(AccumulationCheck { ctx: ctx.clone(), vocab_size }))
+        .add(Box::new(WeightDecayGroupsCheck {
             ctx: ctx.clone(),
             vocab_size,
-        }),
-        Box::new(AccumulationCheck {
-            ctx: ctx.clone(),
-            vocab_size,
-        }),
-        Box::new(WeightDecayGroupsCheck {
-            model: full_model,
-            weight_decay: train_cfg.adam_weight_decay,
-        }),
-        Box::new(MemorizationCheck { ctx: ctx.clone() }),
-        Box::new(PrefillDecodeParityCheck { ctx: ctx.clone() }),
-        Box::new(DecodeCacheSpeedCheck { ctx }),
-    ];
-    run_all(&checks);
+            weight_decay: TrainConfig::hall1_pretrain().adam_weight_decay,
+        }))
+        .add(Box::new(MemorizationCheck { ctx: ctx.clone() }))
+        .add(Box::new(PrefillDecodeParityCheck { ctx: ctx.clone() }))
+        .add(Box::new(DecodeCacheSpeedCheck { ctx }))
+        .run();
 }
 
 fn main() {
