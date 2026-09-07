@@ -290,6 +290,7 @@ impl<B: Backend> DiagnosticCheck for CrossEntropyCheck<B> {
         let expected = (vocab_size as f32).ln();
         let diff = (got - expected).abs();
         let pass = diff < 0.01;
+
         self.log(&format!(
             "all-zero logits, expected ln({vocab_size}) = {expected:.4}, got = {got:.4}, diff = {diff:.4} -> {}",
             if pass { "PASS" } else { "FAIL" }
