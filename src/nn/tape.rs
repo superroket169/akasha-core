@@ -106,10 +106,6 @@ impl<B: Backend, Node> Tape<B, Node> {
         self.nodes[id.0].outputs[0].clone()
     }
 
-    pub(crate) fn output_slot(&self, out: Out) -> Arc<Tensor<B>> {
-        self.nodes[out.0.0].outputs[out.1].clone()
-    }
-
     pub(crate) fn extend<P: FwdPhase>(
         &mut self,
         gb: &mut GraphBuilder<'_, B, P>,

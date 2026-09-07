@@ -672,16 +672,6 @@ pub(crate) fn cache_write_with<B: Backend, P: CachedPhase>(
     );
 }
 
-pub(crate) fn cache_write<B: Backend, P: CachedPhase>(
-    gb: &mut GraphBuilder<'_, B, P>,
-    src: &Arc<Tensor<B>>,
-    cache: &Arc<Tensor<B>>,
-    shape: CacheWriteMeta,
-) {
-    let meta = shape.upload(&src.ctx);
-    cache_write_with(gb, src, cache, shape, &meta);
-}
-
 // ---- elementwise ----
 
 // (wg.y * num_wg.x + wg.x).
@@ -785,23 +775,6 @@ pub(crate) fn add_inplace_bwd<B: Backend>(
         &[
             Binding::new(0, &target.buffer, TensorMode::Accumulate),
             Binding::new(1, &source.buffer, TensorMode::Input),
-        ],
-        grid256_2d(len),
-    );
-}
-
-/// On-device zeroing, as a gb node.
-pub(crate) fn zero<B: Backend, P: FwdPhase>(
-    gb: &mut GraphBuilder<'_, B, P>,
-    buf: &Arc<Tensor<B>>,
-    len: u32,
-) {
-    let meta = ZeroMeta { len }.upload(&buf.ctx);
-    gb.graph.add_node(
-        &builtin::ZERO_TENSOR,
-        &[
-            Binding::new(0, &buf.buffer, TensorMode::Output),
-            Binding::new(1, &meta.buffer, TensorMode::Meta),
         ],
         grid256_2d(len),
     );
