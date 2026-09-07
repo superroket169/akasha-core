@@ -1,10 +1,5 @@
-//! V3 is the ONLY format this module reads or writes. Legacy v1 (headerless
-//! bincode (weight, grad) pairs) and v2 ("AKV2" + weights only) readers live
-//! solely in `bin/migrate_checkpoint_v3.rs` — run it once per old file.
-//!
-//! Layout: 4-byte magic "AKV3", then one bincode `V3Body`. Weights AND
-//! optimizer moments follow the `weights.params()` order — that order is the
-//! format contract (see ARCHITECTURE.md, Invariantlar).
+//! V3 is the ONLY format this module reads or writes.
+//! `bin/migrate_checkpoint_v3.rs` - run it once per old file.
 
 use super::weights::ModelWeights;
 use crate::Real;

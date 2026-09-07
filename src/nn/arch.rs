@@ -1,12 +1,3 @@
-//! `Architecture<B>`: what a block-kind must provide to plug into `Model`'s
-//! three phases. One implementor today (`blocks::transformer::Transformer`);
-//! Mamba/GDN mean a new `BlockKind` variant, new `TrainOp`/`PrefillOp`/
-//! `DecodeOp` variants for their ops, a new `nn::blocks::*` module
-//! implementing this trait, and one new match arm in each `build_*` below --
-//! no generic `Model<B, A>` (dispatch stays a plain `match kind`, same shape
-//! as `AnyOptimizer`/`AnyGradClip`; `TrainOp` etc. are themselves the
-//! extension point, not this trait).
-
 use super::blocks::transformer::Transformer;
 use super::kernels::meta::{MatMulMeta, NormMeta};
 use super::kernels::{GraphBuilder, Prefill, Train};
