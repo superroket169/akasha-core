@@ -20,12 +20,10 @@ pub(crate) fn elem_count<B: Backend>(t: &Arc<Tensor<B>>) -> u32 {
     (t.size / std::mem::size_of::<Real>() as u64) as u32
 }
 
-pub(crate) fn check_refs<T>(label: &str, arc: &Arc<T>) {
+pub(crate) fn check_refs<T>(label: &str, arc: &Arc<T>, expected: usize) {
     let count = Arc::strong_count(arc);
-    if count != 1 {
-        eprintln!(
-            "[checkpoint] {label}: refcount={count} before free (expected 1) -- activation is aliased elsewhere"
-        );
+    if count != expected {
+        eprintln!("[checkpoint] {label}: refcount={count} before free (expected {expected})");
     }
 }
 

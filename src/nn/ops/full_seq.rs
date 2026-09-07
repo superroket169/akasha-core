@@ -142,7 +142,7 @@ impl<B: Backend> Backward<B> for LinearOp<B> {
 impl<B: Backend> Checkpointable<B> for LinearOp<B> {
     fn free_activations(&mut self) {
         if let Some(x) = self.saved_input.take() {
-            check_refs("LinearOp.saved_input", &x);
+            check_refs("LinearOp.saved_input", &x, 2); // producer's own field + its TapeNode.outputs slot
         }
     }
 }
@@ -218,7 +218,7 @@ impl<B: Backend> Backward<B> for RmsNormOp<B> {
 impl<B: Backend> Checkpointable<B> for RmsNormOp<B> {
     fn free_activations(&mut self) {
         if let Some(x) = self.saved_input.take() {
-            check_refs("RmsNormOp.saved_input", &x);
+            check_refs("RmsNormOp.saved_input", &x, 2);
         }
     }
 }
@@ -272,7 +272,7 @@ impl<B: Backend> Backward<B> for SiluOp<B> {
 impl<B: Backend> Checkpointable<B> for SiluOp<B> {
     fn free_activations(&mut self) {
         if let Some(x) = self.saved_input.take() {
-            check_refs("SiluOp.saved_input", &x);
+            check_refs("SiluOp.saved_input", &x, 2);
         }
     }
 }
@@ -523,7 +523,7 @@ impl<B: Backend> Checkpointable<B> for AttentionOp<B> {
     fn free_activations(&mut self) {
         if let Some((_, _, _, bufs)) = self.saved.take() {
             for b in &bufs {
-                check_refs("AttentionOp.saved.l_cache", &b.l_cache);
+                check_refs("AttentionOp.saved.l_cache", &b.l_cache, 1);
             }
         }
     }
