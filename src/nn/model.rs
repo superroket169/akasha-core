@@ -1,10 +1,11 @@
 use super::block_specs::{build_decode_forward, build_prefill_forward, build_transformer_block};
-use super::ops::cached::DecodeOp;
-use super::ops::full_seq::{EmbeddingOp, LinearOp, RmsNormOp, TrainOp};
+use super::checkpoint;
 use super::grad_clip::{AnyGradClip, GlobalNormClip};
-use super::loss::{AnyLoss, CrossEntropyOp};
 use super::kernels::GraphBuilder;
 use super::kernels::meta::{MatMulMeta, NormMeta};
+use super::loss::{AnyLoss, CrossEntropyOp};
+use super::ops::cached::DecodeOp;
+use super::ops::full_seq::{EmbeddingOp, LinearOp, RmsNormOp, TrainOp};
 use super::sampling;
 use super::tape::{NodeId, Tape, zeros};
 use super::weights::ModelWeights;
@@ -359,8 +360,72 @@ impl<B: Backend> Model<B> {
     pub fn weights(&self) -> &ModelWeights<B> {
         &self.weights
     }
+
+    /// Saves weights + full optimizer state (V3)
+    pub fn save_checkpoint(
+        &self,
+        path: &str,
+        train_step: u64,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let t = self
+            .train
+            .as_ref()
+            .expect("save_checkpoint called on a chat-only Model");
+        let (schedule_step, _) = t.optimizer.current_schedule();
+
+        checkpoint::save(
+            &self.weights,
+            Some((t.optimizer.moments(), schedule_step)),
+            train_step,
+            path,
+        )
+    }
+
+    /// weights-only/migrated files start the optimizer cold
+    pub fn load_checkpoint(&self, path: &str) -> Result<u64, Box<dyn std::error::Error>> {
+        let t = self
+            .train
+            .as_ref()
+            .expect("load_checkpoint called on a chat-only Model");
+        let loaded = checkpoint::load(&self.weights, path)?;
+
+        if let Some(state) = loaded.optimizer {
+            t.optimizer.load_state(&state.moments, state.schedule_step);
+        }
+        Ok(loaded.train_step)
+    }
+
+    pub fn to_flat_weights(&self) -> Vec<Real> {
+        self.weights
+            .params()
+            .iter()
+            .flat_map(|t| t.to_cpu::<Real>())
+            .collect()
+    }
+
+    pub fn set_flat_weights(&self, flat: &[Real]) {
+        let params = self.weights.params();
+        let total: usize = params
+            .iter()
+            .map(|t| (t.size / std::mem::size_of::<Real>() as u64) as usize)
+            .sum();
+
+        assert_eq!(
+            flat.len(),
+            total,
+            "set_flat_weights: flat length {} doesn't match model's {total} parameters",
+            flat.len()
+        );
+
+        let mut offset = 0;
+        for t in &params {
+            let len = (t.size / std::mem::size_of::<Real>() as u64) as usize;
+            t.copy_from_cpu(&flat[offset..offset + len]);
+            offset += len;
+        }
+    }
 }
 
 #[cfg(test)]
 #[path = "../tests/model_tests.rs"]
-mod gradcheck;
+mod tests;
