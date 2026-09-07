@@ -1,5 +1,3 @@
-/// What kind of block occupies a layer slot. One variant today
-/// (transformer-only stacks); a second (e.g. Mamba) is a new arm here, not
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BlockKind {
     Transformer,

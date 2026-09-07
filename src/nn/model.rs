@@ -1,4 +1,4 @@
-use super::block_specs::{build_decode_forward, build_prefill_forward, build_transformer_block};
+use super::architecture::{build_block, build_decode_forward, build_prefill_forward};
 use super::checkpoint;
 use super::grad_clip::{AnyGradClip, GlobalNormClip};
 use super::kernels::GraphBuilder;
@@ -11,7 +11,7 @@ use super::tape::{NodeId, Tape, zeros};
 use super::weights::ModelWeights;
 use crate::AkashaError;
 use crate::Real;
-use crate::config::{BlockKind, GradClipKind, ModelConfig, OptimizerKind, TrainConfig};
+use crate::config::{GradClipKind, ModelConfig, OptimizerKind, TrainConfig};
 use crate::optim::{AdamW, AdamWSchedule, AnyOptimizer};
 use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor};
@@ -77,13 +77,9 @@ impl<B: Backend> Model<B> {
         let mut x = head.output(embedding_id);
         let mut blocks = Vec::with_capacity(weights.blocks.len());
         for (bw, kind) in weights.blocks.iter().zip(cfg.layers()) {
-            match kind {
-                BlockKind::Transformer => {
-                    let built = build_transformer_block(&mut gb, bw, &cfg, x);
-                    x = built.tape.output(built.output);
-                    blocks.push(built);
-                }
-            }
+            let built = build_block(&mut gb, bw, &cfg, kind, x);
+            x = built.tape.output(built.output);
+            blocks.push(built);
         }
 
         let mut tail = Tape::new();
@@ -236,15 +232,11 @@ impl<B: Backend> Model<B> {
         }
     }
 
-    pub fn generate(
-        &mut self,
-        prompt: &[u32],
-        max_new_tokens: usize,
-        temperature: f32,
-        top_k: usize,
-        top_p: f32,
-        repetition_penalty: f32,
-    ) -> Result<Vec<u32>, AkashaError> {
+    /// Runs prefill for `prompt` against this session's KV cache and returns
+    /// the logits (vocab-sized) for the last prompt position. Leaves `pos`
+    /// bookkeeping to the caller -- the first decode step after this is at
+    /// `pos == prompt.len()`.
+    pub fn prefill_logits(&mut self, prompt: &[u32]) -> Result<Vec<Real>, AkashaError> {
         if prompt.is_empty() {
             return Err(AkashaError::EmptyPrompt);
         }
@@ -254,7 +246,7 @@ impl<B: Backend> Model<B> {
         let chat = self
             .chat
             .as_mut()
-            .expect("generate called on a training-only Model");
+            .expect("prefill_logits called on a training-only Model");
 
         let prompt_len = prompt.len() as u32;
         if prompt_len > chat.max_context_len {
@@ -280,25 +272,68 @@ impl<B: Backend> Model<B> {
 
         let vocab = cfg.vocab_size as usize;
         let all_logits: Vec<Real> = prefill_tape.output(prefill_logits).to_cpu();
-        let last = &all_logits[(prompt_len as usize - 1) * vocab..prompt_len as usize * vocab];
+        Ok(all_logits[(prompt_len as usize - 1) * vocab..prompt_len as usize * vocab].to_vec())
+    }
+
+    /// Runs one decode step at absolute position `pos` and returns its
+    /// logits (vocab-sized). `pos` must be the count of tokens already
+    /// written into the cache (prompt + decoded so far).
+    pub fn decode_step_logits(&mut self, token: u32, pos: u32) -> Result<Vec<Real>, AkashaError> {
+        let chat = self
+            .chat
+            .as_mut()
+            .expect("decode_step_logits called on a training-only Model");
+        if pos >= chat.max_context_len {
+            return Err(AkashaError::ContextFull {
+                max: chat.max_context_len,
+            });
+        }
+        chat.decode.tape.advance(pos);
+        chat.decode.tokens.copy_from_cpu(&[token]);
+        chat.decode.graph.execute();
+        Ok(chat.decode.tape.output(chat.decode.logits_id).to_cpu())
+    }
+
+    /// Zeroes the KV cache so the next `prefill_logits` call starts a fresh
+    /// context instead of appending to whatever was decoded before.
+    pub fn reset_cache(&mut self) {
+        let chat = self
+            .chat
+            .as_mut()
+            .expect("reset_cache called on a training-only Model");
+        for k in chat.cache_k.iter().chain(chat.cache_v.iter()) {
+            let n = (k.size / std::mem::size_of::<Real>() as u64) as usize;
+            k.copy_from_cpu(&vec![0.0 as Real; n]);
+        }
+    }
+
+    pub fn generate(
+        &mut self,
+        prompt: &[u32],
+        max_new_tokens: usize,
+        temperature: f32,
+        top_k: usize,
+        top_p: f32,
+        repetition_penalty: f32,
+    ) -> Result<Vec<u32>, AkashaError> {
+        let last = self.prefill_logits(prompt)?;
+        let cfg = self.weights.cfg;
+        let max_context_len = self.chat.as_ref().unwrap().max_context_len;
 
         let eos = cfg.eos_token;
         let mut seen: Vec<u32> = prompt.to_vec();
         let mut generated = Vec::with_capacity(max_new_tokens);
         let mut next =
-            sampling::sample_token(last, temperature, top_k, top_p, &seen, repetition_penalty);
+            sampling::sample_token(&last, temperature, top_k, top_p, &seen, repetition_penalty);
         generated.push(next);
         seen.push(next);
 
-        let mut pos = prompt_len;
+        let mut pos = prompt.len() as u32;
         for _ in 1..max_new_tokens {
-            if next == eos || pos >= chat.max_context_len {
+            if next == eos || pos >= max_context_len {
                 break;
             }
-            chat.decode.tape.advance(pos);
-            chat.decode.tokens.copy_from_cpu(&[next]);
-            chat.decode.graph.execute();
-            let logits: Vec<Real> = chat.decode.tape.output(chat.decode.logits_id).to_cpu();
+            let logits = self.decode_step_logits(next, pos)?;
             next = sampling::sample_token(
                 &logits,
                 temperature,
@@ -359,6 +394,13 @@ impl<B: Backend> Model<B> {
 
     pub fn weights(&self) -> &ModelWeights<B> {
         &self.weights
+    }
+
+    pub fn max_context_len(&self) -> u32 {
+        self.chat
+            .as_ref()
+            .expect("max_context_len called on a training-only Model")
+            .max_context_len
     }
 
     /// Saves weights + full optimizer state (V3)
