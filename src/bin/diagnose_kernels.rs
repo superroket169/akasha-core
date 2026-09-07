@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use akasha_core::diagnostic::{DiagnosticCheck, run_all};
+use akasha_core::diagnostic::{DiagnosticCheck, DiagnosticSuite};
 use akasha_core::nn::{Layer, RMSNorm};
 use akasha_core::shaders;
 use rand::Rng;
@@ -86,22 +86,20 @@ impl<B: Backend> DiagnosticCheck for HeadGatherScatterCheck<B> {
             .map(|(a, b)| (a - b).abs())
             .fold(0.0f32, f32::max);
         let roundtrip_pass = max_roundtrip_diff < 1e-6;
-        println!(
-            "CHECK 3: HeadGather/HeadScatter round-trip identity, max diff = {max_roundtrip_diff:.8} -> {}",
+        self.log(&format!(
+            "round-trip identity, max diff = {max_roundtrip_diff:.8} -> {}",
             if roundtrip_pass { "PASS" } else { "FAIL" }
-        );
+        ));
 
         let (_, meta0, head_offset0) = &head_bufs[0];
         let ones = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
             &vec![1.0f32; (seq_len * head_dim) as usize],
         ));
-
         let analytic_grad = Arc::new(Tensor::init_from_cpu(
             ctx.clone(),
             &vec![0.0f32; (seq_len * dim) as usize],
         ));
-
         let mut g2 = ComputeGraph::new(ctx.clone());
         g2.add_node(
             &shaders::HEAD_SCATTER,
@@ -112,23 +110,19 @@ impl<B: Backend> DiagnosticCheck for HeadGatherScatterCheck<B> {
             ],
             [(head_dim + 15) / 16, (seq_len + 15) / 16, 1],
         );
-
         g2.execute();
         let analytic: Vec<f32> = analytic_grad.to_cpu();
 
         let eps = 1e-2f32;
         let mut max_grad_diff = 0.0f32;
         let test_indices: Vec<usize> = (0..(seq_len * dim) as usize).step_by(37).collect();
-
         for &idx in &test_indices {
             let row = idx as u32 / dim;
             let col = idx as u32 % dim;
             let in_head = col >= *head_offset0 && col < *head_offset0 + head_dim;
 
             let mut xp = input_data.clone();
-
             xp[idx] += eps;
-
             let fp: f32 = if in_head {
                 (0..head_dim)
                     .map(|d| xp[(row * dim + head_offset0 + d) as usize])
@@ -157,12 +151,12 @@ impl<B: Backend> DiagnosticCheck for HeadGatherScatterCheck<B> {
 
             max_grad_diff = max_grad_diff.max(diff);
         }
-
         let grad_pass = max_grad_diff < 1e-3;
-        println!(
-            "CHECK 3: HeadGather/HeadScatter backward, max numeric-vs-analytic diff = {max_grad_diff:.6} -> {}",
+
+        self.log(&format!(
+            "backward, max numeric-vs-analytic diff = {max_grad_diff:.6} -> {}",
             if grad_pass { "PASS" } else { "FAIL" }
-        );
+        ));
 
         roundtrip_pass && grad_pass
     }
@@ -231,20 +225,16 @@ impl<B: Backend> DiagnosticCheck for RmsNormBackwardCheck<B> {
         for &idx in &x_indices {
             let row_idx = idx / dim as usize;
             let row_start = row_idx * dim as usize;
-
             let row = &x_data[row_start..row_start + dim as usize];
             let local_idx = idx - row_start;
 
             let mut rp = row.to_vec();
             rp[local_idx] += eps as f32;
-
             let fp = cpu_rmsnorm_row_sum_f64(&rp, &w_data, dim as usize);
             let mut rm = row.to_vec();
             rm[local_idx] -= eps as f32;
-
             let fm = cpu_rmsnorm_row_sum_f64(&rm, &w_data, dim as usize);
             let numeric = (fp - fm) / (2.0 * eps);
-
             max_diff = max_diff.max((numeric - got_grad_x[idx] as f64).abs());
         }
 
@@ -263,10 +253,10 @@ impl<B: Backend> DiagnosticCheck for RmsNormBackwardCheck<B> {
         }
 
         let pass = max_diff < 1e-3;
-        println!(
-            "CHECK 4: RMSNorm backward, max numeric-vs-analytic diff = {max_diff:.6} -> {}",
+        self.log(&format!(
+            "max numeric-vs-analytic diff = {max_diff:.6} -> {}",
             if pass { "PASS" } else { "FAIL" }
-        );
+        ));
         pass
     }
 }
@@ -300,22 +290,21 @@ impl<B: Backend> DiagnosticCheck for CrossEntropyCheck<B> {
         let expected = (vocab_size as f32).ln();
         let diff = (got - expected).abs();
         let pass = diff < 0.01;
-        println!(
-            "CHECK 7: cross-entropy on all-zero logits, expected ln({vocab_size}) = {expected:.4}, got = {got:.4}, diff = {diff:.4} -> {}",
+        self.log(&format!(
+            "all-zero logits, expected ln({vocab_size}) = {expected:.4}, got = {got:.4}, diff = {diff:.4} -> {}",
             if pass { "PASS" } else { "FAIL" }
-        );
+        ));
         pass
     }
 }
 
 fn run_diagnostics<B: Backend>(ctx: Arc<B>) {
     println!("\n================= AKASHA KERNEL DIAGNOSTICS =================\n");
-    let checks: Vec<Box<dyn DiagnosticCheck>> = vec![
-        Box::new(HeadGatherScatterCheck { ctx: ctx.clone() }),
-        Box::new(RmsNormBackwardCheck { ctx: ctx.clone() }),
-        Box::new(CrossEntropyCheck { ctx }),
-    ];
-    run_all(&checks);
+    DiagnosticSuite::new()
+        .add(Box::new(HeadGatherScatterCheck { ctx: ctx.clone() }))
+        .add(Box::new(RmsNormBackwardCheck { ctx: ctx.clone() }))
+        .add(Box::new(CrossEntropyCheck { ctx }))
+        .run();
 }
 
 fn main() {
