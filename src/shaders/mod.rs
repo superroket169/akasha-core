@@ -8,7 +8,7 @@ use wilupgu::{CudaShape, CudaSpec, MetaField};
 pub static EMBEDDING: Shader = Shader {
     name: "Embedding",
     layout: &[Input, Input, Output, Meta],
-    wgpu: Some(include_str!("fwd/embedding.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/embedding.wgsl")),
     cpu: Some(cpu::embedding),
     cuda: Some(CudaSpec {
         src: cuda::EMBEDDING,
@@ -24,7 +24,7 @@ pub static EMBEDDING: Shader = Shader {
 pub static EMBEDDING_BWD: Shader = Shader {
     name: "EmbeddingBwd",
     layout: &[Input, Input, Accumulate, Meta],
-    wgpu: Some(include_str!("bwd/embedding_bwd.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/embedding_bwd.wgsl")),
     cpu: Some(cpu::embedding_bwd),
     cuda: Some(CudaSpec {
         src: cuda::EMBEDDING_BWD,
@@ -40,7 +40,7 @@ pub static EMBEDDING_BWD: Shader = Shader {
 pub static SILU: Shader = Shader {
     name: "SiLU",
     layout: &[InOut],
-    wgpu: Some(include_str!("fwd/silu.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/silu.wgsl")),
     cpu: Some(cpu::silu),
     cuda: Some(CudaSpec {
         src: cuda::SILU,
@@ -56,7 +56,7 @@ pub static SILU: Shader = Shader {
 pub static SILU_OUT: Shader = Shader {
     name: "SiLUOut",
     layout: &[Input, Output],
-    wgpu: Some(include_str!("fwd/silu_out.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/silu_out.wgsl")),
     cpu: Some(cpu::silu_out),
     cuda: Some(CudaSpec {
         src: cuda::SILU_OUT,
@@ -72,7 +72,7 @@ pub static SILU_OUT: Shader = Shader {
 pub static ADD: Shader = Shader {
     name: "Add",
     layout: &[Input, Input, Output],
-    wgpu: Some(include_str!("fwd/add.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/add.wgsl")),
     cpu: Some(cpu::add),
     cuda: Some(CudaSpec {
         src: cuda::ADD,
@@ -90,7 +90,7 @@ pub static ADD: Shader = Shader {
 pub static SILU_BWD: Shader = Shader {
     name: "SiLUBwd",
     layout: &[Input, Input, Output],
-    wgpu: Some(include_str!("bwd/silu_bwd.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/silu_bwd.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::SILU_BWD,
@@ -106,7 +106,7 @@ pub static SILU_BWD: Shader = Shader {
 pub static ROPE: Shader = Shader {
     name: "RoPE",
     layout: &[InOut, Meta],
-    wgpu: Some(include_str!("fwd/rope.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/rope.wgsl")),
     cpu: Some(cpu::rope),
     cuda: Some(CudaSpec {
         src: cuda::ROPE,
@@ -123,7 +123,7 @@ pub static ROPE: Shader = Shader {
 pub static ROPE_BWD: Shader = Shader {
     name: "RoPEBwd",
     layout: &[InOut, Meta],
-    wgpu: Some(include_str!("bwd/rope_bwd.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/rope_bwd.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::ROPE_BWD,
@@ -139,7 +139,7 @@ pub static ROPE_BWD: Shader = Shader {
 pub static ROPE_QK: Shader = Shader {
     name: "RopeQK",
     layout: &[InOut, InOut, Meta],
-    wgpu: Some(include_str!("fwd/rope_qk.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/rope_qk.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::ROPE_QK,
@@ -160,7 +160,7 @@ pub static ROPE_QK: Shader = Shader {
 pub static ROPE_BWD_QK: Shader = Shader {
     name: "RopeBwdQK",
     layout: &[InOut, InOut, Meta],
-    wgpu: Some(include_str!("bwd/rope_bwd_qk.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/rope_bwd_qk.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::ROPE_BWD_QK,
@@ -181,7 +181,7 @@ pub static ROPE_BWD_QK: Shader = Shader {
 pub static ROPE_OFFSET: Shader = Shader {
     name: "RoPEOffset",
     layout: &[InOut, Meta],
-    wgpu: Some(include_str!("fwd/rope_offset.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/rope_offset.wgsl")),
     cpu: Some(cpu::rope_offset),
     cuda: Some(CudaSpec {
         src: cuda::ROPE_OFFSET,
@@ -202,7 +202,7 @@ pub static ROPE_OFFSET: Shader = Shader {
 pub static ATTN_QK_CACHED: Shader = Shader {
     name: "AttnQkCached",
     layout: &[Input, Input, Output, Meta],
-    wgpu: Some(include_str!("fwd/attn_qk_cached.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/attn_qk_cached.wgsl")),
     cpu: Some(cpu::attn_qk_cached),
     cuda: Some(CudaSpec {
         src: cuda::ATTN_QK_CACHED,
@@ -218,7 +218,7 @@ pub static ATTN_QK_CACHED: Shader = Shader {
 pub static ATTN_AV_CACHED: Shader = Shader {
     name: "AttnAvCached",
     layout: &[Input, Input, Output, Meta],
-    wgpu: Some(include_str!("fwd/attn_av_cached.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/attn_av_cached.wgsl")),
     cpu: Some(cpu::attn_av_cached),
     cuda: Some(CudaSpec {
         src: cuda::ATTN_AV_CACHED,
@@ -234,7 +234,7 @@ pub static ATTN_AV_CACHED: Shader = Shader {
 pub static SOFTMAX_RECT: Shader = Shader {
     name: "SoftmaxRect",
     layout: &[InOut, Meta],
-    wgpu: Some(include_str!("fwd/softmax_rect.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/softmax_rect.wgsl")),
     cpu: Some(cpu::softmax_rect),
     cuda: Some(CudaSpec {
         src: cuda::SOFTMAX_RECT,
@@ -250,7 +250,7 @@ pub static SOFTMAX_RECT: Shader = Shader {
 pub static RMSNORM: Shader = Shader {
     name: "RMSNorm",
     layout: &[Input, Input, Output, Meta],
-    wgpu: Some(include_str!("fwd/rmsnorm.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/rmsnorm.wgsl")),
     cpu: Some(cpu::rmsnorm),
     cuda: Some(CudaSpec {
         src: cuda::RMSNORM,
@@ -267,7 +267,7 @@ pub static RMSNORM: Shader = Shader {
 pub static RMSNORM_BWD: Shader = Shader {
     name: "RMSNormBwd",
     layout: &[Input, Input, Input, Output, Output, Meta],
-    wgpu: Some(include_str!("bwd/rmsnorm_bwd.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/rmsnorm_bwd.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::RMSNORM_BWD,
@@ -284,7 +284,7 @@ pub static RMSNORM_BWD: Shader = Shader {
 pub static RMSNORM_WEIGHT_BWD: Shader = Shader {
     name: "RMSNormWeightBwd",
     layout: &[Input, Input, Input, Accumulate, Meta],
-    wgpu: Some(include_str!("bwd/rmsnorm_weight_bwd.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/rmsnorm_weight_bwd.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::RMSNORM_WEIGHT_BWD,
@@ -301,7 +301,7 @@ pub static RMSNORM_WEIGHT_BWD: Shader = Shader {
 pub static CROSS_ENTROPY: Shader = Shader {
     name: "CrossEntropy",
     layout: &[InOut, Input, Output, Meta],
-    wgpu: Some(include_str!("fwd/cross_entropy.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/cross_entropy.wgsl")),
     cpu: Some(cpu::cross_entropy),
     cuda: Some(CudaSpec {
         src: cuda::CROSS_ENTROPY,
@@ -318,7 +318,7 @@ pub static CROSS_ENTROPY: Shader = Shader {
 pub static CROSS_ENTROPY_BWD: Shader = Shader {
     name: "CrossEntropyBwd",
     layout: &[InOut, Input, Input, Meta],
-    wgpu: Some(include_str!("bwd/cross_entropy_bwd.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/cross_entropy_bwd.wgsl")),
     cpu: Some(cpu::cross_entropy_bwd),
     cuda: Some(CudaSpec {
         src: cuda::CROSS_ENTROPY_BWD,
@@ -334,7 +334,7 @@ pub static CROSS_ENTROPY_BWD: Shader = Shader {
 pub static HEAD_GATHER: Shader = Shader {
     name: "HeadGather",
     layout: &[Input, Output, Meta],
-    wgpu: Some(include_str!("head_gather.wgsl")),
+    wgpu: Some(include_str!("wgsl/head_gather.wgsl")),
     cpu: Some(cpu::head_gather),
     cuda: Some(CudaSpec {
         src: cuda::HEAD_GATHER,
@@ -355,7 +355,7 @@ pub static HEAD_GATHER: Shader = Shader {
 pub static HEAD_SCATTER: Shader = Shader {
     name: "HeadScatter",
     layout: &[Input, Output, Meta],
-    wgpu: Some(include_str!("head_scatter.wgsl")),
+    wgpu: Some(include_str!("wgsl/head_scatter.wgsl")),
     cpu: Some(cpu::head_scatter),
     cuda: Some(CudaSpec {
         src: cuda::HEAD_SCATTER,
@@ -376,7 +376,7 @@ pub static HEAD_SCATTER: Shader = Shader {
 pub static QKV_SPLIT: Shader = Shader {
     name: "QkvSplit",
     layout: &[Input, Output, Output, Output, Meta],
-    wgpu: Some(include_str!("fwd/qkv_split.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/qkv_split.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::QKV_SPLIT,
@@ -397,7 +397,7 @@ pub static QKV_SPLIT: Shader = Shader {
 pub static QKV_SCATTER: Shader = Shader {
     name: "QkvScatter",
     layout: &[Input, Input, Input, Output, Meta],
-    wgpu: Some(include_str!("bwd/qkv_scatter.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/qkv_scatter.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::QKV_SCATTER,
@@ -418,7 +418,7 @@ pub static QKV_SCATTER: Shader = Shader {
 pub static FLASH_ATTENTION: Shader = Shader {
     name: "FlashAttention",
     layout: &[Input, Input, Input, Output, Output, Meta],
-    wgpu: Some(include_str!("fwd/flash_attention.wgsl")),
+    wgpu: Some(include_str!("wgsl/fwd/flash_attention.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::FLASH_ATTENTION,
@@ -440,7 +440,7 @@ pub static FLASH_ATTENTION: Shader = Shader {
 pub static FLASH_ATTENTION_BWD_DQ: Shader = Shader {
     name: "FlashAttentionBwdDQ",
     layout: &[Input, Input, Input, Input, Input, Input, Output, Meta],
-    wgpu: Some(include_str!("bwd/flash_attention_bwd_dq.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/flash_attention_bwd_dq.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::FLASH_ATTENTION_BWD_DQ,
@@ -464,7 +464,7 @@ pub static FLASH_ATTENTION_BWD_DKDV: Shader = Shader {
     layout: &[
         Input, Input, Input, Input, Input, Input, Output, Output, Meta,
     ],
-    wgpu: Some(include_str!("bwd/flash_attention_bwd_dkdv.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/flash_attention_bwd_dkdv.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::FLASH_ATTENTION_BWD_DKDV,
@@ -486,7 +486,7 @@ pub static FLASH_ATTENTION_BWD_DKDV: Shader = Shader {
 pub static CACHE_WRITE: Shader = Shader {
     name: "CacheWrite",
     layout: &[Input, InOut, Meta],
-    wgpu: Some(include_str!("cache_write.wgsl")),
+    wgpu: Some(include_str!("wgsl/cache_write.wgsl")),
     cpu: Some(cpu::cache_write),
     cuda: Some(CudaSpec {
         src: cuda::CACHE_WRITE,
@@ -502,7 +502,7 @@ pub static CACHE_WRITE: Shader = Shader {
 pub static GRAD_SUMSQ: Shader = Shader {
     name: "GradSumSq",
     layout: &[Input, Output, Meta],
-    wgpu: Some(include_str!("bwd/grad_sumsq.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/grad_sumsq.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::GRAD_SUMSQ,
@@ -518,7 +518,7 @@ pub static GRAD_SUMSQ: Shader = Shader {
 pub static GRAD_NORM_SCALE: Shader = Shader {
     name: "GradNormScale",
     layout: &[Input, Output, Meta],
-    wgpu: Some(include_str!("bwd/grad_norm_scale.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/grad_norm_scale.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::GRAD_NORM_SCALE,
@@ -534,7 +534,7 @@ pub static GRAD_NORM_SCALE: Shader = Shader {
 pub static GRAD_SCALE: Shader = Shader {
     name: "GradScale",
     layout: &[InOut, Input, Meta],
-    wgpu: Some(include_str!("bwd/grad_scale.wgsl")),
+    wgpu: Some(include_str!("wgsl/bwd/grad_scale.wgsl")),
     cpu: None,
     cuda: Some(CudaSpec {
         src: cuda::GRAD_SCALE,
