@@ -38,12 +38,37 @@ pub struct BlockWeights<B: Backend> {
     pub ffn_down: Arc<Tensor<B>>,
 }
 
+impl<B: Backend> Clone for BlockWeights<B> {
+    fn clone(&self) -> Self {
+        Self {
+            norm_1: self.norm_1.clone(),
+            qkv_proj: self.qkv_proj.clone(),
+            out_proj: self.out_proj.clone(),
+            norm_2: self.norm_2.clone(),
+            ffn_up: self.ffn_up.clone(),
+            ffn_down: self.ffn_down.clone(),
+        }
+    }
+}
+
 pub struct ModelWeights<B: Backend> {
     pub cfg: ModelConfig,
     pub embedding: Arc<Tensor<B>>, // [vocab_size, dim]
     pub blocks: Vec<BlockWeights<B>>,
     pub final_norm: Arc<Tensor<B>>,
     pub lm_head: Arc<Tensor<B>>, // untied from embedding
+}
+
+impl<B: Backend> Clone for ModelWeights<B> {
+    fn clone(&self) -> Self {
+        Self {
+            cfg: self.cfg,
+            embedding: self.embedding.clone(),
+            blocks: self.blocks.clone(),
+            final_norm: self.final_norm.clone(),
+            lm_head: self.lm_head.clone(),
+        }
+    }
 }
 
 fn interleave_qkv(dim: u32, q_w: &[Real], k_w: &[Real], v_w: &[Real]) -> Vec<Real> {
