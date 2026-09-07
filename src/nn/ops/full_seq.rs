@@ -4,7 +4,7 @@ use super::super::kernels::meta::{
     EmbeddingMeta, FlashAttnMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
 };
 use super::super::kernels::{FullSeqPhase, FwdPhase, GraphBuilder, Train};
-use super::super::tape::{Backward, Checkpointable, Forward, Leaf, zeros, zeros_like};
+use super::super::tape::{Backward, Checkpointable, Forward, Leaf, check_refs, zeros, zeros_like};
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
@@ -139,7 +139,13 @@ impl<B: Backend> Backward<B> for LinearOp<B> {
     }
 }
 
-impl<B: Backend> Checkpointable<B> for LinearOp<B> {}
+impl<B: Backend> Checkpointable<B> for LinearOp<B> {
+    fn free_activations(&mut self) {
+        if let Some(x) = self.saved_input.take() {
+            check_refs("LinearOp.saved_input", &x);
+        }
+    }
+}
 
 pub(crate) struct RmsNormOp<B: Backend> {
     weight: Arc<Tensor<B>>,
@@ -209,7 +215,13 @@ impl<B: Backend> Backward<B> for RmsNormOp<B> {
     }
 }
 
-impl<B: Backend> Checkpointable<B> for RmsNormOp<B> {}
+impl<B: Backend> Checkpointable<B> for RmsNormOp<B> {
+    fn free_activations(&mut self) {
+        if let Some(x) = self.saved_input.take() {
+            check_refs("RmsNormOp.saved_input", &x);
+        }
+    }
+}
 
 pub(crate) struct SiluOp<B: Backend> {
     out: Arc<Tensor<B>>,
@@ -257,7 +269,13 @@ impl<B: Backend> Backward<B> for SiluOp<B> {
     }
 }
 
-impl<B: Backend> Checkpointable<B> for SiluOp<B> {}
+impl<B: Backend> Checkpointable<B> for SiluOp<B> {
+    fn free_activations(&mut self) {
+        if let Some(x) = self.saved_input.take() {
+            check_refs("SiluOp.saved_input", &x);
+        }
+    }
+}
 
 pub(crate) struct AddOp<B: Backend> {
     out: Arc<Tensor<B>>,
@@ -501,7 +519,15 @@ impl<B: Backend> Backward<B> for AttentionOp<B> {
     }
 }
 
-impl<B: Backend> Checkpointable<B> for AttentionOp<B> {}
+impl<B: Backend> Checkpointable<B> for AttentionOp<B> {
+    fn free_activations(&mut self) {
+        if let Some((_, _, _, bufs)) = self.saved.take() {
+            for b in &bufs {
+                check_refs("AttentionOp.saved.l_cache", &b.l_cache);
+            }
+        }
+    }
+}
 
 pub(crate) enum TrainOp<B: Backend> {
     Embedding(EmbeddingOp<B>),

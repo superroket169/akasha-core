@@ -119,6 +119,65 @@ mod full_chain_gradcheck {
 }
 
 #[cfg(test)]
+mod streaming_checkpoint_parity {
+    use super::*;
+    use wilupgu::WgpuBackend;
+
+    // streaming+grad_checkpoint must produce the exact same loss and
+    // gradients as the default captured path for one identical step --
+    // checkpointing only changes *when* activations get recomputed, never
+    // the values, so this should match tightly (not a numerical gradcheck's
+    // finite-difference tolerance).
+    #[test]
+    fn matches_captured_mode() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
+        let seq_len = cfg.seq_len;
+
+        let tokens: Vec<u32> = (0..seq_len).map(|i| (i * 7 + 3) % cfg.vocab_size).collect();
+        let targets: Vec<u32> = (0..seq_len).map(|i| (i * 5 + 1) % cfg.vocab_size).collect();
+
+        let weights_a = ModelWeights::random(ctx.clone(), &cfg);
+        let mut model_a =
+            Model::for_training(ctx.clone(), weights_a, cfg, TrainConfig::hall1_pretrain());
+        model_a.zero_grad();
+        let loss_a = model_a.train_step(&tokens, &targets);
+        ctx.synchronize();
+        let flat_weights = model_a.to_flat_weights();
+        let grads_a: Vec<Vec<Real>> = model_a
+            .params()
+            .iter()
+            .map(|(_, g, _)| g.to_cpu())
+            .collect();
+
+        let mut train_cfg_b = TrainConfig::hall1_pretrain();
+        train_cfg_b.run.streaming = true;
+        train_cfg_b.run.grad_checkpoint = true;
+        let weights_b = ModelWeights::random(ctx.clone(), &cfg); // different init on purpose
+        let mut model_b = Model::for_training(ctx.clone(), weights_b, cfg, train_cfg_b);
+        model_b.set_flat_weights(&flat_weights); // now bit-identical to model_a's
+        model_b.zero_grad();
+        let loss_b = model_b.train_step(&tokens, &targets);
+        ctx.synchronize();
+
+        assert!(
+            (loss_a - loss_b).abs() < 1e-4,
+            "streaming+grad_checkpoint loss diverges from captured: {loss_a} vs {loss_b}"
+        );
+
+        for (i, (_, g, _)) in model_b.params().iter().enumerate() {
+            let g_b = g.to_cpu();
+            for (j, (x, y)) in grads_a[i].iter().zip(g_b.iter()).enumerate() {
+                assert!(
+                    (x - y).abs() < 1e-4,
+                    "param {i} grad[{j}]: captured={x} streaming+checkpoint={y}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
 mod checkpoint_roundtrip {
     use super::*;
     use wilupgu::WgpuBackend;
