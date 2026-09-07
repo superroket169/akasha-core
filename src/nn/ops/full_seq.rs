@@ -4,7 +4,7 @@ use super::super::kernels::meta::{
     EmbeddingMeta, FlashAttnMeta, HeadMoveMeta, KernelMeta, MatMulMeta, NormMeta, RopeMeta,
 };
 use super::super::kernels::{FullSeqPhase, FwdPhase, GraphBuilder, Train};
-use super::super::tape::{Backward, Forward, Leaf, zeros, zeros_like};
+use super::super::tape::{Backward, Checkpointable, Forward, Leaf, zeros, zeros_like};
 use std::sync::Arc;
 use wilupgu::{Backend, Tensor};
 
@@ -68,6 +68,8 @@ impl<B: Backend> Backward<B> for EmbeddingOp<B> {
         Some((&self.table, &self.grad_table, false))
     }
 }
+
+impl<B: Backend> Checkpointable<B> for EmbeddingOp<B> {}
 
 pub(crate) struct LinearOp<B: Backend> {
     weight: Arc<Tensor<B>>,
@@ -137,6 +139,8 @@ impl<B: Backend> Backward<B> for LinearOp<B> {
     }
 }
 
+impl<B: Backend> Checkpointable<B> for LinearOp<B> {}
+
 pub(crate) struct RmsNormOp<B: Backend> {
     weight: Arc<Tensor<B>>,
     grad_weight: Arc<Tensor<B>>,
@@ -205,6 +209,8 @@ impl<B: Backend> Backward<B> for RmsNormOp<B> {
     }
 }
 
+impl<B: Backend> Checkpointable<B> for RmsNormOp<B> {}
+
 pub(crate) struct SiluOp<B: Backend> {
     out: Arc<Tensor<B>>,
     grad_in: Arc<Tensor<B>>,
@@ -251,6 +257,8 @@ impl<B: Backend> Backward<B> for SiluOp<B> {
     }
 }
 
+impl<B: Backend> Checkpointable<B> for SiluOp<B> {}
+
 pub(crate) struct AddOp<B: Backend> {
     out: Arc<Tensor<B>>,
     len: u32,
@@ -285,6 +293,8 @@ impl<B: Backend> Backward<B> for AddOp<B> {
         vec![grad_outputs[0].clone(), grad_outputs[0].clone()]
     }
 }
+
+impl<B: Backend> Checkpointable<B> for AddOp<B> {}
 
 // Decode uses RopeOffsetOp (chain.rs) instead -- position must be absolute there, not relative to the dispatch.
 pub(crate) struct RopeQkOp {
@@ -339,6 +349,8 @@ impl<B: Backend> Backward<B> for RopeQkOp {
     }
 }
 
+impl<B: Backend> Checkpointable<B> for RopeQkOp {}
+
 // Decode uses HeadGatherOp (chain.rs), unfused, instead.
 pub(crate) struct QkvSplitOp<B: Backend> {
     q: Arc<Tensor<B>>,
@@ -388,6 +400,8 @@ impl<B: Backend> Backward<B> for QkvSplitOp<B> {
         vec![self.grad_qkv.clone()]
     }
 }
+
+impl<B: Backend> Checkpointable<B> for QkvSplitOp<B> {}
 
 // Decode uses CachedAttentionOp (chain.rs) instead -- different kernel, not phase-generic.
 pub(crate) struct AttentionOp<B: Backend> {
@@ -486,6 +500,8 @@ impl<B: Backend> Backward<B> for AttentionOp<B> {
         ]
     }
 }
+
+impl<B: Backend> Checkpointable<B> for AttentionOp<B> {}
 
 pub(crate) enum TrainOp<B: Backend> {
     Embedding(EmbeddingOp<B>),
