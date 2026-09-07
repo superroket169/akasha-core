@@ -3,9 +3,9 @@ use std::sync::Arc;
 use akasha_core::config::*;
 use akasha_core::data::Dataset;
 use akasha_core::nn::checkpoint;
-use akasha_core::nn::{Model, ModelWeights, Trainer};
+use akasha_core::nn::{Model, ModelWeights};
 use akasha_core::tokenizer::AkashaTokenizer;
-use wilupgu::{Backend, Tensor, WgpuBackend};
+use wilupgu::{Backend, WgpuBackend};
 
 fn find_latest_checkpoint(dir: &str) -> Option<(String, usize)> {
     std::fs::read_dir(dir)
@@ -80,26 +80,20 @@ fn eval_windows(
     })
 }
 
-fn eval_loss<B: Backend>(model: &Trainer<B>, set: &EvalSet) -> f32 {
-    let rows = model.cross_entropy.seq_len as usize;
+fn eval_loss<B: Backend>(model: &Model<B>, set: &EvalSet) -> f32 {
+    let rows = (model.weights().cfg.batch_size * model.weights().cfg.seq_len) as usize;
     let passes = set.inputs.len() / rows;
     let mut total = 0.0;
 
     for p in 0..passes {
         let span = p * rows..(p + 1) * rows;
-        model.input_tokens.copy_from_cpu(&set.inputs[span.clone()]);
-        model
-            .cross_entropy
-            .target_tokens
-            .copy_from_cpu(&set.targets[span]);
-        model.forward_fused();
-        total += model.cross_entropy.loss();
+        total += model.eval_loss(&set.inputs[span.clone()], &set.targets[span]);
     }
 
     total / passes as f32
 }
 
-fn run_eval<B: Backend>(model: &Trainer<B>, set: &EvalSet, step: usize) {
+fn run_eval<B: Backend>(model: &Model<B>, set: &EvalSet, step: usize) {
     let loss = eval_loss(model, set);
     let ppl = loss.exp();
     println!(
@@ -188,12 +182,8 @@ fn run_training<B: Backend>(ctx: Arc<B>, model_cfg: ModelConfig, train_cfg: Trai
     println!("Dataset: {} tokens", dataset.token_count());
 
     let cfg = model_cfg.with_batch_size(train_cfg.batch_size as u32);
-    let weights = Arc::new(ModelWeights::random(ctx.clone(), &cfg));
-    let input_tokens = Arc::new(Tensor::init_from_cpu(
-        ctx.clone(),
-        &vec![0u32; (cfg.batch_size * cfg.seq_len) as usize],
-    ));
-    let model = Trainer::new(ctx, weights, &input_tokens, train_cfg);
+    let weights = ModelWeights::random(ctx.clone(), &cfg);
+    let mut model = Model::for_training(ctx, weights, cfg, train_cfg);
     println!(
         "Model ready - profile '{}', {} layers, batch {}",
         train_cfg.name, cfg.num_layers, cfg.batch_size
@@ -247,32 +237,37 @@ fn run_training<B: Backend>(ctx: Arc<B>, model_cfg: ModelConfig, train_cfg: Trai
     println!("{:>8} | {:>8} | {:>10}", "step", "loss", "lr");
     println!("{}", "-".repeat(35));
 
+    let accumulation_steps = train_cfg.accumulation_steps;
     for step in start_step..train_cfg.max_steps {
         let (inputs, targets) = dataset.random_batch(train_cfg.batch_size, &mut rng);
 
-        // cfg.batch_size handles the fused execute inside the model.
-        // The host-loop argument must strictly remain 1.
-        let loss = model.train_step(&inputs, &targets, 1, step, train_cfg.accumulation_steps);
+        if step % accumulation_steps == 0 {
+            model.zero_grad();
+        }
 
-        if let Some(l) = loss {
-            if l < best_loss {
-                best_loss = l;
-            }
+        let loss = model.train_step(&inputs, &targets);
 
-            if step % train_cfg.log_every == 0 {
-                let (_, lr) = model.optimizer.current_schedule();
-                println!("step {:6} | loss {:.4} | lr {:.2e}", step, l, lr);
-                log_train_step(step, l, lr);
-            }
+        if (step + 1) % accumulation_steps == 0 {
+            model.optimizer_step();
+        }
 
-            if l.is_nan() || l.is_infinite() {
-                eprintln!("ERROR: Loss is NaN at step {}. Stopping.", step);
-                eprintln!(
-                    "Try reducing lr_max (see TrainConfig::{}) and restart.",
-                    train_cfg.name
-                );
-                std::process::exit(1);
-            }
+        if loss < best_loss {
+            best_loss = loss;
+        }
+
+        if step % train_cfg.log_every == 0 {
+            let (_, lr) = model.current_lr();
+            println!("step {:6} | loss {:.4} | lr {:.2e}", step, loss, lr);
+            log_train_step(step, loss, lr);
+        }
+
+        if loss.is_nan() || loss.is_infinite() {
+            eprintln!("ERROR: Loss is NaN at step {}. Stopping.", step);
+            eprintln!(
+                "Try reducing lr_max (see TrainConfig::{}) and restart.",
+                train_cfg.name
+            );
+            std::process::exit(1);
         }
 
         if step % train_cfg.save_every == 0 && step > 0 {
