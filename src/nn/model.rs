@@ -1,4 +1,4 @@
-use super::architecture::{build_block, build_decode_forward, build_prefill_forward};
+use super::arch::{build_block, build_decode_forward, build_prefill_forward};
 use super::checkpoint;
 use super::grad_clip::{AnyGradClip, GlobalNormClip};
 use super::kernels::GraphBuilder;
@@ -9,7 +9,7 @@ use super::ops::full_seq::{EmbeddingOp, LinearOp, RmsNormOp, TrainOp};
 use super::sampling;
 use super::tape::{NodeId, Tape, zeros};
 use super::weights::ModelWeights;
-use crate::AkashaError;
+use crate::ModelError;
 use crate::Real;
 use crate::config::{GradClipKind, ModelConfig, OptimizerKind, TrainConfig};
 use crate::optim::{AdamW, AdamWSchedule, AnyOptimizer};
@@ -232,13 +232,9 @@ impl<B: Backend> Model<B> {
         }
     }
 
-    /// Runs prefill for `prompt` against this session's KV cache and returns
-    /// the logits (vocab-sized) for the last prompt position. Leaves `pos`
-    /// bookkeeping to the caller -- the first decode step after this is at
-    /// `pos == prompt.len()`.
-    pub fn prefill_logits(&mut self, prompt: &[u32]) -> Result<Vec<Real>, AkashaError> {
+    pub fn prefill_logits(&mut self, prompt: &[u32]) -> Result<Vec<Real>, ModelError> {
         if prompt.is_empty() {
-            return Err(AkashaError::EmptyPrompt);
+            return Err(ModelError::EmptyPrompt);
         }
 
         let cfg = self.weights.cfg;
@@ -250,7 +246,7 @@ impl<B: Backend> Model<B> {
 
         let prompt_len = prompt.len() as u32;
         if prompt_len > chat.max_context_len {
-            return Err(AkashaError::PromptTooLong {
+            return Err(ModelError::PromptTooLong {
                 len: prompt_len,
                 max: chat.max_context_len,
             });
@@ -275,16 +271,13 @@ impl<B: Backend> Model<B> {
         Ok(all_logits[(prompt_len as usize - 1) * vocab..prompt_len as usize * vocab].to_vec())
     }
 
-    /// Runs one decode step at absolute position `pos` and returns its
-    /// logits (vocab-sized). `pos` must be the count of tokens already
-    /// written into the cache (prompt + decoded so far).
-    pub fn decode_step_logits(&mut self, token: u32, pos: u32) -> Result<Vec<Real>, AkashaError> {
+    pub fn decode_step_logits(&mut self, token: u32, pos: u32) -> Result<Vec<Real>, ModelError> {
         let chat = self
             .chat
             .as_mut()
             .expect("decode_step_logits called on a training-only Model");
         if pos >= chat.max_context_len {
-            return Err(AkashaError::ContextFull {
+            return Err(ModelError::ContextFull {
                 max: chat.max_context_len,
             });
         }
@@ -294,8 +287,6 @@ impl<B: Backend> Model<B> {
         Ok(chat.decode.tape.output(chat.decode.logits_id).to_cpu())
     }
 
-    /// Zeroes the KV cache so the next `prefill_logits` call starts a fresh
-    /// context instead of appending to whatever was decoded before.
     pub fn reset_cache(&mut self) {
         let chat = self
             .chat
@@ -315,7 +306,7 @@ impl<B: Backend> Model<B> {
         top_k: usize,
         top_p: f32,
         repetition_penalty: f32,
-    ) -> Result<Vec<u32>, AkashaError> {
+    ) -> Result<Vec<u32>, ModelError> {
         let last = self.prefill_logits(prompt)?;
         let cfg = self.weights.cfg;
         let max_context_len = self.chat.as_ref().unwrap().max_context_len;
@@ -363,18 +354,51 @@ impl<B: Backend> Model<B> {
         loss
     }
 
-    pub fn zero_grad(&self) {
+    pub fn eval_loss(&self, tokens: &[u32], targets: &[u32]) -> Real {
         let t = self
             .train
             .as_ref()
-            .expect("zero_grad called on a chat-only Model");
-        for (_, grad, _) in t
-            .head
+            .expect("eval_loss called on a chat-only Model");
+        t.tokens.copy_from_cpu(tokens);
+        t.loss.set_targets(targets);
+        t.fwd_graph.execute_captured();
+        t.loss.loss()
+    }
+
+    pub fn current_lr(&self) -> (u32, Real) {
+        let t = self
+            .train
+            .as_ref()
+            .expect("current_lr called on a chat-only Model");
+        t.optimizer.current_schedule()
+    }
+
+    pub fn params(&self) -> Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>, bool)> {
+        let t = self
+            .train
+            .as_ref()
+            .expect("params called on a chat-only Model");
+        t.head
             .params()
             .into_iter()
-            .chain(t.blocks.iter().flat_map(|b| b.tape.params()))
-            .chain(t.tail.params())
-        {
+            .map(|(w, g, d)| (w.clone(), g.clone(), d))
+            .chain(
+                t.blocks
+                    .iter()
+                    .flat_map(|b| b.tape.params())
+                    .map(|(w, g, d)| (w.clone(), g.clone(), d)),
+            )
+            .chain(
+                t.tail
+                    .params()
+                    .into_iter()
+                    .map(|(w, g, d)| (w.clone(), g.clone(), d)),
+            )
+            .collect()
+    }
+
+    pub fn zero_grad(&self) {
+        for (_, grad, _) in self.params() {
             grad.copy_from_cpu(&vec![
                 0.0 as Real;
                 (grad.size / std::mem::size_of::<Real>() as u64)

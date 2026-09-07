@@ -1,6 +1,6 @@
 use super::model::Model;
 use super::sampling;
-use crate::AkashaError;
+use crate::ModelError;
 use wilupgu::Backend;
 
 pub struct ChatSession<B: Backend> {
@@ -32,9 +32,9 @@ impl<B: Backend> ChatSession<B> {
         top_k: usize,
         top_p: f32,
         repetition_penalty: f32,
-    ) -> Result<u32, AkashaError> {
+    ) -> Result<u32, ModelError> {
         if self.pos != 0 {
-            return Err(AkashaError::CacheNotEmpty { cur_len: self.pos });
+            return Err(ModelError::CacheNotEmpty { cur_len: self.pos });
         }
         let logits = self.model.prefill_logits(prompt)?;
         self.seen = prompt.to_vec();
@@ -60,7 +60,7 @@ impl<B: Backend> ChatSession<B> {
         top_k: usize,
         top_p: f32,
         repetition_penalty: f32,
-    ) -> Result<Option<u32>, AkashaError> {
+    ) -> Result<Option<u32>, ModelError> {
         if self.finished || self.pos >= self.model.max_context_len() {
             return Ok(None);
         }

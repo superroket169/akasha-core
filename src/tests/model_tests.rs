@@ -248,10 +248,9 @@ mod flat_weights_roundtrip {
     }
 }
 
-/// Proves the new Tape/Model system accumulates a batch_size=N forward+
-/// backward pass identically to N sequential batch_size=1 passes -- the
-/// same row_offset-based design train.rs's Trainer already proved, now
-/// exercised through Model instead.
+/// Proves the Tape/Model system accumulates a batch_size=N forward+backward
+/// pass identically to N sequential batch_size=1 passes (the row_offset-based
+/// real-batching design).
 #[cfg(test)]
 mod batching_validation {
     use super::*;
@@ -396,8 +395,7 @@ mod batching_validation {
     }
 }
 
-/// GPU grad clip vs. the host-side reference formula, through Model's
-/// AnyGradClip instead of Trainer's.
+/// GPU grad clip (Model's AnyGradClip) vs. the host-side reference formula.
 #[cfg(test)]
 mod grad_clip_validation {
     use super::*;

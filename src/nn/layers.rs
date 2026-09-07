@@ -1,6 +1,7 @@
-//! Trainer-only layer wrappers: each struct owns its grad buffers and its
-//! fused-into-`Trainer` forward/backward graphs. Inference never touches
-//! these -- it reads `ModelWeights` directly.
+//! Standalone single-op layer wrappers (each struct owns its grad buffers and
+//! its own forward/backward graph). Used only by `diagnose_kernels` now for
+//! isolated kernel-vs-CPU-reference checks -- `Model`/`Tape` reads
+//! `ModelWeights` directly and never touches these.
 
 use super::kernels;
 use super::kernels::GraphBuilder;
