@@ -140,6 +140,17 @@ pub(crate) struct NodeSpec<Node> {
     pub(crate) op: Node,
 }
 
+macro_rules! node {
+    ($name:literal <- $inputs:expr, $op:expr) => {
+        $crate::nn::tape::NodeSpec {
+            name: $name,
+            inputs: $inputs,
+            op: $op,
+        }
+    };
+}
+pub(crate) use node;
+
 impl<B: Backend, Node: Backward<B>> Tape<B, Node> {
     pub(crate) fn backward(
         &mut self,
