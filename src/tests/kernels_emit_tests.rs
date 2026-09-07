@@ -1,29 +1,10 @@
 use super::*;
+use crate::test_common::{max_abs_diff, rand_vec};
 
 #[cfg(test)]
 mod flash_attention_validation {
     use super::*;
     use wilupgu::{ComputeGraph, WgpuBackend};
-
-    fn rand_vec(n: usize, seed: u64) -> Vec<Real> {
-        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        (0..n)
-            .map(|_| {
-                state = state
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                let bits = ((state >> 40) as u32) & 0x00FF_FFFF;
-                (bits as f32 / 0x00FF_FFFF as f32) * 2.0 - 1.0
-            })
-            .collect()
-    }
-
-    fn max_abs_diff(a: &[Real], b: &[Real]) -> f32 {
-        a.iter()
-            .zip(b.iter())
-            .map(|(x, y)| (x - y).abs())
-            .fold(0.0, f32::max)
-    }
 
     #[allow(clippy::needless_range_loop)]
     fn cpu_attention(
@@ -210,26 +191,6 @@ mod kernel_fusion_validation {
     use super::*;
     use wilupgu::{ComputeGraph, WgpuBackend};
 
-    fn rand_vec(n: usize, seed: u64) -> Vec<Real> {
-        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        (0..n)
-            .map(|_| {
-                state = state
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                let bits = ((state >> 40) as u32) & 0x00FF_FFFF;
-                (bits as f32 / 0x00FF_FFFF as f32) * 2.0 - 1.0
-            })
-            .collect()
-    }
-
-    fn max_abs_diff(a: &[Real], b: &[Real]) -> f32 {
-        a.iter()
-            .zip(b.iter())
-            .map(|(x, y)| (x - y).abs())
-            .fold(0.0, f32::max)
-    }
-
     #[test]
     fn rope_qk_matches_two_rope_calls() {
         check_rope(8, 8, 4);
@@ -415,26 +376,6 @@ mod decode_kernel_validation {
     use super::*;
     use crate::nn::kernels::meta::AttnCachedMeta;
     use wilupgu::{ComputeGraph, WgpuBackend};
-
-    fn rand_vec(n: usize, seed: u64) -> Vec<Real> {
-        let mut state = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        (0..n)
-            .map(|_| {
-                state = state
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                let bits = ((state >> 40) as u32) & 0x00FF_FFFF;
-                (bits as f32 / 0x00FF_FFFF as f32) * 2.0 - 1.0
-            })
-            .collect()
-    }
-
-    fn max_abs_diff(a: &[Real], b: &[Real]) -> f32 {
-        a.iter()
-            .zip(b.iter())
-            .map(|(x, y)| (x - y).abs())
-            .fold(0.0, f32::max)
-    }
 
     #[test]
     fn cached_attention_matches_cpu_reference() {

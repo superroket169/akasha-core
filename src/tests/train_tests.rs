@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_common::max_abs_diff;
 
 #[cfg(test)]
 mod checkpoint_roundtrip {
@@ -350,13 +351,6 @@ mod batching_validation {
                 ((state >> 33) as u32) % vocab
             })
             .collect()
-    }
-
-    fn max_abs_diff(a: &[Real], b: &[Real]) -> f32 {
-        a.iter()
-            .zip(b.iter())
-            .map(|(x, y)| (x - y).abs())
-            .fold(0.0, f32::max)
     }
 
     #[test]
