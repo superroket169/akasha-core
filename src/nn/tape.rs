@@ -56,7 +56,6 @@ pub(crate) trait Advance {
 
 pub(crate) trait Checkpointable<B: Backend> {
     fn free_activations(&mut self) {}
-    fn realloc_activations(&mut self, _ctx: &Arc<B>) {}
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -118,6 +117,22 @@ impl<B: Backend, Node> Tape<B, Node> {
 
     pub(crate) fn output(&self, id: NodeId) -> Arc<Tensor<B>> {
         self.nodes[id.0].outputs[0].clone()
+    }
+
+    // re-runs forward for every existing node
+    pub(crate) fn redispatch<P: FwdPhase>(&mut self, gb: &mut GraphBuilder<'_, B, P>)
+    where
+        Node: Forward<B, P>,
+    {
+        for i in 0..self.nodes.len() {
+            let input_vals: Vec<Arc<Tensor<B>>> = self.nodes[i]
+                .inputs
+                .iter()
+                .map(|(id, slot)| self.nodes[id.0].outputs[*slot].clone())
+                .collect();
+            let outputs = self.nodes[i].op.forward(gb, &input_vals);
+            self.nodes[i].outputs = outputs;
+        }
     }
 
     pub(crate) fn extend<P: FwdPhase>(
@@ -233,12 +248,6 @@ impl<B: Backend, Node: Checkpointable<B>> Tape<B, Node> {
     pub(crate) fn free_activations(&mut self) {
         for node in &mut self.nodes {
             node.op.free_activations();
-        }
-    }
-
-    pub(crate) fn realloc_activations(&mut self, ctx: &Arc<B>) {
-        for node in &mut self.nodes {
-            node.op.realloc_activations(ctx);
         }
     }
 }
