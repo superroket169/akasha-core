@@ -118,6 +118,122 @@ mod full_chain_gradcheck {
     }
 }
 
+#[cfg(all(test, feature = "cpu"))]
+mod full_chain_gradcheck_cpu {
+    use super::*;
+    use wilupgu::CpuBackend;
+
+    fn loss_at(model: &mut Model<CpuBackend>, tokens: &[u32], targets: &[u32]) -> Real {
+        model.train_step(tokens, targets)
+    }
+
+    fn check_param(
+        model: &mut Model<CpuBackend>,
+        tokens: &[u32],
+        targets: &[u32],
+        name: &str,
+        weight: &Arc<Tensor<CpuBackend>>,
+        analytic: &[Real],
+        indices: &[usize],
+    ) {
+        let eps = 1e-2 as Real;
+        for &i in indices {
+            let mut w: Vec<Real> = weight.to_cpu();
+            let orig = w[i];
+
+            w[i] = orig + eps;
+            weight.copy_from_cpu(&w);
+            let loss_plus = loss_at(model, tokens, targets);
+
+            w[i] = orig - eps;
+            weight.copy_from_cpu(&w);
+            let loss_minus = loss_at(model, tokens, targets);
+
+            w[i] = orig;
+            weight.copy_from_cpu(&w);
+
+            let numeric = (loss_plus - loss_minus) / (2.0 * eps);
+            let denom = numeric.abs().max(analytic[i].abs()).max(1e-3);
+            let rel = (numeric - analytic[i]).abs() / denom;
+            assert!(
+                rel < 0.08,
+                "{name}[{i}]: analytic={} numeric={numeric} rel_err={rel}",
+                analytic[i]
+            );
+        }
+    }
+
+    #[test]
+    fn model_backward_matches_numerical_gradients() {
+        let ctx = Arc::new(CpuBackend::new());
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
+        let seq_len = cfg.seq_len;
+
+        let tokens: Vec<u32> = (0..seq_len).map(|i| (i * 7 + 3) % cfg.vocab_size).collect();
+        let targets: Vec<u32> = (0..seq_len).map(|i| (i * 5 + 1) % cfg.vocab_size).collect();
+
+        let weights = ModelWeights::random(ctx.clone(), &cfg);
+        let mut model =
+            Model::for_training(ctx.clone(), weights, cfg, TrainConfig::hall1_pretrain());
+
+        model
+            .train
+            .as_ref()
+            .unwrap()
+            .loss
+            .set_grad_scale(1.0 / seq_len as Real);
+
+        model.zero_grad();
+        model.train_step(&tokens, &targets);
+        ctx.synchronize();
+
+        let (n1_weight, n1_analytic, qkv_weight, qkv_analytic, lm_weight, lm_analytic) = {
+            let t = model.train.as_ref().unwrap();
+            let params0 = t.blocks[0].tape.params();
+            let (n1_w, n1_g, _) = params0[0];
+            let (qkv_w, qkv_g, _) = params0[1];
+            let tail_params = t.tail.params();
+            let (lm_w, lm_g, _) = tail_params[1];
+            (
+                n1_w.clone(),
+                n1_g.to_cpu(),
+                qkv_w.clone(),
+                qkv_g.to_cpu(),
+                lm_w.clone(),
+                lm_g.to_cpu(),
+            )
+        };
+
+        check_param(
+            &mut model,
+            &tokens,
+            &targets,
+            "block0.norm_1",
+            &n1_weight,
+            &n1_analytic,
+            &[0, 10, 50],
+        );
+        check_param(
+            &mut model,
+            &tokens,
+            &targets,
+            "block0.qkv_proj",
+            &qkv_weight,
+            &qkv_analytic,
+            &[0, 100, 500],
+        );
+        check_param(
+            &mut model,
+            &tokens,
+            &targets,
+            "tail.lm_head",
+            &lm_weight,
+            &lm_analytic,
+            &[0, 50, 200],
+        );
+    }
+}
+
 #[cfg(test)]
 mod streaming_checkpoint_parity {
     use super::*;
@@ -524,16 +640,80 @@ mod grad_clip_validation {
     }
 }
 
+#[cfg(all(test, feature = "cpu"))]
+mod grad_clip_validation_cpu {
+    use super::*;
+    use wilupgu::CpuBackend;
+
+    fn check_clip(amplitude: Real) {
+        let ctx = Arc::new(CpuBackend::new());
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
+        let weights = ModelWeights::random(ctx.clone(), &cfg);
+        let train_cfg = TrainConfig::hall1_pretrain();
+        let model = Model::for_training(ctx.clone(), weights, cfg, train_cfg);
+
+        let t = model.train.as_ref().unwrap();
+        let params: Vec<_> = t
+            .head
+            .params()
+            .into_iter()
+            .chain(t.blocks.iter().flat_map(|b| b.tape.params()))
+            .chain(t.tail.params())
+            .collect();
+
+        let mut host_grads: Vec<Vec<Real>> = Vec::new();
+        for (i, (_, grad, _)) in params.iter().enumerate() {
+            let len = (grad.size / std::mem::size_of::<Real>() as u64) as usize;
+            let data: Vec<Real> = (0..len)
+                .map(|j| ((i * 31 + j) as Real * 0.7).sin() * amplitude)
+                .collect();
+            grad.copy_from_cpu(&data);
+            host_grads.push(data);
+        }
+
+        t.grad_clip.clip();
+        ctx.synchronize();
+
+        let total_sq: f64 = host_grads
+            .iter()
+            .flatten()
+            .map(|&g| (g as f64) * (g as f64))
+            .sum();
+        let norm = total_sq.sqrt() as f32;
+        let scale = if norm > train_cfg.grad_clip.max_norm {
+            train_cfg.grad_clip.max_norm / (norm + 1e-6)
+        } else {
+            1.0
+        };
+
+        for (host, (_, grad, _)) in host_grads.iter().zip(params.iter()) {
+            let cpu: Vec<Real> = grad.to_cpu();
+            for (i, (&h, &g)) in host.iter().zip(cpu.iter()).enumerate() {
+                let expected = h * scale;
+                assert!(
+                    (expected - g).abs() < 1e-6 + expected.abs() * 1e-4,
+                    "amplitude {amplitude}: grad[{i}] expected {expected}, cpu {g} (norm {norm}, scale {scale})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn clips_when_norm_exceeds_max() {
+        check_clip(0.1);
+    }
+
+    #[test]
+    fn leaves_grads_alone_under_max() {
+        check_clip(1e-4);
+    }
+}
+
 #[cfg(test)]
 mod prefill_bucket_cache {
     use super::*;
     use wilupgu::WgpuBackend;
 
-    // B12: prefill now builds+caches one graph per bucketed length instead of
-    // rebuilding from scratch every call. Two different prompt lengths that
-    // round up to the same bucket share a graph/buffers; this guards that an
-    // interleaved call to a different-length prompt can't leak padding or
-    // stale state into the next call for the original prompt.
     #[test]
     fn shared_bucket_calls_dont_leak_into_each_other() {
         let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
