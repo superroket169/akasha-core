@@ -90,13 +90,11 @@ pub static ADD: Shader = Shader {
     }),
 };
 
-/// No CPU implementation -- pre-existing gap inherited from wilupgu's old
-/// string-keyed dispatch (the CPU backend never had a `SiLUBwd` match arm).
 pub static SILU_BWD: Shader = Shader {
     name: "SiLUBwd",
     layout: &[Input, Input, Output],
     wgpu: Some(include_str!("wgsl/bwd/silu_bwd.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::silu_bwd),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::SILU_BWD,
@@ -126,12 +124,11 @@ pub static ROPE: Shader = Shader {
     }),
 };
 
-/// No CPU implementation (pre-existing gap, see `SILU_BWD`).
 pub static ROPE_BWD: Shader = Shader {
     name: "RoPEBwd",
     layout: &[InOut, Meta],
     wgpu: Some(include_str!("wgsl/bwd/rope_bwd.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::rope_bwd),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::ROPE_BWD,
@@ -148,7 +145,7 @@ pub static ROPE_QK: Shader = Shader {
     name: "RopeQK",
     layout: &[InOut, InOut, Meta],
     wgpu: Some(include_str!("wgsl/fwd/rope_qk.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::rope_qk),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::ROPE_QK,
@@ -170,7 +167,7 @@ pub static ROPE_BWD_QK: Shader = Shader {
     name: "RopeBwdQK",
     layout: &[InOut, InOut, Meta],
     wgpu: Some(include_str!("wgsl/bwd/rope_bwd_qk.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::rope_bwd_qk),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::ROPE_BWD_QK,
@@ -278,12 +275,11 @@ pub static RMSNORM: Shader = Shader {
     }),
 };
 
-/// No CPU implementation (pre-existing gap, see `SILU_BWD`).
 pub static RMSNORM_BWD: Shader = Shader {
     name: "RMSNormBwd",
     layout: &[Input, Input, Input, Output, Output, Meta],
     wgpu: Some(include_str!("wgsl/bwd/rmsnorm_bwd.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::rmsnorm_bwd),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::RMSNORM_BWD,
@@ -296,12 +292,11 @@ pub static RMSNORM_BWD: Shader = Shader {
     }),
 };
 
-/// No CPU implementation (pre-existing gap, see `SILU_BWD`).
 pub static RMSNORM_WEIGHT_BWD: Shader = Shader {
     name: "RMSNormWeightBwd",
     layout: &[Input, Input, Input, Accumulate, Meta],
     wgpu: Some(include_str!("wgsl/bwd/rmsnorm_weight_bwd.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::rmsnorm_weight_bwd),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::RMSNORM_WEIGHT_BWD,
@@ -398,7 +393,7 @@ pub static QKV_SPLIT: Shader = Shader {
     name: "QkvSplit",
     layout: &[Input, Output, Output, Output, Meta],
     wgpu: Some(include_str!("wgsl/fwd/qkv_split.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::qkv_split),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::QKV_SPLIT,
@@ -420,7 +415,7 @@ pub static QKV_SCATTER: Shader = Shader {
     name: "QkvScatter",
     layout: &[Input, Input, Input, Output, Meta],
     wgpu: Some(include_str!("wgsl/bwd/qkv_scatter.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::qkv_scatter),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::QKV_SCATTER,
@@ -442,7 +437,7 @@ pub static FLASH_ATTENTION: Shader = Shader {
     name: "FlashAttention",
     layout: &[Input, Input, Input, Output, Output, Meta],
     wgpu: Some(include_str!("wgsl/fwd/flash_attention.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::flash_attention),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::FLASH_ATTENTION,
@@ -465,7 +460,7 @@ pub static FLASH_ATTENTION_BWD_D: Shader = Shader {
     name: "FlashAttentionBwdD",
     layout: &[Input, Input, Output, Meta],
     wgpu: Some(include_str!("wgsl/bwd/flash_attention_bwd_d.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::flash_attention_bwd_d),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::FLASH_ATTENTION_BWD_D,
@@ -488,7 +483,7 @@ pub static FLASH_ATTENTION_BWD_DQ: Shader = Shader {
     name: "FlashAttentionBwdDQ",
     layout: &[Input, Input, Input, Input, Input, Input, Output, Meta],
     wgpu: Some(include_str!("wgsl/bwd/flash_attention_bwd_dq.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::flash_attention_bwd_dq),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::FLASH_ATTENTION_BWD_DQ,
@@ -513,7 +508,7 @@ pub static FLASH_ATTENTION_BWD_DKDV: Shader = Shader {
         Input, Input, Input, Input, Input, Input, Output, Output, Meta,
     ],
     wgpu: Some(include_str!("wgsl/bwd/flash_attention_bwd_dkdv.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::flash_attention_bwd_dkdv),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::FLASH_ATTENTION_BWD_DKDV,
@@ -553,7 +548,7 @@ pub static GRAD_SUMSQ: Shader = Shader {
     name: "GradSumSq",
     layout: &[Input, Output, Meta],
     wgpu: Some(include_str!("wgsl/bwd/grad_sumsq.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::grad_sumsq),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::GRAD_SUMSQ,
@@ -570,7 +565,7 @@ pub static GRAD_NORM_SCALE: Shader = Shader {
     name: "GradNormScale",
     layout: &[Input, Output, Meta],
     wgpu: Some(include_str!("wgsl/bwd/grad_norm_scale.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::grad_norm_scale),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::GRAD_NORM_SCALE,
@@ -587,7 +582,7 @@ pub static GRAD_SCALE: Shader = Shader {
     name: "GradScale",
     layout: &[InOut, Input, Meta],
     wgpu: Some(include_str!("wgsl/bwd/grad_scale.wgsl")),
-    cpu: None,
+    cpu: Some(cpu::grad_scale),
     rayon: None,
     cuda: Some(CudaSpec {
         src: cuda::GRAD_SCALE,
