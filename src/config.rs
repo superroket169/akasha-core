@@ -138,14 +138,14 @@ impl TrainConfig {
     pub fn hall1_pretrain() -> Self {
         Self {
             name: "hall1_pretrain",
-            batch_size: 2,
-            accumulation_steps: 32, // effective batch = 64
+            batch_size: 1,
+            accumulation_steps: 64,
             lr_max: 6e-5,
             lr_min: 6e-6,
             warmup_steps: 1000,
             max_steps: 3_000_000,
             save_every: 1000,
-            log_every: 50,
+            log_every: 1,
             eval_every: 1000,
             eval_windows: 32,
             adam_weight_decay: 0.01,
@@ -166,8 +166,8 @@ impl TrainConfig {
                 max_norm: 1.0,
             },
             run: RunConfig {
-                batch_size: 2,
-                accumulation_steps: 32,
+                batch_size: 1,
+                accumulation_steps: 64,
                 save_every: 1000,
                 log_every: 50,
                 eval_every: 1000,

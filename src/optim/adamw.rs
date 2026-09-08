@@ -53,6 +53,7 @@ pub struct AdamW<B: Backend> {
     graph: ComputeGraph<B>,
     pub moments: Vec<(Arc<Tensor<B>>, Arc<Tensor<B>>)>,
     schedule_state: Arc<Tensor<B>>,
+    schedule: AdamWSchedule,
 }
 
 impl<B: Backend> AdamW<B> {
@@ -164,6 +165,7 @@ impl<B: Backend> AdamW<B> {
             graph,
             moments,
             schedule_state,
+            schedule,
         }
     }
 
@@ -176,10 +178,6 @@ impl<B: Backend> AdamW<B> {
         (raw[0], f32::from_bits(raw[1]))
     }
 
-    /// Restores a V3 checkpoint's optimizer state: m/v moments (in param order — the format contract)
-    /// and the schedule step counter
-    /// The lr field is left at 0; the schedule kernel recomputes it from the step
-    /// counter before the next AdamW node runs.
     pub fn load_state(&self, moments: &[(Vec<Real>, Vec<Real>)], schedule_step: u32) {
         assert_eq!(
             moments.len(),
@@ -190,9 +188,16 @@ impl<B: Backend> AdamW<B> {
             m_t.copy_from_cpu(m_d);
             v_t.copy_from_cpu(v_d);
         }
+        let lr = crate::config::cosine_lr(
+            schedule_step as usize,
+            self.schedule.warmup_steps as usize,
+            self.schedule.max_steps as usize,
+            self.schedule.lr_max,
+            self.schedule.lr_min,
+        );
         self.schedule_state.copy_from_cpu(&[ScheduleState {
             step: schedule_step,
-            lr: 0.0,
+            lr,
         }]);
     }
 }
