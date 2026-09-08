@@ -523,3 +523,38 @@ mod grad_clip_validation {
         check_clip(1e-4);
     }
 }
+
+#[cfg(test)]
+mod prefill_bucket_cache {
+    use super::*;
+    use wilupgu::WgpuBackend;
+
+    // B12: prefill now builds+caches one graph per bucketed length instead of
+    // rebuilding from scratch every call. Two different prompt lengths that
+    // round up to the same bucket share a graph/buffers; this guards that an
+    // interleaved call to a different-length prompt can't leak padding or
+    // stale state into the next call for the original prompt.
+    #[test]
+    fn shared_bucket_calls_dont_leak_into_each_other() {
+        let ctx = Arc::new(pollster::block_on(WgpuBackend::new()));
+        let cfg = ModelConfig::new(37, 128, 2, 2, 11); // head_dim=64: flash attention's wgsl is hardcoded to it
+        let weights = ModelWeights::random(ctx.clone(), &cfg);
+        let mut model = Model::for_chat(ctx.clone(), weights, cfg, 16);
+
+        // 5 and 7 both round up to bucket 8 -- same cached graph, different
+        // amounts of tail padding.
+        let prompt_a: Vec<u32> = vec![3, 11, 6, 20, 1];
+        let prompt_b: Vec<u32> = vec![9, 4, 33, 17, 22, 2, 8];
+
+        let a1 = model.prefill_logits(&prompt_a).unwrap();
+        let _b = model.prefill_logits(&prompt_b).unwrap();
+        let a2 = model.prefill_logits(&prompt_a).unwrap();
+
+        assert_eq!(
+            a1, a2,
+            "prompt A's logits changed after an interleaved call to a \
+             different-length prompt sharing the same prefill bucket -- \
+             the bucket cache is leaking state across calls"
+        );
+    }
+}

@@ -4,7 +4,7 @@ use super::grad_clip::{AnyGradClip, GlobalNormClip};
 use super::kernels::GraphBuilder;
 use super::kernels::meta::{MatMulMeta, NormMeta};
 use super::loss::{AnyLoss, CrossEntropyOp};
-use super::ops::cached::DecodeOp;
+use super::ops::cached::{DecodeOp, PrefillOp};
 use super::ops::full_seq::{EmbeddingOp, LinearOp, RmsNormOp, TrainOp};
 use super::sampling;
 use super::tape::{NodeId, Tape, zeros};
@@ -13,6 +13,7 @@ use crate::ModelError;
 use crate::Real;
 use crate::config::{GradClipKind, ModelConfig, OptimizerKind, TrainConfig};
 use crate::optim::{AdamW, AdamWSchedule, AnyOptimizer};
+use std::collections::HashMap;
 use std::sync::Arc;
 use wilupgu::{Backend, ComputeGraph, Tensor};
 
@@ -29,11 +30,31 @@ pub(crate) struct DecodeGraph<B: Backend> {
     pub(crate) logits_id: NodeId,
 }
 
+pub(crate) struct PrefillGraph<B: Backend> {
+    pub(crate) graph: ComputeGraph<B>,
+    pub(crate) tape: Tape<B, PrefillOp<B>>,
+    pub(crate) tokens: Arc<Tensor<B>>,
+    pub(crate) logits_id: NodeId,
+}
+
+// Bucket a real prompt length up to the next power of two (capped at the
+// context limit) so repeat prefill calls at varying lengths hit the same
+// cached graph instead of rebuilding + reallocating every call (B12).
+// Padding the tail up to the bucket length is safe: causal masking means the
+// padded positions never influence the real ones, and decode's own running
+// position counter (not the cache's physical size) bounds what it reads back
+// out of cache_k/cache_v, so the garbage written past prompt_len is simply
+// never read.
+fn prefill_bucket(prompt_len: u32, max_context_len: u32) -> u32 {
+    prompt_len.max(1).next_power_of_two().min(max_context_len)
+}
+
 struct ChatState<B: Backend> {
     cache_k: Vec<Arc<Tensor<B>>>,
     cache_v: Vec<Arc<Tensor<B>>>,
     max_context_len: u32,
     decode: DecodeGraph<B>,
+    prefill_cache: HashMap<u32, PrefillGraph<B>>,
 }
 
 struct TrainState<B: Backend> {
@@ -246,6 +267,7 @@ impl<B: Backend> Model<B> {
                 cache_v,
                 max_context_len,
                 decode,
+                prefill_cache: HashMap::new(),
             }),
         }
     }
@@ -270,22 +292,38 @@ impl<B: Backend> Model<B> {
             });
         }
 
-        let mut prefill_graph = ComputeGraph::new(ctx.clone());
-        let mut gb = GraphBuilder::prefill(&mut prefill_graph);
-        let (prefill_tape, prefill_tokens, prefill_logits) = build_prefill_forward(
-            &mut gb,
-            &self.weights,
-            &cfg,
-            prompt_len,
-            &chat.cache_k,
-            &chat.cache_v,
-        );
-        drop(gb);
-        prefill_tokens.copy_from_cpu(prompt);
-        prefill_graph.execute();
+        let bucket = prefill_bucket(prompt_len, chat.max_context_len);
+        if !chat.prefill_cache.contains_key(&bucket) {
+            let mut graph = ComputeGraph::new(ctx.clone());
+            let mut gb = GraphBuilder::prefill(&mut graph);
+            let (tape, tokens, logits_id) = build_prefill_forward(
+                &mut gb,
+                &self.weights,
+                &cfg,
+                bucket,
+                &chat.cache_k,
+                &chat.cache_v,
+            );
+            drop(gb);
+            chat.prefill_cache.insert(
+                bucket,
+                PrefillGraph {
+                    graph,
+                    tape,
+                    tokens,
+                    logits_id,
+                },
+            );
+        }
+        let pg = chat.prefill_cache.get_mut(&bucket).unwrap();
+
+        let mut padded = prompt.to_vec();
+        padded.resize(bucket as usize, *prompt.last().unwrap());
+        pg.tokens.copy_from_cpu(&padded);
+        pg.graph.execute();
 
         let vocab = cfg.vocab_size as usize;
-        let all_logits: Vec<Real> = prefill_tape.output(prefill_logits).to_cpu();
+        let all_logits: Vec<Real> = pg.tape.output(pg.logits_id).to_cpu();
         Ok(all_logits[(prompt_len as usize - 1) * vocab..prompt_len as usize * vocab].to_vec())
     }
 
