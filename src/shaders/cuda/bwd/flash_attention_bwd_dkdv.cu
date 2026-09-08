@@ -1,5 +1,5 @@
 extern "C" __global__ void flash_attention_bwd_dkdv_kernel(
-    const float* q, const float* k, const float* v, const float* o, const float* d_o,
+    const float* q, const float* k, const float* v, const float* d_sum, const float* d_o,
     const float* l_cache, float* d_k, float* d_v,
     const unsigned int* meta
 ) {
@@ -32,11 +32,10 @@ extern "C" __global__ void flash_attention_bwd_dkdv_kernel(
         }
         score *= scale;
         float p = expf(score - l_i);
+        float d_i = d_sum[i * num_heads + head];
 
-        float d_i = 0.0f;
         float dp = 0.0f;
         for (unsigned int d = 0; d < head_dim; d++) {
-            d_i += d_o[qo_off + d] * o[qo_off + d];
             dp += d_o[qo_off + d] * v[kv_off + d];
         }
         float d_s = p * (dp - d_i);

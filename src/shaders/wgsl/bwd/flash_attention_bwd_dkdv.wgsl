@@ -9,7 +9,7 @@ struct Meta {
 @group(0) @binding(0) var<storage, read> q: array<f32>;
 @group(0) @binding(1) var<storage, read> k: array<f32>;
 @group(0) @binding(2) var<storage, read> v: array<f32>;
-@group(0) @binding(3) var<storage, read> o: array<f32>;
+@group(0) @binding(3) var<storage, read> d_sum: array<f32>;
 @group(0) @binding(4) var<storage, read> d_o: array<f32>;
 @group(0) @binding(5) var<storage, read> l_cache: array<f32>;
 @group(0) @binding(6) var<storage, read_write> d_k: array<f32>;
@@ -50,11 +50,10 @@ fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
         }
         score = score * m.scale;
         let p = exp(score - l_i);
+        let d_i = d_sum[i * num_heads + head];
 
-        var d_i: f32 = 0.0;
         var dp: f32 = 0.0;
         for (var d: u32 = 0u; d < HEAD_DIM; d = d + 1u) {
-            d_i = d_i + d_o[qo_off + d] * o[qo_off + d];
             dp = dp + d_o[qo_off + d] * v[kv_off + d];
         }
         let d_s = p * (dp - d_i);

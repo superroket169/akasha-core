@@ -620,13 +620,31 @@ pub(crate) fn flash_attention_bwd<B: Backend>(
     let meta = shape.upload(&q_buf.ctx);
     let grid = grid_flash(shape);
 
+    let ctx = q_buf.ctx.clone();
+    let num_heads = shape.dim / shape.head_dim;
+    let d_size = (shape.seq_len * num_heads) as usize;
+    let d_sum = Arc::new(Tensor::init_from_cpu(ctx, &vec![0.0 as Real; d_size]));
+
+    // D[i] = sum_d dO_i . O_i, precomputed once per row instead of being
+    // recomputed by every (row, col) pair that visits row i below (B11b).
+    gb.graph.add_node(
+        &shaders::FLASH_ATTENTION_BWD_D,
+        &[
+            Binding::new(0, &grad_output.buffer, TensorMode::Input),
+            Binding::new(1, &saved.out.buffer, TensorMode::Input),
+            Binding::new(2, &d_sum.buffer, TensorMode::Output),
+            Binding::new(3, &meta.buffer, TensorMode::Meta),
+        ],
+        grid,
+    );
+
     gb.graph.add_node(
         &shaders::FLASH_ATTENTION_BWD_DQ,
         &[
             Binding::new(0, &q_buf.buffer, TensorMode::Input),
             Binding::new(1, &k_buf.buffer, TensorMode::Input),
             Binding::new(2, &v_buf.buffer, TensorMode::Input),
-            Binding::new(3, &saved.out.buffer, TensorMode::Input),
+            Binding::new(3, &d_sum.buffer, TensorMode::Input),
             Binding::new(4, &grad_output.buffer, TensorMode::Input),
             Binding::new(5, &saved.l_cache.buffer, TensorMode::Input),
             Binding::new(6, &grad_q.buffer, TensorMode::Output),
@@ -641,7 +659,7 @@ pub(crate) fn flash_attention_bwd<B: Backend>(
             Binding::new(0, &q_buf.buffer, TensorMode::Input),
             Binding::new(1, &k_buf.buffer, TensorMode::Input),
             Binding::new(2, &v_buf.buffer, TensorMode::Input),
-            Binding::new(3, &saved.out.buffer, TensorMode::Input),
+            Binding::new(3, &d_sum.buffer, TensorMode::Input),
             Binding::new(4, &grad_output.buffer, TensorMode::Input),
             Binding::new(5, &saved.l_cache.buffer, TensorMode::Input),
             Binding::new(6, &grad_k.buffer, TensorMode::Output),
